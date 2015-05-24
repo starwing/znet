@@ -1,6 +1,6 @@
 #define ZN_IMPLEMENTATION
-#include "znet.h"
 #include <stdio.h>
+#include "znet.h"
 
 zn_State *S;
 zn_Accept *a;
@@ -57,13 +57,22 @@ void on_timer(void *ud, zn_Timer *t, unsigned elapsed) {
     zn_starttimer(t, 1000);
 }
 
+int deinited = 0;
 void cleanup(void) {
-    printf("exiting ... ");
-    zn_close(S);
-    printf("OK\n");
-    printf("deinitialize ... ");
-    zn_deinitialize();
-    printf("OK\n");
+    if (!deinited) {
+        deinited = 1;
+        printf("exiting ... ");
+        zn_close(S);
+        printf("OK\n");
+        printf("deinitialize ... ");
+        zn_deinitialize();
+        printf("OK\n");
+    }
+}
+
+BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
+    cleanup();
+    return TRUE;
 }
 
 int main(void) {
@@ -81,6 +90,8 @@ int main(void) {
     /* client */
     zn_Timer *t = zn_newtimer(S, on_timer, NULL);
     zn_starttimer(t, 1000);
+
+    SetConsoleCtrlHandler(on_interrupted, TRUE);
 
     return zn_run(S, ZN_RUN_LOOP);
 }

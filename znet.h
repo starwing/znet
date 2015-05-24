@@ -225,7 +225,7 @@ static void znT_inserttimer(zn_TimerState *TS, zn_Timer *t) {
 
 static void znT_updatetimer(zn_TimerState *TS, unsigned current) {
     zn_Timer *nextticks = NULL;
-    while (TS->timers && current >= TS->timers->time) {
+    while (TS->timers && TS->timers->time <= current) {
         zn_Timer *cur = TS->timers;
         znL_remove(cur);
         cur->pprev = NULL;
@@ -276,11 +276,6 @@ static unsigned znT_getnexttime(zn_TimerState *TS, unsigned time) {
 # pragma comment(lib, "ws2_32")
 # pragma comment(lib, "mswsock")
 #endif /* _MSC_VER */
-
-typedef BOOL (PASCAL *ConnectEx) (SOCKET s,
-        const struct sockaddr* name, int namelen,
-        PVOID lpSendBuffer, DWORD dwSendDataLength, LPDWORD lpdwBytesSent,
-        LPOVERLAPPED lpOverlapped);
 
 typedef enum zn_RequestType {
     ZN_TACCEPT,
@@ -336,9 +331,13 @@ struct zn_Tcp {
     WSABUF recvBuffer;
 };
 
-static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned short port) {
-    strcpy(tcp->info.addr, addr);
-    tcp->info.port = port;
+static int zn_getextension(SOCKET socket, GUID* gid, void *fn) {
+    DWORD dwSize = 0;
+    return WSAIoctl(socket,
+            SIO_GET_EXTENSION_FUNCTION_POINTER,
+            gid, sizeof(*gid),
+            fn, sizeof(void(PASCAL*)(void)),
+            &dwSize, NULL, NULL) == 0;
 }
 
 static int zn_inittcp(zn_Tcp *tcp) {
@@ -366,6 +365,11 @@ static int zn_inittcp(zn_Tcp *tcp) {
 
     tcp->socket = socket;
     return ZN_OK;
+}
+
+static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned short port) {
+    strcpy(tcp->info.addr, addr);
+    tcp->info.port = port;
 }
 
 ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
@@ -410,10 +414,9 @@ ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info) {
 }
 
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned short port, zn_ConnectHandler *cb, void *ud) {
-    ConnectEx lpConnectEx = NULL;
+    static LPFN_CONNECTEX lpConnectEx = NULL;
+    static GUID gid = WSAID_CONNECTEX;
     DWORD dwLength = 0;
-    DWORD dwSize = 0;
-    GUID gid = WSAID_CONNECTEX;
     SOCKADDR_IN remoteAddr;
     char buf[1];
     int err;
@@ -425,11 +428,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned short port, zn_Con
     if ((err = zn_inittcp(tcp)) != ZN_OK)
         return err;
 
-    if (WSAIoctl(tcp->socket,
-                SIO_GET_EXTENSION_FUNCTION_POINTER,
-                &gid, sizeof(gid),
-                &lpConnectEx, sizeof(lpConnectEx),
-                &dwSize, NULL, NULL) != 0)
+    if (!lpConnectEx && !zn_getextension(tcp->socket, &gid, &lpConnectEx))
         return ZN_ECONNECT;
 
     memset(&remoteAddr, 0, sizeof(remoteAddr));
@@ -603,6 +602,7 @@ ZN_API zn_Accept* zn_newaccept(zn_State *S) {
 }
 
 ZN_API void zn_delaccept(zn_Accept *accept) {
+    if (accept->S == NULL) return;
     zn_closeaccept(accept);
     if (accept->handler != NULL) {
         accept->S = NULL; /* mark dead */
@@ -666,15 +666,20 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned short port) {
 }
 
 ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
+    static GUID gid = WSAID_ACCEPTEX;
+    static LPFN_ACCEPTEX lpAcceptEx = NULL;
     SOCKET socket;
     if (accept->socket == INVALID_SOCKET) return ZN_ESTATE;
     if (cb == NULL)                       return ZN_EPARAM;
+
+    if (!lpAcceptEx && !zn_getextension(accept->socket, &gid, &lpAcceptEx))
+        return ZN_ERROR;
 
     if ((socket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP,
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
-    if (!AcceptEx(accept->socket, socket,
+    if (!lpAcceptEx(accept->socket, socket,
                 accept->recv_buffer, 0,
                 sizeof(SOCKADDR_IN)+16, sizeof(SOCKADDR_IN)+16,
                 &accept->recv_length, &accept->request.overlapped)
@@ -692,6 +697,8 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
 }
 
 static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
+    static LPFN_GETACCEPTEXSOCKADDRS lpGetAcceptExSockaddrs = NULL;
+    static GUID gid = WSAID_GETACCEPTEXSOCKADDRS;
     zn_AcceptHandler *cb = accept->handler;
     BOOL bEnable = 1;
     zn_Tcp *tcp;
@@ -721,7 +728,11 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
                 (char*)&bEnable, sizeof(bEnable)) != 0)
     { /* XXX */ }
 
-    GetAcceptExSockaddrs(accept->recv_buffer,
+    if (!lpGetAcceptExSockaddrs && !zn_getextension(accept->client,
+                &gid, &lpGetAcceptExSockaddrs))
+        return;
+
+    lpGetAcceptExSockaddrs(accept->recv_buffer,
             accept->recv_length,
             sizeof(SOCKADDR_IN)+16,
             sizeof(SOCKADDR_IN)+16,
@@ -935,9 +946,8 @@ ZN_API void zn_close(zn_State *S) {
         udp = next;
     }
     /* 3. wait for uncompleted operations */
-    while (S->requests) {
+    while (S->requests)
         zn_run(S, ZN_RUN_ONCE);
-    }
     /* 4. clear resources and exit */
     CloseHandle(S->iocp);
     free(S);
@@ -967,16 +977,14 @@ static int zn_poll(zn_State *S, int check) {
     ULONG_PTR upComKey = (ULONG_PTR)0;
     LPOVERLAPPED pOverlapped = NULL;
     zn_Request *req;
-    unsigned current;
     BOOL bRet;
 
-    current = zn_time();
-    znT_updatetimer(&S->TS, current);
+    znT_updatetimer(&S->TS, zn_time());
     bRet = GetQueuedCompletionStatus(S->iocp,
             &dwBytes,
             &upComKey,
             &pOverlapped,
-            check ? 0 : znT_getnexttime(&S->TS, current));
+            check ? 0 : znT_getnexttime(&S->TS, zn_time()));
     znT_updatetimer(&S->TS, zn_time());
     if (!bRet && !pOverlapped) /* time out */
         return znS_checknext(S);
@@ -1763,6 +1771,6 @@ ZN_NS_END
 
 #endif /* ZN_IMPLEMENTATION */
 /* cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
- * cc: libs+='-lws2_32 -lmswsock' output='znet.dll' */
+ * cc: libs+='-lws2_32' output='znet.dll' */
 /* linuxcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
  * linuxcc: output='znet.so' */
