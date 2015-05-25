@@ -70,10 +70,12 @@ void cleanup(void) {
     }
 }
 
+#ifdef _WIN32
 BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
-    cleanup();
+    zn_post(S, (zn_PostHandler*)cleanup, NULL);
     return TRUE;
 }
+#endif
 
 int main(void) {
     zn_initialize();
@@ -91,7 +93,9 @@ int main(void) {
     zn_Timer *t = zn_newtimer(S, on_timer, NULL);
     zn_starttimer(t, 1000);
 
+#ifdef _WIN32
     SetConsoleCtrlHandler(on_interrupted, TRUE);
+#endif
 
     return zn_run(S, ZN_RUN_LOOP);
 }

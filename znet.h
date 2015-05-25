@@ -264,15 +264,13 @@ static unsigned znT_getnexttime(zn_TimerState *TS, unsigned time) {
 
 #ifndef WIN32_LEAN_AND_MEAN
 # define WIN32_LEAN_AND_MEAN
-#endif /* WIN32_LEAN_AND_MEAN */
-#ifndef _WINSOCK_DEPRECATED_NO_WARNINGS
-# define _WINSOCK_DEPRECATED_NO_WARNINGS
 #endif
 #include <Windows.h>
 #include <WinSock2.h>
 #include <MSWSock.h>
 
 #ifdef _MSC_VER
+# pragma warning(disable:4996)
 # pragma comment(lib, "ws2_32")
 # pragma comment(lib, "mswsock")
 #endif /* _MSC_VER */
@@ -285,6 +283,13 @@ typedef enum zn_RequestType {
     ZN_TRECVFROM,
     ZN_TSENDTO
 } zn_RequestType;
+
+typedef enum zn_CloseSource {
+    ZN_CLOSE_IN_RUN  = -1,        /* now in zn_run() */
+    ZN_CLOSE_NORMAL  =  0,        /* not close */
+    ZN_CLOSE_PREPARE =  1,        /* prepare close */
+    ZN_CLOSE_PREPARE_IN_RUN = 2,  /* prepare close in run() */
+} zm_CloseSource;
 
 typedef struct zn_Request {
     OVERLAPPED overlapped; /* must be first field */
@@ -374,7 +379,7 @@ static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned short port) {
 
 ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
     zn_Tcp *tcp;
-    if (S->closing
+    if (S->closing > ZN_CLOSE_NORMAL
             || (tcp = (zn_Tcp*)malloc(sizeof(zn_Tcp))) == NULL)
         return NULL;
     memset(tcp, 0, sizeof(*tcp));
@@ -588,7 +593,7 @@ struct zn_Accept {
 
 ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     zn_Accept *accept;
-    if (S->closing
+    if (S->closing > ZN_CLOSE_NORMAL
             || (accept = (zn_Accept*)malloc(sizeof(zn_Accept))) == NULL)
         return NULL;
     memset(accept, 0, sizeof(*accept));
@@ -801,7 +806,7 @@ static int zn_initudp(zn_Udp *udp, const char *addr, unsigned short port) {
 
 ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned short port) {
     zn_Udp *udp;
-    if (S->closing
+    if (S->closing > ZN_CLOSE_NORMAL
             || (udp = (zn_Udp*)malloc(sizeof(zn_Udp))) == NULL)
         return NULL;
     memset(udp, 0, sizeof(*udp));
@@ -888,16 +893,24 @@ static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
 
 /* poll */
 
+static BOOL zn_initialized = FALSE;
+
 ZN_API void zn_initialize(void) {
-    WORD version = MAKEWORD(2, 2);
-    WSADATA d;
-    if (WSAStartup(version, &d) != 0) {
-        abort();
+    if (!zn_initialized) {
+        WORD version = MAKEWORD(2, 2);
+        WSADATA d;
+        if (WSAStartup(version, &d) != 0) {
+            abort();
+        }
+        zn_initialized = TRUE;
     }
 }
 
 ZN_API void zn_deinitialize(void) {
-    WSACleanup();
+    if (zn_initialized) {
+        WSACleanup();
+        zn_initialized = FALSE;
+    }
 }
 
 ZN_API zn_State *zn_newstate(void) {
@@ -917,7 +930,7 @@ ZN_API zn_State *zn_newstate(void) {
     S->tcps = NULL;
     S->udps = NULL;
     S->requests = NULL;
-    S->closing = 0;
+    S->closing = ZN_CLOSE_NORMAL;
     return S;
 }
 
@@ -925,8 +938,15 @@ ZN_API void zn_close(zn_State *S) {
     zn_Accept *accept = S->accepts;
     zn_Tcp *tcp       = S->tcps;
     zn_Udp *udp       = S->udps;
+
+    int closing = S->closing;
+    if (closing == ZN_CLOSE_IN_RUN || closing == ZN_CLOSE_PREPARE_IN_RUN) {
+        S->closing = ZN_CLOSE_PREPARE_IN_RUN;
+        return;
+    }
+
     /* 0. doesn't allow create new objects */
-    S->closing = 1;
+    S->closing = ZN_CLOSE_PREPARE;
     /* 1. remove timers */
     znT_cleartimers(&S->TS);
     /* 2. cancel all operations */
@@ -979,6 +999,7 @@ static int zn_poll(zn_State *S, int check) {
     zn_Request *req;
     BOOL bRet;
 
+    S->closing = ZN_CLOSE_IN_RUN;
     znT_updatetimer(&S->TS, zn_time());
     bRet = GetQueuedCompletionStatus(S->iocp,
             &dwBytes,
@@ -987,14 +1008,14 @@ static int zn_poll(zn_State *S, int check) {
             check ? 0 : znT_getnexttime(&S->TS, zn_time()));
     znT_updatetimer(&S->TS, zn_time());
     if (!bRet && !pOverlapped) /* time out */
-        return znS_checknext(S);
+        goto out;
 
     if (upComKey == 0) {
         zn_PostState *ps = (zn_PostState*)pOverlapped;
         if (ps->handler)
             ps->handler(ps->ud, S);
         free(ps);
-        return znS_checknext(S);
+        goto out;
     }
 
     req = (zn_Request*)pOverlapped;
@@ -1010,6 +1031,13 @@ static int zn_poll(zn_State *S, int check) {
         default: ;
     }
 
+out:
+    if (S->closing == ZN_CLOSE_PREPARE_IN_RUN) {
+        S->closing = ZN_CLOSE_NORMAL; /* trigger real close */
+        zn_close(S);
+        return 0;
+    }
+    S->closing = ZN_CLOSE_NORMAL;
     return znS_checknext(S);
 }
 
