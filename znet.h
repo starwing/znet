@@ -156,36 +156,27 @@ ZN_NS_BEGIN
 
 /* half list routines */
 
+#define znL_cond(c,e) ((void)((c) && (e)))
+
+#define znL_type(T) struct T##_hlist { T *next; T **pprev; }
+
 #define znL_init(n) \
-    ((void)((n)->pprev = &(n)->next, (n)->next = NULL ))
+    ((void)((n)->pprev = &(n)->next, (n)->next = NULL))
 
-#define znL_insert(head, n)                    ((void)( \
-    (n)->pprev = (head), (n)->next = *(head),           \
-    (void)(*(head) && ((*(head))->pprev = &(n)->next)), \
-    *(head) = (n)                                     ))
+#define znL_insert(h, n)                          ((void)( \
+    (n)->pprev = (h), (n)->next = *(h),                    \
+    znL_cond(*(h), (*(h))->pprev = &(n)->next),            \
+    *(h) = (n)                                           ))
 
-#define znL_insert_tail(tail, n) \
-    ((void)(znL_insert(tail, n), (tail) = &(n)->next))
-
-#define znL_remove(n)                          ((void)( \
-    (void)((n)->next && ((n)->next->pprev = (n)->pprev)),\
-    (void)((n)->pprev && (*(n)->pprev = (n)->next))   ))
+#define znL_remove(n)                             ((void)( \
+    znL_cond((n)->next, (n)->next->pprev = (n)->pprev),    \
+    *(n)->pprev = (n)->next                              ))
 
 
 /* global routines */
 
-typedef struct zn_Request zn_Request;
 static void znS_clear(zn_State *S);
 static int  znS_poll(zn_State *S, int checkonly);
-
-typedef enum zn_RequestType {
-    ZN_TACCEPT,
-    ZN_TRECV,
-    ZN_TSEND,
-    ZN_TCONNECT,
-    ZN_TRECVFROM,
-    ZN_TSENDTO
-} zn_RequestType;
 
 typedef enum zn_CloseSource {
     ZN_CLOSE_IN_RUN  = -1,        /* now in zn_run() */
@@ -196,7 +187,6 @@ typedef enum zn_CloseSource {
 
 struct zn_State {
     int closing;
-    zn_Request *requests;
     zn_Accept *accepts;
     zn_Tcp *tcps;
     zn_Udp *udps;
@@ -209,24 +199,7 @@ static zn_State *znS_init(zn_State *S) {
     return S;
 }
 
-static void znS_close(zn_State *S) {
-    int closing = S->closing;
-    if (closing == ZN_CLOSE_IN_RUN || closing == ZN_CLOSE_PREPARE_IN_RUN) {
-        S->closing = ZN_CLOSE_PREPARE_IN_RUN;
-        return;
-    }
-
-    /* 0. doesn't allow create new objects */
-    S->closing = ZN_CLOSE_PREPARE;
-    /* 1. cancel all operations */
-    znS_clear(S);
-    /* 2. wait for uncompleted operations */
-    while (S->requests)
-        zn_run(S, ZN_RUN_ONCE);
-    /* 3. (done in drivers) cleanup reources and free */
-}
-
-ZN_API const char *zn_strerror (int err) {
+ZN_API const char *zn_strerror(int err) {
     const char *msg = "Unknown error";
     switch (err) {
 #define X(name, str) case ZN_##name: msg = str; break;
@@ -249,11 +222,6 @@ ZN_API int zn_run(zn_State *S, int mode) {
         return err;
     }
     return -ZN_ERROR;
-}
-
-static int znS_checknext(zn_State *S) {
-    return S->timers != NULL
-        || S->requests != NULL; /* still have operations? */
 }
 
 
@@ -327,8 +295,7 @@ static void znT_updatetimer(zn_State *S, unsigned current) {
     while (S->timers && S->timers->time <= current) {
         zn_Timer *cur = S->timers;
         znL_remove(cur);
-        cur->pprev = NULL;
-        cur->next = NULL;
+        znL_init(cur);
         if (cur->handler) {
             unsigned elapsed = current - cur->starttime;
             cur->starttime = 0;
@@ -373,6 +340,15 @@ static unsigned znT_getnexttime(zn_State *S, unsigned time) {
 # pragma comment(lib, "ws2_32")
 #endif /* _MSC_VER */
 
+typedef enum zn_RequestType {
+    ZN_TACCEPT,
+    ZN_TRECV,
+    ZN_TSEND,
+    ZN_TCONNECT,
+    ZN_TRECVFROM,
+    ZN_TSENDTO
+} zn_RequestType;
+
 typedef struct zn_Request {
     OVERLAPPED overlapped; /* must be first */
     struct zn_Request *next;
@@ -388,9 +364,11 @@ typedef struct zn_Post {
 typedef struct zn_IOCPState {
     zn_State base;
     HANDLE iocp;
+    zn_Request *requests;
 } zn_IOCPState;
 
-#define zn_iocp(S) (((zn_IOCPState*)(S))->iocp)
+#define zn_iocp(S)     (((zn_IOCPState*)(S))->iocp)
+#define zn_requests(S) (((zn_IOCPState*)(S))->requests)
 
 /* tcp */
 
@@ -523,7 +501,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
         return ZN_ECONNECT;
     }
 
-    znL_insert(&tcp->S->requests, &tcp->connect_request);
+    znL_insert(&zn_requests(tcp->S), &tcp->connect_request);
     tcp->connect_handler = cb;
     tcp->connect_ud = ud;
     return ZN_OK;
@@ -548,7 +526,7 @@ ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *
         return ZN_ERROR;
     }
 
-    znL_insert(&tcp->S->requests, &tcp->send_request);
+    znL_insert(&zn_requests(&tcp->S), &tcp->send_request);
     tcp->send_handler = cb;
     tcp->send_ud = ud;
     return ZN_OK;
@@ -574,7 +552,7 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
         return ZN_ERROR;
     }
 
-    znL_insert(&tcp->S->requests, &tcp->recv_request);
+    znL_insert(&zn_requests(tcp->S), &tcp->recv_request);
     tcp->recv_handler = cb;
     tcp->recv_ud = ud;
     return ZN_OK;
@@ -763,7 +741,7 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
         return ZN_ERROR;
     }
 
-    znL_insert(&accept->S->requests, &accept->accept_request);
+    znL_insert(&zn_requests(accept->S), &accept->accept_request);
     accept->accept_handler = cb;
     accept->accept_ud = ud;
     accept->client = socket;
@@ -934,7 +912,7 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
         return ZN_ERROR;
     }
 
-    znL_insert(&udp->S->requests, &udp->recv_request);
+    znL_insert(&zn_requests(udp->S), &udp->recv_request);
     udp->recv_handler = cb;
     udp->recv_ud = ud;
     return ZN_OK;
@@ -985,6 +963,7 @@ ZN_API zn_State *zn_newstate(void) {
     if (S == NULL) return NULL;
     S->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
             NULL, (ULONG_PTR)0, 1);
+    S->requests = NULL;
     if (S->iocp != NULL)
         return znS_init(&S->base);
     free(S);
@@ -992,7 +971,19 @@ ZN_API zn_State *zn_newstate(void) {
 }
 
 ZN_API void zn_close(zn_State *S) {
-    znS_close(S);
+    int closing = S->closing;
+    if (closing == ZN_CLOSE_IN_RUN || closing == ZN_CLOSE_PREPARE_IN_RUN) {
+        S->closing = ZN_CLOSE_PREPARE_IN_RUN;
+        return;
+    }
+    /* 0. doesn't allow create new objects */
+    S->closing = ZN_CLOSE_PREPARE;
+    /* 1. cancel all operations */
+    znS_clear(S);
+    /* 2. wait for uncompleted operations */
+    while (zn_requests(S))
+        zn_run(S, ZN_RUN_ONCE);
+    /* 3. cleanup reources and free */
     CloseHandle(zn_iocp(S));
     free(S);
 }
@@ -1055,7 +1046,7 @@ out:
         return 0;
     }
     S->closing = ZN_CLOSE_NORMAL;
-    return znS_checknext(S);
+    return S->timers != NULL || zn_requests(S) != NULL;
 }
 
 
@@ -1096,10 +1087,8 @@ typedef struct zn_EPollState {
     int epoll;
     int eventfd;
     pthread_spinlock_t post_lock;
-    zn_Post *posts;
-    zn_Post **last_posts;
-    zn_Result *results;
-    zn_Result **last_results;
+    znL_type(zn_Post) posts;
+    znL_type(zn_Result) results;
 } zn_EPollState;
 
 #define zn_state(S) ((zn_EPollState*)(S))
@@ -1109,22 +1098,21 @@ typedef struct zn_EPollState {
 
 static void znP_init(zn_EPollState *S) {
     pthread_spin_init(&S->post_lock, 0);
-    S->posts = NULL;
-    S->last_posts = &S->posts;
+    znL_init(&S->posts);
 }
 
 static void znP_add(zn_EPollState *S, zn_Post *ps) {
     pthread_spin_lock(&S->post_lock);
-    znL_insert_tail(S->last_posts, ps);
+    znL_insert(S->posts.pprev, ps);
+    S->posts.pprev = &ps->next;
     pthread_spin_unlock(&S->post_lock);
 }
 
 static void znP_process(zn_EPollState *S) {
-    zn_Post *ps = S->posts;
+    zn_Post *ps = S->posts.next;
     if (ps == NULL) return;
     pthread_spin_lock(&S->post_lock);
-    S->posts = NULL;
-    S->last_posts = &S->posts;
+    znL_init(&S->posts);
     pthread_spin_unlock(&S->post_lock);
     while (ps) {
         zn_Post *next = ps->next;
@@ -1140,22 +1128,19 @@ static void znP_process(zn_EPollState *S) {
 static void zn_onresult(zn_Result *result);
 
 static void znR_init(zn_EPollState *S) {
-    S->results = NULL;
-    S->last_results = &S->results;
+    znL_init(&S->results);
 }
 
 static void znR_add(zn_EPollState *S, int err, zn_Result *result) {
     result->err = err;
-    assert(result != *S->last_results);
-    znL_insert_tail(S->last_results, result);
-    assert(result->next != result);
+    znL_insert(S->results.pprev, result);
+    S->results.pprev = &result->next;
 }
 
 static void znR_process(zn_EPollState *S) {
-    while (S->results) {
-        zn_Result *results = S->results;
-        S->results = NULL;
-        S->last_results = &S->results;
+    while (S->results.next) {
+        zn_Result *results = S->results.next;
+        znL_init(&S->results);
         while (results) {
             zn_Result *next = results->next;
             znL_remove(results);
@@ -1715,8 +1700,13 @@ ZN_API zn_State *zn_newstate(void) {
 }
 
 ZN_API void zn_close(zn_State *S) {
-    znS_close(S);
-    /* 4. clear resources and exit */
+    int closing = S->closing;
+    if (closing == ZN_CLOSE_IN_RUN || closing == ZN_CLOSE_PREPARE_IN_RUN) {
+        S->closing = ZN_CLOSE_PREPARE_IN_RUN;
+        return;
+    }
+    S->closing = ZN_CLOSE_PREPARE;
+    znS_clear(S);
     close(zn_epoll(S));
     free(S);
 }
@@ -1779,6 +1769,7 @@ static int znS_poll(zn_State *S, int checkonly) {
     for (i = 0; i < ret; ++i)
         zn_dispatch(S, &events[i]);
     znR_process(zn_state(S));
+
 out:
     if (S->closing == ZN_CLOSE_PREPARE_IN_RUN) {
         S->closing = ZN_CLOSE_NORMAL; /* trigger real close */
@@ -1786,7 +1777,7 @@ out:
         return 0;
     }
     S->closing = ZN_CLOSE_NORMAL;
-    return znS_checknext(S);
+    return S->timers != NULL;
 }
 
 
