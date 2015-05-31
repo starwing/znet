@@ -57,18 +57,18 @@ typedef struct zn_Udp    zn_Udp;
 typedef struct zn_Timer  zn_Timer;
 
 typedef struct zn_PeerInfo {
-    char           addr[ZN_MAX_ADDRLEN];
-    unsigned short port;
+    char     addr[ZN_MAX_ADDRLEN];
+    unsigned port;
 } zn_PeerInfo;
 
-typedef void zn_PostHandler    (void *ud, zn_State *S);
-typedef void zn_TimerHandler   (void *ud, zn_Timer *timer, unsigned delayed);
-typedef void zn_AcceptHandler  (void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp);
-typedef void zn_ConnectHandler (void *ud, zn_Tcp *tcp, unsigned err);
-typedef void zn_SendHandler    (void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
-typedef void zn_RecvHandler    (void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
-typedef void zn_URecvHandler   (void *ud, zn_Udp *udp, unsigned err, unsigned count,
-                                const char *addr, unsigned short port);
+typedef void zn_PostHandler     (void *ud, zn_State *S);
+typedef void zn_TimerHandler    (void *ud, zn_Timer *timer, unsigned delayed);
+typedef void zn_AcceptHandler   (void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp);
+typedef void zn_ConnectHandler  (void *ud, zn_Tcp *tcp, unsigned err);
+typedef void zn_SendHandler     (void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+typedef void zn_RecvHandler     (void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+typedef void zn_RecvFromHandler (void *ud, zn_Udp *udp, unsigned err, unsigned count,
+                                 const char *addr, unsigned port);
 
 
 /* znet state routines */
@@ -106,7 +106,7 @@ ZN_API zn_Accept* zn_newaccept   (zn_State *S);
 ZN_API void       zn_closeaccept (zn_Accept *accept);
 ZN_API void       zn_delaccept   (zn_Accept *accept);
 
-ZN_API int zn_listen (zn_Accept *accept, const char *addr, unsigned short port);
+ZN_API int zn_listen (zn_Accept *accept, const char *addr, unsigned port);
 ZN_API int zn_accept (zn_Accept *accept, zn_AcceptHandler *cb, void *ud);
 
 
@@ -118,7 +118,7 @@ ZN_API void    zn_deltcp   (zn_Tcp *tcp);
 
 ZN_API void zn_getpeerinfo (zn_Tcp *tcp, zn_PeerInfo *info);
 
-ZN_API int zn_connect (zn_Tcp *tcp, const char *addr, unsigned short port,
+ZN_API int zn_connect (zn_Tcp *tcp, const char *addr, unsigned port,
                        zn_ConnectHandler *cb, void *ud);
 
 ZN_API int zn_send (zn_Tcp *tcp, const char *buff, unsigned len,
@@ -129,13 +129,13 @@ ZN_API int zn_recv (zn_Tcp *tcp,       char *buff, unsigned len,
 
 /* znet udp socket routines */
 
-ZN_API zn_Udp* zn_newudp (zn_State *S, const char *addr, unsigned short port);
+ZN_API zn_Udp* zn_newudp (zn_State *S, const char *addr, unsigned port);
 ZN_API void    zn_deludp (zn_Udp *udp);
 
 ZN_API int zn_sendto   (zn_Udp *udp, const char *buff, unsigned len,
-                        const char *addr, unsigned short port);
+                        const char *addr, unsigned port);
 ZN_API int zn_recvfrom (zn_Udp *udp,       char *buff, unsigned len,
-                        zn_URecvHandler *cb, void *ud);
+                        zn_RecvFromHandler *cb, void *ud);
 
 ZN_NS_END
 
@@ -156,24 +156,108 @@ ZN_NS_BEGIN
 
 /* half list routines */
 
-#define znL_init(n) ((void)((n)->pprev = NULL, (n)->next = NULL ))
+#define znL_init(n) \
+    ((void)((n)->pprev = &(n)->next, (n)->next = NULL ))
 
-#define znL_insert(h, n)                          ((void)( \
-            (n)->pprev = (h), (n)->next = *(h),            \
-            (void)(*(h) && ((*(h))->pprev = &(n)->next)),  \
-            *(h) = (n)                                   ))
+#define znL_insert(head, n)                    ((void)( \
+    (n)->pprev = (head), (n)->next = *(head),           \
+    (void)(*(head) && ((*(head))->pprev = &(n)->next)), \
+    *(head) = (n)                                     ))
 
-#define znL_remove(n)                             ((void)( \
-            (void)((n)->next && ((n)->next->pprev = (n)->pprev)),\
-            (void)((n)->pprev && (*(n)->pprev = (n)->next))))
+#define znL_insert_tail(tail, n) \
+    ((void)(znL_insert(tail, n), (tail) = &(n)->next))
+
+#define znL_remove(n)                          ((void)( \
+    (void)((n)->next && ((n)->next->pprev = (n)->pprev)),\
+    (void)((n)->pprev && (*(n)->pprev = (n)->next))   ))
+
+
+/* global routines */
+
+typedef struct zn_Request zn_Request;
+static void znS_clear(zn_State *S);
+static int  znS_poll(zn_State *S, int checkonly);
+
+typedef enum zn_RequestType {
+    ZN_TACCEPT,
+    ZN_TRECV,
+    ZN_TSEND,
+    ZN_TCONNECT,
+    ZN_TRECVFROM,
+    ZN_TSENDTO
+} zn_RequestType;
+
+typedef enum zn_CloseSource {
+    ZN_CLOSE_IN_RUN  = -1,        /* now in zn_run() */
+    ZN_CLOSE_NORMAL  =  0,        /* not close */
+    ZN_CLOSE_PREPARE =  1,        /* prepare close */
+    ZN_CLOSE_PREPARE_IN_RUN = 2,  /* prepare close in run() */
+} zm_CloseSource;
+
+struct zn_State {
+    int closing;
+    zn_Request *requests;
+    zn_Accept *accepts;
+    zn_Tcp *tcps;
+    zn_Udp *udps;
+    zn_Timer *timers;
+    zn_Timer *unused_timers;
+};
+
+static zn_State *znS_init(zn_State *S) {
+    memset(S, 0, sizeof(*S));
+    return S;
+}
+
+static void znS_close(zn_State *S) {
+    int closing = S->closing;
+    if (closing == ZN_CLOSE_IN_RUN || closing == ZN_CLOSE_PREPARE_IN_RUN) {
+        S->closing = ZN_CLOSE_PREPARE_IN_RUN;
+        return;
+    }
+
+    /* 0. doesn't allow create new objects */
+    S->closing = ZN_CLOSE_PREPARE;
+    /* 1. cancel all operations */
+    znS_clear(S);
+    /* 2. wait for uncompleted operations */
+    while (S->requests)
+        zn_run(S, ZN_RUN_ONCE);
+    /* 3. (done in drivers) cleanup reources and free */
+}
+
+ZN_API const char *zn_strerror (int err) {
+    const char *msg = "Unknown error";
+    switch (err) {
+#define X(name, str) case ZN_##name: msg = str; break;
+        ZN_ERRORS(X)
+#undef  X
+    }
+    return msg;
+}
+
+ZN_API int zn_run(zn_State *S, int mode) {
+    int err;
+    switch (mode) {
+    case ZN_RUN_CHECK:
+        return znS_poll(S, 1);
+    case ZN_RUN_ONCE:
+        return znS_poll(S, 0);
+    case ZN_RUN_LOOP:
+        while ((err = znS_poll(S, 0)) > 0)
+            ;
+        return err;
+    }
+    return -ZN_ERROR;
+}
+
+static int znS_checknext(zn_State *S) {
+    return S->timers != NULL
+        || S->requests != NULL; /* still have operations? */
+}
 
 
 /* timer routines */
-
-typedef struct zn_TimerState {
-    zn_Timer *unused_timers;
-    zn_Timer *timers;
-} zn_TimerState;
 
 struct zn_Timer {
     zn_Timer *next;
@@ -185,37 +269,8 @@ struct zn_Timer {
     unsigned time;
 };
 
-static void znT_inittimerstate(zn_TimerState *TS) {
-    TS->unused_timers = NULL;
-    TS->timers = NULL;
-}
-
-static void znT_cleartimers(zn_TimerState *TS) {
-    while (TS->unused_timers) {
-        zn_Timer *next = TS->unused_timers->next;
-        free(TS->unused_timers);
-        TS->unused_timers = next;
-    }
-    while (TS->timers) {
-        zn_Timer *next = TS->timers->next;
-        free(TS->timers);
-        TS->timers = next;
-    }
-}
-
-static zn_Timer *znT_newtimer(zn_State *S, zn_TimerState *TS) {
-    zn_Timer *t = (zn_Timer*)malloc(sizeof(zn_Timer));
-    t->S = S;
-    t->ud = NULL;
-    t->handler = NULL;
-    t->starttime = 0;
-    t->time = 0;
-    znL_insert(&TS->unused_timers, t);
-    return t;
-}
-
-static void znT_inserttimer(zn_TimerState *TS, zn_Timer *t) {
-    zn_Timer **head = &TS->timers;
+static void znT_inserttimer(zn_Timer *t) {
+    zn_Timer **head = &t->S->timers;
     while (*head != NULL && (*head)->time <= t->time)
         head = &(*head)->next;
     /* detach timer and insert into active linked list */
@@ -223,10 +278,54 @@ static void znT_inserttimer(zn_TimerState *TS, zn_Timer *t) {
     znL_insert(head, t);
 }
 
-static void znT_updatetimer(zn_TimerState *TS, unsigned current) {
+static void znT_cleartimers(zn_State *S) {
+    while (S->unused_timers) {
+        zn_Timer *next = S->unused_timers->next;
+        free(S->unused_timers);
+        S->unused_timers = next;
+    }
+    while (S->timers) {
+        zn_Timer *next = S->timers->next;
+        free(S->timers);
+        S->timers = next;
+    }
+}
+
+ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *cb, void *ud) {
+    zn_Timer *t;
+    if (S->closing > ZN_CLOSE_NORMAL
+            || (t = (zn_Timer*)malloc(sizeof(zn_Timer))) == NULL)
+        return NULL;
+    memset(t, 0, sizeof(*t));
+    t->S = S;
+    t->ud = ud;
+    t->handler = cb;
+    znL_insert(&S->unused_timers, t);
+    return t;
+}
+
+ZN_API void zn_deltimer(zn_Timer *timer) {
+    znL_remove(timer);
+    free(timer);
+}
+
+ZN_API void zn_starttimer(zn_Timer *timer, unsigned delayms) {
+    timer->starttime = zn_time();
+    timer->time = timer->starttime + delayms;
+    znL_remove(timer);
+    znT_inserttimer(timer);
+}
+
+ZN_API void zn_canceltimer(zn_Timer *timer) {
+    znL_remove(timer);
+    znL_insert(&timer->S->unused_timers, timer);
+    timer->time = ~(unsigned)0;
+}
+
+static void znT_updatetimer(zn_State *S, unsigned current) {
     zn_Timer *nextticks = NULL;
-    while (TS->timers && TS->timers->time <= current) {
-        zn_Timer *cur = TS->timers;
+    while (S->timers && S->timers->time <= current) {
+        zn_Timer *cur = S->timers;
         znL_remove(cur);
         cur->pprev = NULL;
         cur->next = NULL;
@@ -237,7 +336,7 @@ static void znT_updatetimer(zn_TimerState *TS, unsigned current) {
             cur->handler(cur->ud, cur, elapsed);
         }
         if (!cur->pprev)
-            znL_insert(&TS->unused_timers, cur);
+            znL_insert(&S->unused_timers, cur);
         else if (cur->time <= current) { /* avoid forever loop */
             znL_remove(cur);
             znL_insert(&nextticks, cur);
@@ -245,29 +344,22 @@ static void znT_updatetimer(zn_TimerState *TS, unsigned current) {
     }
     while (nextticks != NULL) {
         zn_Timer *next = nextticks->next;
-        znT_inserttimer(TS, nextticks);
+        znT_inserttimer(nextticks);
         nextticks = next;
     }
 }
 
-static unsigned znT_getnexttime(zn_TimerState *TS, unsigned time) {
-    if (TS->timers == NULL)
+static unsigned znT_getnexttime(zn_State *S, unsigned time) {
+    if (S->timers == NULL)
         return ~(unsigned)0; /* no timer, wait forever */
-    if (TS->timers->time <= time)
+    if (S->timers->time <= time)
         return 0; /* immediately */
-    return TS->timers->time - time;
+    return S->timers->time - time;
 }
 
 
-typedef enum zn_CloseSource {
-    ZN_CLOSE_IN_RUN  = -1,        /* now in zn_run() */
-    ZN_CLOSE_NORMAL  =  0,        /* not close */
-    ZN_CLOSE_PREPARE =  1,        /* prepare close */
-    ZN_CLOSE_PREPARE_IN_RUN = 2,  /* prepare close in run() */
-} zm_CloseSource;
-
 /* system specified routines */
-#ifdef _WIN32 /* CPIO (Completion Port) implementations */
+#ifdef _WIN32 /* IOCP (Completion Port) implementations */
 
 #ifndef WIN32_LEAN_AND_MEAN
 # define WIN32_LEAN_AND_MEAN
@@ -279,44 +371,26 @@ typedef enum zn_CloseSource {
 #ifdef _MSC_VER
 # pragma warning(disable:4996)
 # pragma comment(lib, "ws2_32")
-# pragma comment(lib, "mswsock")
 #endif /* _MSC_VER */
 
-typedef enum zn_RequestType {
-    ZN_TACCEPT,
-    ZN_TRECV,
-    ZN_TSEND,
-    ZN_TCONNECT,
-    ZN_TRECVFROM,
-    ZN_TSENDTO
-} zn_RequestType;
-
 typedef struct zn_Request {
-    OVERLAPPED overlapped; /* must be first field */
+    OVERLAPPED overlapped; /* must be first */
     struct zn_Request *next;
     struct zn_Request **pprev;
-    union {
-        zn_Accept* accept;
-        zn_Tcp* tcp;
-        zn_Udp* udp;
-    } u;
     zn_RequestType type;
 } zn_Request;
 
-typedef struct zn_PostState {
+typedef struct zn_Post {
     zn_PostHandler *handler;
     void *ud;
-} zn_PostState;
+} zn_Post;
 
-struct zn_State {
+typedef struct zn_IOCPState {
+    zn_State base;
     HANDLE iocp;
-    int closing;
-    zn_TimerState TS;
-    zn_Accept *accepts;
-    zn_Tcp *tcps;
-    zn_Udp *udps;
-    zn_Request *requests;
-};
+} zn_IOCPState;
+
+#define zn_iocp(S) (((zn_IOCPState*)(S))->iocp)
 
 /* tcp */
 
@@ -327,10 +401,10 @@ struct zn_Tcp {
     void *connect_ud; zn_ConnectHandler *connect_handler;
     void *send_ud; zn_SendHandler *send_handler;
     void *recv_ud; zn_RecvHandler *recv_handler;
-    SOCKET socket;
     zn_Request connect_request;
     zn_Request send_request;
     zn_Request recv_request;
+    SOCKET socket;
     zn_PeerInfo info;
     WSABUF sendBuffer;
     WSABUF recvBuffer;
@@ -361,7 +435,7 @@ static int zn_inittcp(zn_Tcp *tcp) {
         return ZN_EBIND;
     }
 
-    if (CreateIoCompletionPort((HANDLE)socket, tcp->S->iocp,
+    if (CreateIoCompletionPort((HANDLE)socket, zn_iocp(tcp->S),
                 (ULONG_PTR)tcp, 1) == NULL)
     {
         closesocket(socket);
@@ -372,7 +446,7 @@ static int zn_inittcp(zn_Tcp *tcp) {
     return ZN_OK;
 }
 
-static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned short port) {
+static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port) {
     strcpy(tcp->info.addr, addr);
     tcp->info.port = port;
 }
@@ -385,11 +459,8 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
     memset(tcp, 0, sizeof(*tcp));
     tcp->S = S;
     tcp->socket = INVALID_SOCKET;
-    tcp->connect_request.u.tcp = tcp;
     tcp->connect_request.type = ZN_TCONNECT;
-    tcp->send_request.u.tcp = tcp;
     tcp->send_request.type = ZN_TSEND;
-    tcp->recv_request.u.tcp = tcp;
     tcp->recv_request.type = ZN_TRECV;
     znL_insert(&S->tcps, tcp);
     return tcp;
@@ -418,7 +489,7 @@ ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info) {
     *info = tcp->info;
 }
 
-ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned short port, zn_ConnectHandler *cb, void *ud) {
+ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
     static LPFN_CONNECTEX lpConnectEx = NULL;
     static GUID gid = WSAID_CONNECTEX;
     DWORD dwLength = 0;
@@ -583,9 +654,9 @@ struct zn_Accept {
     zn_Accept **pprev;
     zn_State *S;
     void *accept_ud; zn_AcceptHandler *accept_handler;
+    zn_Request accept_request;
     SOCKET socket;
     SOCKET client;
-    zn_Request request;
     DWORD recv_length;
     char recv_buffer[(sizeof(SOCKADDR_IN)+16)*2];
 };
@@ -599,8 +670,7 @@ ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     accept->S = S;
     accept->socket = INVALID_SOCKET;
     accept->client = INVALID_SOCKET;
-    accept->request.u.accept = accept;
-    accept->request.type = ZN_TACCEPT;
+    accept->accept_request.type = ZN_TACCEPT;
     znL_insert(&S->accepts, accept);
     return accept;
 }
@@ -627,7 +697,7 @@ ZN_API void zn_closeaccept(zn_Accept *accept) {
     }
 }
 
-ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned short port) {
+ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
     SOCKADDR_IN sockAddr;
     BOOL bReuseAddr = TRUE;
     SOCKET socket;
@@ -658,7 +728,7 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned short port) {
         return ZN_ERROR;
     }
 
-    if (CreateIoCompletionPort((HANDLE)socket, accept->S->iocp,
+    if (CreateIoCompletionPort((HANDLE)socket, zn_iocp(accept->S),
                 (ULONG_PTR)accept, 1) == NULL)
     {
         closesocket(socket);
@@ -686,14 +756,14 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
     if (!lpAcceptEx(accept->socket, socket,
                 accept->recv_buffer, 0,
                 sizeof(SOCKADDR_IN)+16, sizeof(SOCKADDR_IN)+16,
-                &accept->recv_length, &accept->request.overlapped)
+                &accept->recv_length, &accept->accept_request.overlapped)
             && WSAGetLastError() != ERROR_IO_PENDING)
     {
         closesocket(socket);
         return ZN_ERROR;
     }
 
-    znL_insert(&accept->S->requests, &accept->request);
+    znL_insert(&accept->S->requests, &accept->accept_request);
     accept->accept_handler = cb;
     accept->accept_ud = ud;
     accept->client = socket;
@@ -746,8 +816,7 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
     tcp->socket = accept->client;
     accept->client = INVALID_SOCKET;
     if (CreateIoCompletionPort((HANDLE)tcp->socket,
-                tcp->S->iocp,
-                (ULONG_PTR)tcp, 1) == NULL)
+                zn_iocp(tcp->S), (ULONG_PTR)tcp, 1) == NULL)
     {
         closesocket(tcp->socket);
         znL_remove(tcp);
@@ -767,15 +836,15 @@ struct zn_Udp {
     zn_Udp *next;
     zn_Udp **pprev;
     zn_State *S;
-    void *recv_ud; zn_URecvHandler *recv_handler;
+    void *recv_ud; zn_RecvFromHandler *recv_handler;
+    zn_Request recv_request;
     SOCKET socket;
-    zn_Request request;
     WSABUF recvBuffer;
     SOCKADDR_IN recvFrom;
     INT recvFromLen;
 };
 
-static int zn_initudp(zn_Udp *udp, const char *addr, unsigned short port) {
+static int zn_initudp(zn_Udp *udp, const char *addr, unsigned port) {
     SOCKET socket;
     SOCKADDR_IN sockAddr;
 
@@ -792,7 +861,7 @@ static int zn_initudp(zn_Udp *udp, const char *addr, unsigned short port) {
     if (bind(socket, (struct sockaddr*)&sockAddr, sizeof(SOCKADDR_IN)) != 0)
         return ZN_EBIND;
 
-    if (CreateIoCompletionPort((HANDLE)socket, udp->S->iocp,
+    if (CreateIoCompletionPort((HANDLE)socket, zn_iocp(udp->S),
                 (ULONG_PTR)udp, 1) == NULL)
     {
         closesocket(socket);
@@ -803,7 +872,7 @@ static int zn_initudp(zn_Udp *udp, const char *addr, unsigned short port) {
     return ZN_OK;
 }
 
-ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned short port) {
+ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
     zn_Udp *udp;
     if (S->closing > ZN_CLOSE_NORMAL
             || (udp = (zn_Udp*)malloc(sizeof(zn_Udp))) == NULL)
@@ -811,8 +880,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned short port) {
     memset(udp, 0, sizeof(*udp));
     udp->S = S;
     udp->socket = INVALID_SOCKET;
-    udp->request.u.udp = udp;
-    udp->request.type = ZN_TRECVFROM;
+    udp->recv_request.type = ZN_TRECVFROM;
     if (!zn_initudp(udp, addr, port)) {
         free(udp);
         return NULL;
@@ -831,7 +899,7 @@ ZN_API void zn_deludp(zn_Udp *udp) {
     }
 }
 
-ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned short port) {
+ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
     SOCKADDR_IN dst;
     if (udp->socket == INVALID_SOCKET) return ZN_ESTATE;
     if (len == 0 || len >1200)         return ZN_EPARAM;
@@ -844,7 +912,7 @@ ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *ad
     return ZN_OK;
 }
 
-ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_URecvHandler *cb, void *ud) {
+ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler *cb, void *ud) {
     DWORD dwRecv = 0;
     DWORD dwFlag = 0;
     if (udp->socket == INVALID_SOCKET) return ZN_ESTATE;
@@ -858,7 +926,7 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_URecvHandler *c
     udp->recvFromLen = sizeof(udp->recvFrom);
     if ((WSARecvFrom(udp->socket, &udp->recvBuffer, 1, &dwRecv, &dwFlag,
                 (struct sockaddr*)&udp->recvFrom, &udp->recvFromLen,
-                &udp->request.overlapped, NULL) != 0)
+                &udp->recv_request.overlapped, NULL) != 0)
             && WSAGetLastError() != WSA_IO_PENDING)
     {
         udp->recvBuffer.buf = NULL;
@@ -866,14 +934,14 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_URecvHandler *c
         return ZN_ERROR;
     }
 
-    znL_insert(&udp->S->requests, &udp->request);
+    znL_insert(&udp->S->requests, &udp->recv_request);
     udp->recv_handler = cb;
     udp->recv_ud = ud;
     return ZN_OK;
 }
 
 static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
-    zn_URecvHandler *cb = udp->recv_handler;
+    zn_RecvFromHandler *cb = udp->recv_handler;
     if (udp->S == NULL) {
         /* cb(udp->recv_ud, udp, ZN_ERROR, dwBytes, "0.0.0.0", 0); */
         znL_remove(udp);
@@ -913,62 +981,19 @@ ZN_API void zn_deinitialize(void) {
 }
 
 ZN_API zn_State *zn_newstate(void) {
-    zn_State *S = (zn_State*)malloc(sizeof(zn_State));
+    zn_IOCPState *S = (zn_IOCPState*)malloc(sizeof(zn_IOCPState));
     if (S == NULL) return NULL;
-    S->iocp = CreateIoCompletionPort(
-            INVALID_HANDLE_VALUE,
-            NULL,
-            (ULONG_PTR)0,
-            1);
-    if (S->iocp == NULL) {
-        free(S);
-        return NULL;
-    }
-    znT_inittimerstate(&S->TS);
-    S->accepts = NULL;
-    S->tcps = NULL;
-    S->udps = NULL;
-    S->requests = NULL;
-    S->closing = ZN_CLOSE_NORMAL;
-    return S;
+    S->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
+            NULL, (ULONG_PTR)0, 1);
+    if (S->iocp != NULL)
+        return znS_init(&S->base);
+    free(S);
+    return NULL;
 }
 
 ZN_API void zn_close(zn_State *S) {
-    zn_Accept *accept = S->accepts;
-    zn_Tcp *tcp       = S->tcps;
-    zn_Udp *udp       = S->udps;
-
-    int closing = S->closing;
-    if (closing == ZN_CLOSE_IN_RUN || closing == ZN_CLOSE_PREPARE_IN_RUN) {
-        S->closing = ZN_CLOSE_PREPARE_IN_RUN;
-        return;
-    }
-
-    /* 0. doesn't allow create new objects */
-    S->closing = ZN_CLOSE_PREPARE;
-    /* 1. remove timers */
-    znT_cleartimers(&S->TS);
-    /* 2. cancel all operations */
-    while (accept) {
-        zn_Accept *next = accept->next;
-        zn_delaccept(accept);
-        accept = next;
-    }
-    while (tcp) {
-        zn_Tcp *next = tcp->next;
-        zn_deltcp(tcp);
-        tcp = next;
-    }
-    while (udp) {
-        zn_Udp *next = udp->next;
-        zn_deludp(udp);
-        udp = next;
-    }
-    /* 3. wait for uncompleted operations */
-    while (S->requests)
-        zn_run(S, ZN_RUN_ONCE);
-    /* 4. clear resources and exit */
-    CloseHandle(S->iocp);
+    znS_close(S);
+    CloseHandle(zn_iocp(S));
     free(S);
 }
 
@@ -978,20 +1003,15 @@ ZN_API unsigned zn_time(void) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
-    zn_PostState *ps = (zn_PostState*)malloc(sizeof(zn_PostState));
+    zn_Post *ps = (zn_Post*)malloc(sizeof(zn_Post));
     if (ps == NULL) return 0;
     ps->handler = cb;
     ps->ud = ud;
-    PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)ps);
+    PostQueuedCompletionStatus(zn_iocp(S), 0, 0, (LPOVERLAPPED)ps);
     return 1;
 }
 
-static int znS_checknext(zn_State *S) {
-    return S->TS.timers != NULL
-        || S->requests != NULL; /* still have operations? */
-}
-
-static int zn_poll(zn_State *S, int check) {
+static int znS_poll(zn_State *S, int checkonly) {
     DWORD dwBytes = 0;
     ULONG_PTR upComKey = (ULONG_PTR)0;
     LPOVERLAPPED pOverlapped = NULL;
@@ -999,18 +1019,16 @@ static int zn_poll(zn_State *S, int check) {
     BOOL bRet;
 
     S->closing = ZN_CLOSE_IN_RUN;
-    znT_updatetimer(&S->TS, zn_time());
-    bRet = GetQueuedCompletionStatus(S->iocp,
-            &dwBytes,
-            &upComKey,
-            &pOverlapped,
-            check ? 0 : znT_getnexttime(&S->TS, zn_time()));
-    znT_updatetimer(&S->TS, zn_time());
+    znT_updatetimer(S, zn_time());
+    bRet = GetQueuedCompletionStatus(zn_iocp(S),
+            &dwBytes, &upComKey, &pOverlapped,
+            checkonly ? 0 : znT_getnexttime(S, zn_time()));
+    znT_updatetimer(S, zn_time());
     if (!bRet && !pOverlapped) /* time out */
         goto out;
 
     if (upComKey == 0) {
-        zn_PostState *ps = (zn_PostState*)pOverlapped;
+        zn_Post *ps = (zn_Post*)pOverlapped;
         if (ps->handler)
             ps->handler(ps->ud, S);
         free(ps);
@@ -1021,11 +1039,11 @@ static int zn_poll(zn_State *S, int check) {
     znL_remove(req);
     znL_init(req); /* for debug purpose */
     switch (req->type) {
-        case ZN_TACCEPT:   zn_onaccept(req->u.accept, bRet); break;
-        case ZN_TRECV:     zn_onrecv(req->u.tcp, bRet, dwBytes); break;
-        case ZN_TSEND:     zn_onsend(req->u.tcp, bRet, dwBytes); break;
-        case ZN_TCONNECT:  zn_onconnect(req->u.tcp, bRet); break;
-        case ZN_TRECVFROM: zn_onrecvfrom(req->u.udp, bRet, dwBytes); break;
+        case ZN_TACCEPT:   zn_onaccept((zn_Accept*)upComKey, bRet); break;
+        case ZN_TRECV:     zn_onrecv((zn_Tcp*)upComKey, bRet, dwBytes); break;
+        case ZN_TSEND:     zn_onsend((zn_Tcp*)upComKey, bRet, dwBytes); break;
+        case ZN_TCONNECT:  zn_onconnect((zn_Tcp*)upComKey, bRet); break;
+        case ZN_TRECVFROM: zn_onrecvfrom((zn_Udp*)upComKey, bRet, dwBytes); break;
         case ZN_TSENDTO: /* do not have this operation */
         default: ;
     }
@@ -1048,98 +1066,118 @@ out:
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/epoll.h>
 #include <sys/time.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <pthread.h>
 
-#define ZN_MIN_POSTS  256
+
 #define ZN_MAX_EVENTS 4096
 
-#define zn_reqtype(t)    ((t)&0x7)
-#define zn_checkop(OP,t) ((t)&ZN_OP_##OP)
-
-typedef enum zn_RequestType {
-    ZN_TPOST,
-    ZN_TACCEPT,
-    ZN_TTCP,
-    ZN_TUDP,
-} zn_RequestType;
-
-typedef enum zn_RequestOp {
-    ZN_OP_ACCEPT   = (1 << 3),
-    ZN_OP_CONNECT  = (1 << 4),
-    ZN_OP_SEND     = (1 << 5),
-    ZN_OP_RECV     = (1 << 6),
-    ZN_OP_RECVFROM = (1 << 7),
-} zn_RequestOp;
-
-typedef struct zn_Request {
-    struct epoll_event event;
-    struct zn_Request *next;
-    struct zn_Request **pprev;
-    union {
-        zn_Accept* accept;
-        zn_Tcp* tcp;
-        zn_Udp* udp;
-    } u;
-    int type;
-} zn_Request;
-
-typedef struct zn_PostState {
-    struct zn_PostState *next;
-    struct zn_PostState **pprev;
+typedef struct zn_Post {
+    struct zn_Post *next;
+    struct zn_Post **pprev;
     zn_PostHandler *handler;
     void *ud;
-} zn_PostState;
+} zn_Post;
 
-typedef struct zn_PostStack {
-    pthread_spinlock_t lock;
-    zn_PostState *posts;
-} zn_PostStack;
+typedef struct zn_Result {
+    struct zn_Result *next; 
+    struct zn_Result **pprev; 
+    int err;
+    zn_Tcp *tcp;
+} zn_Result;
 
-struct zn_State {
+typedef struct zn_EPollState {
+    zn_State base;
     int epoll;
-    int closing;
-    zn_TimerState TS;
-    zn_Accept *accepts;
-    zn_Tcp *tcps;
-    zn_Udp *udps;
-    zn_Request *requests;
-    struct epoll_event events[ZN_MAX_EVENTS];
-    zn_PostStack messages;
-};
+    int eventfd;
+    pthread_spinlock_t post_lock;
+    zn_Post *posts;
+    zn_Post **last_posts;
+    zn_Result *results;
+    zn_Result **last_results;
+} zn_EPollState;
+
+#define zn_state(S) ((zn_EPollState*)(S))
+#define zn_epoll(S) (zn_state(S)->epoll)
 
 /* post queue */
 
-static void znP_init(zn_PostStack *pa) {
-    pthread_spin_init(&pa->lock, 0);
-    pa->posts = NULL;
+static void znP_init(zn_EPollState *S) {
+    pthread_spin_init(&S->post_lock, 0);
+    S->posts = NULL;
+    S->last_posts = &S->posts;
 }
 
-static int znP_add(zn_PostStack *pa, zn_PostState *ps) {
-    pthread_spin_lock(&pa->lock);
-    znL_insert(&pa->posts, ps);
-    pthread_spin_unlock(&pa->lock);
-    return 1;
+static void znP_add(zn_EPollState *S, zn_Post *ps) {
+    pthread_spin_lock(&S->post_lock);
+    znL_insert_tail(S->last_posts, ps);
+    pthread_spin_unlock(&S->post_lock);
 }
 
-static void znP_process(zn_State *S, zn_PostStack *pa) {
-    zn_PostState *ps = pa->posts;
+static void znP_process(zn_EPollState *S) {
+    zn_Post *ps = S->posts;
     if (ps == NULL) return;
-    pthread_spin_lock(&pa->lock);
-    pa->posts = NULL;
-    pthread_spin_unlock(&pa->lock);
+    pthread_spin_lock(&S->post_lock);
+    S->posts = NULL;
+    S->last_posts = &S->posts;
+    pthread_spin_unlock(&S->post_lock);
     while (ps) {
-        zn_PostState *next = ps->next;
+        zn_Post *next = ps->next;
         if (ps->handler)
-            ps->handler(ps->ud, S);
+            ps->handler(ps->ud, &S->base);
         free(ps);
         ps = next;
     }
 }
+
+/* result queue */
+
+static void zn_onresult(zn_Result *result);
+
+static void znR_init(zn_EPollState *S) {
+    S->results = NULL;
+    S->last_results = &S->results;
+}
+
+static void znR_add(zn_EPollState *S, int err, zn_Result *result) {
+    result->err = err;
+    assert(result != *S->last_results);
+    znL_insert_tail(S->last_results, result);
+    assert(result->next != result);
+}
+
+static void znR_process(zn_EPollState *S) {
+    while (S->results) {
+        zn_Result *results = S->results;
+        S->results = NULL;
+        S->last_results = &S->results;
+        while (results) {
+            zn_Result *next = results->next;
+            znL_remove(results);
+            znL_init(results); /* for debug */
+            zn_onresult(results);
+            results = next;
+        }
+    }
+}
+
+/* uniform socket info */
+
+typedef enum zn_SocketType {
+    ZN_SOCK_ACCEPT,
+    ZN_SOCK_TCP,
+    ZN_SOCK_UDP,
+} zn_SocketType;
+
+typedef struct zn_SocketInfo {
+    int type;
+    void *head;
+} zn_SocketInfo;
 
 /* tcp */
 
@@ -1149,42 +1187,77 @@ typedef struct zn_DataBuffer {
 } zn_DataBuffer;
 
 struct zn_Tcp {
-    zn_Tcp *next;
-    zn_Tcp **pprev;
+    struct zn_Tcp *next;
+    struct zn_Tcp **pprev;
     zn_State *S;
     void *connect_ud; zn_ConnectHandler *connect_handler;
     void *send_ud; zn_SendHandler *send_handler;
     void *recv_ud; zn_RecvHandler *recv_handler;
+    struct epoll_event event;
     int fd;
-    zn_Request request;
-    zn_PeerInfo info;
+    int status;
+    zn_SocketInfo info;
+    zn_Result send_result;
+    zn_Result recv_result;
+    zn_PeerInfo peer_info;
     zn_DataBuffer send_buffer;
     zn_DataBuffer recv_buffer;
 };
 
-static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned short port) {
-    strcpy(tcp->info.addr, addr);
-    tcp->info.port = port;
+static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port) {
+    strcpy(tcp->peer_info.addr, addr);
+    tcp->peer_info.port = port;
+}
+
+static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr) {
+    int flag = 1;
+    zn_Tcp *tcp = zn_newtcp(S);
+    tcp->fd = fd;
+
+    tcp->status = EPOLLIN|EPOLLOUT;
+    tcp->event.events = EPOLLET|EPOLLIN|EPOLLOUT;
+    if (epoll_ctl(zn_epoll(tcp->S), EPOLL_CTL_ADD,
+                tcp->fd, &tcp->event) != 0)
+    {
+        zn_deltcp(tcp);
+        return NULL;
+    }
+
+    if (setsockopt(tcp->fd, IPPROTO_TCP, TCP_NODELAY,
+                (char*)&flag, sizeof(flag)) != 0)
+    { /* XXX */ }
+
+    if (fcntl(tcp->fd, F_SETFL, fcntl(tcp->fd, F_GETFL)|O_NONBLOCK) != 0)
+    { /* XXX */ }
+
+    zn_setinfo(tcp, 
+            inet_ntoa(remote_addr->sin_addr),
+            ntohs(remote_addr->sin_port));
+    return tcp;
 }
 
 ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
     zn_Tcp *tcp;
-    if (S->closing
+    if (S->closing > ZN_CLOSE_NORMAL
             || (tcp = (zn_Tcp*)malloc(sizeof(zn_Tcp))) == NULL)
         return NULL;
     memset(tcp, 0, sizeof(*tcp));
     tcp->S = S;
+    tcp->event.data.ptr = &tcp->info;
     tcp->fd = -1;
-    tcp->request.event.data.ptr = &tcp->request;
-    tcp->request.u.tcp = tcp;
-    tcp->request.type = ZN_TTCP;
+    tcp->status = EPOLLIN|EPOLLOUT;
+    tcp->info.type = ZN_SOCK_TCP;
+    tcp->info.head = tcp;
+    tcp->send_result.tcp = tcp;
+    tcp->recv_result.tcp = tcp;
     znL_insert(&S->tcps, tcp);
     return tcp;
 }
 
 ZN_API void zn_closetcp(zn_Tcp *tcp) {
-    tcp->request.event.events = 0;
-    epoll_ctl(tcp->S->epoll, EPOLL_CTL_DEL, tcp->fd, &tcp->request.event);
+    tcp->event.events = 0;
+    epoll_ctl(zn_epoll(tcp->S), EPOLL_CTL_DEL,
+            tcp->fd, &tcp->event);
     if (tcp->fd != -1) {
         close(tcp->fd);
         tcp->fd = -1;
@@ -1198,10 +1271,10 @@ ZN_API void zn_deltcp(zn_Tcp *tcp) {
 }
 
 ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info) {
-    *info = tcp->info;
+    *info = tcp->peer_info;
 }
 
-ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned short port, zn_ConnectHandler *cb, void *ud) {
+ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
     struct sockaddr_in remoteAddr;
     int fd, ret;
     if (tcp->S == NULL)               return ZN_ESTATE;
@@ -1228,15 +1301,13 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned short port, zn_Con
         return ZN_ECONNECT;
     }
 
-    tcp->request.event.events = EPOLLOUT;
-    if (epoll_ctl(tcp->S->epoll, EPOLL_CTL_ADD,
-                fd, &tcp->request.event) != 0) {
+    tcp->event.events = EPOLLOUT;
+    if (epoll_ctl(zn_epoll(tcp->S), EPOLL_CTL_ADD,
+                fd, &tcp->event) != 0) {
         close(fd);
         return ZN_EPOLL;
     }
 
-    znL_insert(&tcp->S->requests, &tcp->request);
-    tcp->request.type |= ZN_OP_CONNECT;
     tcp->fd = fd;
     tcp->connect_handler = cb;
     tcp->connect_ud = ud;
@@ -1244,155 +1315,136 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned short port, zn_Con
 }
 
 ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *cb, void *ud) {
-    int bytes;
     if (tcp->S == NULL)            return ZN_ESTATE;
     if (tcp->fd == -1)             return ZN_ESTATE;
     if (tcp->send_handler != NULL) return ZN_EBUSY;
     if (cb == NULL || len == 0)    return ZN_EPARAM;
-
-    bytes = send(tcp->fd, buff, len, 0);
-    if (bytes >= 0) {
-        cb(ud, tcp, ZN_OK, bytes);
-        return ZN_OK;
-    }
-    if (bytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
-        zn_closetcp(tcp);
-        return ZN_ERROR;
-    }
-    if ((tcp->request.event.events & EPOLLOUT) == 0) {
-        tcp->request.event.events |= EPOLLOUT;
-        if (epoll_ctl(tcp->S->epoll, EPOLL_CTL_MOD,
-                    tcp->fd, &tcp->request.event) != 0) {
-            zn_closetcp(tcp);
-            return ZN_EPOLL;
-        }
-    }
-    znL_insert(&tcp->S->requests, &tcp->request);
-    tcp->request.type |= ZN_OP_SEND;
     tcp->send_buffer.buff = (char*)buff;
     tcp->send_buffer.len = len;
     tcp->send_handler = cb;
     tcp->send_ud = ud;
+    if ((tcp->status & EPOLLOUT) != 0) {
+        int bytes = send(tcp->fd, buff, len, 0);
+        if (bytes >= 0) {
+            tcp->send_buffer.len = bytes;
+            znR_add(zn_state(tcp->S), ZN_OK, &tcp->send_result);
+        }
+        else if (bytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK)
+            znR_add(zn_state(tcp->S), ZN_ERROR, &tcp->send_result);
+        else
+            tcp->status &= ~EPOLLOUT;
+    }
     return ZN_OK;
 }
 
 ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, void *ud) {
-    int bytes;
     if (tcp->S == NULL)            return ZN_ESTATE;
     if (tcp->fd == -1)             return ZN_ESTATE;
     if (tcp->recv_handler != NULL) return ZN_EBUSY;
     if (cb == NULL || len == 0)    return ZN_EPARAM;
-
-    bytes = recv(tcp->fd, buff, len, 0);
-    if (bytes >= 0) {
-        cb(ud, tcp, ZN_OK, bytes);
-        return ZN_OK;
-    }
-    if (bytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
-        zn_closetcp(tcp);
-        return ZN_ERROR;
-    }
-    if ((tcp->request.event.events & EPOLLIN) == 0) {
-        tcp->request.event.events |= EPOLLIN;
-        if (epoll_ctl(tcp->S->epoll, EPOLL_CTL_MOD,
-                    tcp->fd, &tcp->request.event) != 0) {
-            close(tcp->fd);
-            tcp->fd = -1;
-            return ZN_EPOLL;
-        }
-    }
-
-    znL_insert(&tcp->S->requests, &tcp->request);
-    tcp->request.type |= ZN_OP_RECV;
     tcp->recv_buffer.buff = buff;
     tcp->recv_buffer.len = len;
     tcp->recv_handler = cb;
     tcp->recv_ud = ud;
+    if ((tcp->status & EPOLLIN) != 0) {
+        int bytes = recv(tcp->fd, buff, len, 0);
+        if (bytes > 0) {
+            tcp->recv_buffer.len = bytes;
+            znR_add(zn_state(tcp->S), ZN_OK, &tcp->recv_result);
+        }
+        else if (bytes == 0)
+            znR_add(zn_state(tcp->S), ZN_ECLOSED, &tcp->recv_result);
+        else if (bytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK)
+            znR_add(zn_state(tcp->S), ZN_ERROR, &tcp->recv_result);
+        else
+            tcp->status &= ~EPOLLIN;
+    }
+
     return ZN_OK;
 }
 
 static void zn_onconnect(zn_Tcp *tcp, int eventmask) {
+    int flag = 1;
     zn_ConnectHandler *cb = tcp->connect_handler;
     assert(tcp->connect_handler);
     tcp->connect_handler = NULL;
-    tcp->request.type &= ~ZN_OP_CONNECT;
-    tcp->request.event.events = EPOLLET;
-    if (epoll_ctl(tcp->S->epoll, EPOLL_CTL_MOD,
-                tcp->fd, &tcp->request.event) != 0) {
-        zn_closetcp(tcp);
-        cb(tcp->connect_ud, tcp, ZN_EPOLL);
-        return;
-    }
+
     if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
         zn_closetcp(tcp);
         cb(tcp->connect_ud, tcp, ZN_ERROR);
+        return;
+    }
+
+    tcp->status = EPOLLIN|EPOLLOUT;
+    tcp->event.events = EPOLLET|EPOLLIN|EPOLLOUT|EPOLLRDHUP;
+    if (epoll_ctl(zn_epoll(tcp->S), EPOLL_CTL_MOD,
+                tcp->fd, &tcp->event) != 0)
+    {
+        zn_closetcp(tcp);
+        cb(tcp->connect_ud, tcp, ZN_ERROR);
+        return;
+    }
+
+    if (setsockopt(tcp->fd, IPPROTO_TCP, TCP_NODELAY,
+                (char*)&flag, sizeof(flag)) != 0)
+    { /* XXX */ }
+
+    cb(tcp->connect_ud, tcp, ZN_OK);
+}
+
+static void zn_onresult(zn_Result *result) {
+    zn_Tcp *tcp = result->tcp;
+    if (result == &tcp->send_result) {
+        zn_DataBuffer buff = tcp->send_buffer;
+        zn_SendHandler *cb = tcp->send_handler;
+        assert(tcp->send_handler != NULL);
+        tcp->send_handler = NULL;
+        tcp->send_buffer.buff = NULL;
+        tcp->send_buffer.len = 0;
+        assert(tcp->fd != -1);
+        if (result->err == ZN_OK)
+            cb(tcp->send_ud, tcp, ZN_OK, buff.len);
+        else if (tcp->recv_handler == NULL) {
+            zn_closetcp(tcp);
+            cb(tcp->send_ud, tcp, result->err, 0);
+        }
     }
     else {
-        int flag = 1;
-        if (setsockopt(tcp->fd, IPPROTO_TCP, TCP_NODELAY,
-                (char*)&flag, sizeof(flag)) != 0)
-        { /* XXX */ }
-        cb(tcp->connect_ud, tcp, ZN_OK);
+        zn_DataBuffer buff = tcp->recv_buffer;
+        zn_RecvHandler *cb = tcp->recv_handler;
+        assert(tcp->recv_handler != NULL);
+        tcp->recv_handler = NULL;
+        tcp->recv_buffer.buff = NULL;
+        tcp->recv_buffer.len = 0;
+        assert(tcp->fd != -1);
+        if (result->err == ZN_OK)
+            cb(tcp->recv_ud, tcp, ZN_OK, buff.len);
+        else if (tcp->send_handler == NULL) {
+            zn_closetcp(tcp);
+            cb(tcp->recv_ud, tcp, result->err, 0);
+        }
     }
 }
 
-static void zn_onsend(zn_Tcp *tcp, int eventmask) {
-    zn_DataBuffer buff = tcp->send_buffer;
-    zn_SendHandler *cb = tcp->send_handler;
-    assert(tcp->send_handler);
-    tcp->send_handler = NULL;
-    tcp->send_buffer.buff = NULL;
-    tcp->send_buffer.len = 0;
-    tcp->request.type &= ~ZN_OP_SEND;
-    if (tcp->S == NULL || tcp->fd == -1) {
-        assert(tcp->fd == -1);
-        /* cb(tcp->send_ud, tcp, ZN_ECLOSED, dwBytes); */
-        if (tcp->recv_handler == NULL)
-            zn_deltcp(tcp);
+static void zn_onevent(zn_Tcp *tcp, int eventmask) {
+    int status = tcp->status;
+    if ((eventmask & (EPOLLERR|EPOLLHUP|EPOLLRDHUP)) != 0)
+        tcp->status |= EPOLLIN|EPOLLOUT;
+    if ((eventmask & EPOLLIN) != 0 && (status & EPOLLIN) == 0) {
+        zn_RecvHandler *cb = tcp->recv_handler;
+        tcp->recv_handler = NULL;
+        tcp->status |= EPOLLIN;
+        if (cb == NULL) return;
+        zn_recv(tcp, tcp->recv_buffer.buff, tcp->recv_buffer.len,
+                cb, tcp->recv_ud);
     }
-    else if ((eventmask & EPOLLRDHUP) != 0) {
-        zn_closetcp(tcp);
-        cb(tcp->send_ud, tcp, ZN_EHANGUP, 0);
-    }
-    else if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
-        zn_closetcp(tcp);
-        cb(tcp->send_ud, tcp, ZN_ERROR, 0);
-    }
-    else if (zn_send(tcp, buff.buff, buff.len, cb, tcp->send_ud) == ZN_OK
-            && tcp->send_handler == NULL)
-    {
-        tcp->request.event.events &= ~EPOLLOUT;
-        epoll_ctl(tcp->S->epoll, EPOLL_CTL_MOD, tcp->fd, &tcp->request.event);
-    }
-}
-
-static void zn_onrecv(zn_Tcp *tcp, int eventmask) {
-    zn_DataBuffer buff = tcp->recv_buffer;
-    zn_RecvHandler *cb = tcp->recv_handler;
-    assert(tcp->recv_handler);
-    tcp->recv_handler = NULL;
-    tcp->recv_buffer.buff = NULL;
-    tcp->recv_buffer.len = 0;
-    tcp->request.type &= ~ZN_OP_RECV;
-    if (tcp->S == NULL || tcp->fd == -1) {
-        assert(tcp->fd == -1);
-        /* cb(tcp->send_ud, tcp, ZN_ECLOSED, dwBytes); */
-        if (tcp->send_handler == NULL)
-            zn_deltcp(tcp);
-    }
-    else if ((eventmask & EPOLLRDHUP) != 0) {
-        zn_closetcp(tcp);
-        cb(tcp->recv_ud, tcp, ZN_EHANGUP, 0);
-    }
-    else if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
-        zn_closetcp(tcp);
-        cb(tcp->recv_ud, tcp, ZN_ERROR, 0);
-    }
-    else if (zn_recv(tcp, buff.buff, buff.len, cb, tcp->recv_ud) == ZN_OK
-            && tcp->recv_handler == NULL)
-    {
-        tcp->request.event.events &= ~EPOLLIN;
-        epoll_ctl(tcp->S->epoll, EPOLL_CTL_MOD, tcp->fd, &tcp->request.event);
+    if ((eventmask & EPOLLOUT) != 0 && (status & EPOLLOUT) == 0) {
+        zn_SendHandler *cb = tcp->send_handler;
+        tcp->send_handler = NULL;
+        tcp->status |= EPOLLOUT;
+        if (cb == NULL) return;
+        zn_send(tcp, tcp->send_buffer.buff, tcp->send_buffer.len,
+                cb, tcp->send_ud);
     }
 }
 
@@ -1403,21 +1455,23 @@ struct zn_Accept {
     zn_Accept **pprev;
     zn_State *S;
     void *accept_ud; zn_AcceptHandler *accept_handler;
+    struct epoll_event event;
     int fd;
-    zn_Request request;
+    int status;
+    zn_SocketInfo info;
 };
 
 ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     zn_Accept *accept;
-    if (S->closing
+    if (S->closing > ZN_CLOSE_NORMAL
             || (accept = (zn_Accept*)malloc(sizeof(zn_Accept))) == NULL)
         return NULL;
     memset(accept, 0, sizeof(*accept));
     accept->S = S;
+    accept->event.data.ptr = &accept->info;
     accept->fd = -1;
-    accept->request.event.data.ptr = &accept->request;
-    accept->request.u.accept = accept;
-    accept->request.type = ZN_TACCEPT;
+    accept->info.type = ZN_SOCK_ACCEPT;
+    accept->info.head = accept;
     znL_insert(&S->accepts, accept);
     return accept;
 }
@@ -1429,16 +1483,16 @@ ZN_API void zn_delaccept(zn_Accept *accept) {
 }
 
 ZN_API void zn_closeaccept(zn_Accept *accept) {
-    accept->request.event.events = 0;
-    epoll_ctl(accept->S->epoll, EPOLL_CTL_DEL,
-            accept->fd, &accept->request.event);
+    accept->event.events = 0;
+    epoll_ctl(zn_epoll(accept->S), EPOLL_CTL_DEL,
+            accept->fd, &accept->event);
     if (accept->fd != -1) {
         close(accept->fd);
         accept->fd = -1;
     }
 }
 
-ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned short port) {
+ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
     struct sockaddr_in sock_addr;
     int reuse_addr = 1;
     int fd;
@@ -1447,6 +1501,15 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned short port) {
 
     if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1)
         return ZN_ESOCKET;
+
+    accept->status = EPOLLIN;
+    accept->event.events = EPOLLET|EPOLLIN;
+    if (epoll_ctl(zn_epoll(accept->S), EPOLL_CTL_ADD,
+                fd, &accept->event) != 0)
+    {
+        close(fd);
+        return ZN_EPOLL;
+    }
 
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
                 (char*)&reuse_addr, sizeof(reuse_addr)) != 0)
@@ -1473,45 +1536,27 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned short port) {
 }
 
 ZN_API int zn_accept(zn_Accept *a, zn_AcceptHandler *cb, void *ud) {
-    int ret = 0;
     struct sockaddr_in remote_addr;
     socklen_t addr_size;
     if (a->fd == -1) return ZN_ESTATE;
     if (cb == NULL)  return ZN_EPARAM;
 
-    ret = accept(a->fd, (struct sockaddr*)&remote_addr, &addr_size);
-    if (ret >= 0) {
-        int flag = 1;
-        zn_Tcp *tcp = zn_newtcp(a->S);
-        tcp->fd = ret;
-        if (setsockopt(tcp->fd, IPPROTO_TCP, TCP_NODELAY,
-                (char*)&flag, sizeof(flag)) != 0)
-        { /* XXX */ }
-
-        zn_setinfo(tcp, 
-                inet_ntoa(remote_addr.sin_addr),
-                ntohs(remote_addr.sin_port));
-        cb(a->accept_ud, a, ZN_OK, tcp);
-        return ZN_OK;
-    }
-    if (ret == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
-        close(a->fd);
-        cb(a->accept_ud, a, ZN_ERROR, NULL);
-        return ZN_ERROR;
-    }
-
-    if (a->request.event.events != EPOLLIN) {
-        a->request.event.events = EPOLLIN;
-        if (epoll_ctl(a->S->epoll, EPOLL_CTL_ADD,
-                    a->fd, &a->request.event) != 0) {
+    if ((a->status & EPOLLIN) != 0) {
+        int ret = accept(a->fd, (struct sockaddr*)&remote_addr, &addr_size);
+        if (ret >= 0) {
+            zn_Tcp *tcp = zn_tcpfromfd(a->S, ret, &remote_addr);
+            if (tcp != NULL)
+                cb(a->accept_ud, a, ZN_OK, tcp);
+            return ZN_OK;
+        }
+        if (ret == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
             close(a->fd);
             a->fd = -1;
-            return ZN_EPOLL;
+            return ZN_ERROR;
         }
+        a->status &= ~EPOLLIN;
     }
 
-    znL_insert(&a->S->requests, &a->request);
-    a->request.type |= ZN_OP_ACCEPT;
     a->accept_handler = cb;
     a->accept_ud = ud;
     return ZN_OK;
@@ -1521,19 +1566,16 @@ static void zn_onaccept(zn_Accept *accept, int eventmask) {
     zn_AcceptHandler *cb = accept->accept_handler;
     accept->accept_handler = NULL;
 
-    if (accept->S == NULL) {
-        /* cb(accept->ud, accept, ZN_ECLOSED, NULL); */
-        zn_delaccept(accept);
-        return;
-    }
-
     if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
         /* zn_closeaccept(accept); */
         cb(accept->accept_ud, accept, ZN_ERROR, NULL);
         return;
     }
 
-    zn_accept(accept, cb, accept->accept_ud);
+    if ((eventmask & EPOLLIN) != 0) {
+        accept->status |= EPOLLIN;
+        zn_accept(accept, cb, accept->accept_ud);
+    }
 }
 
 /* udp */
@@ -1542,15 +1584,17 @@ struct zn_Udp {
     zn_Udp *next;
     zn_Udp **pprev;
     zn_State *S;
-    void *recv_ud; zn_URecvHandler *recv_handler;
+    void *recv_ud; zn_RecvFromHandler *recv_handler;
+    struct epoll_event event;
     int fd;
-    zn_Request request;
+    int status;
+    zn_SocketInfo info;
     zn_DataBuffer recv_buffer;
     struct sockaddr_in recvFrom;
     socklen_t recvFromLen;
 };
 
-static int zn_initudp(zn_Udp *udp, const char *addr, unsigned short port) {
+static int zn_initudp(zn_Udp *udp, const char *addr, unsigned port) {
     int fd;
     struct sockaddr_in sock_addr;
 
@@ -1565,9 +1609,9 @@ static int zn_initudp(zn_Udp *udp, const char *addr, unsigned short port) {
     if (bind(fd, (struct sockaddr*)&sock_addr, sizeof(sock_addr)) != 0)
         return ZN_EBIND;
 
-    udp->request.event.events = 0;
-    if (epoll_ctl(udp->S->epoll, EPOLL_CTL_ADD,
-                fd, &udp->request.event) != 0) {
+    udp->event.events = EPOLLET|EPOLLIN;
+    if (epoll_ctl(zn_epoll(udp->S), EPOLL_CTL_ADD,
+                fd, &udp->event) != 0) {
         close(fd);
         return ZN_EPOLL;
     }
@@ -1576,17 +1620,18 @@ static int zn_initudp(zn_Udp *udp, const char *addr, unsigned short port) {
     return ZN_OK;
 }
 
-ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned short port) {
+ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
     zn_Udp *udp;
-    if (S->closing
+    if (S->closing > ZN_CLOSE_NORMAL
             || (udp = (zn_Udp*)malloc(sizeof(zn_Udp))) == NULL)
         return NULL;
     memset(udp, 0, sizeof(*udp));
     udp->S = S;
+    udp->event.data.ptr = &udp->info;
     udp->fd = -1;
-    udp->request.event.data.ptr = &udp->request;
-    udp->request.u.udp = udp;
-    udp->request.type = ZN_TUDP;
+    udp->status = EPOLLIN;
+    udp->info.type = ZN_SOCK_UDP;
+    udp->info.head = udp;
     if (!zn_initudp(udp, addr, port)) {
         free(udp);
         return NULL;
@@ -1596,14 +1641,14 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned short port) {
 }
 
 ZN_API void zn_deludp(zn_Udp *udp) {
-    udp->request.event.events = 0;
-    epoll_ctl(udp->S->epoll, EPOLL_CTL_DEL, udp->fd, &udp->request.event);
+    udp->event.events = 0;
+    epoll_ctl(zn_epoll(udp->S), EPOLL_CTL_DEL, udp->fd, &udp->event);
     close(udp->fd);
     znL_remove(udp);
     free(udp);
 }
 
-ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned short port) {
+ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
     struct sockaddr_in dst;
     if (udp->fd == -1)         return ZN_ESTATE;
     if (len == 0 || len >1200) return ZN_EPARAM;
@@ -1616,41 +1661,33 @@ ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *ad
     return ZN_OK;
 }
 
-ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_URecvHandler *cb, void *ud) {
-    int bytes;
+ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler *cb, void *ud) {
     if (udp->fd == -1)          return ZN_ESTATE;
     if (udp->recv_handler)      return ZN_EBUSY;
     if (len == 0 || cb == NULL) return ZN_EPARAM;
 
-    memset(&udp->recvFrom, 0, sizeof(udp->recvFrom));
-    udp->recvFromLen = sizeof(udp->recvFrom);
-    bytes = recvfrom(udp->fd, buff, len, 0,
-            (struct sockaddr*)&udp->recvFrom, &udp->recvFromLen);
-    if (bytes >= 0) {
-        cb(ud, udp, ZN_OK, bytes,
-                inet_ntoa(((struct sockaddr_in*)&udp->recvFrom)->sin_addr),
-                ntohs(udp->recvFrom.sin_port));
-        return ZN_OK;
-    }
-    if (bytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
-        close(udp->fd);
-        udp->fd = -1;
-        return ZN_ERROR;
-    }
-    if (udp->request.event.events != EPOLLIN) {
-        udp->request.event.events = EPOLLIN;
-        if (epoll_ctl(udp->S->epoll, EPOLL_CTL_MOD,
-                    udp->fd, &udp->request.event) != 0) {
+    if ((udp->status & EPOLLIN) != 0) {
+        int bytes;
+        memset(&udp->recvFrom, 0, sizeof(udp->recvFrom));
+        udp->recvFromLen = sizeof(udp->recvFrom);
+        bytes = recvfrom(udp->fd, buff, len, 0,
+                (struct sockaddr*)&udp->recvFrom, &udp->recvFromLen);
+        if (bytes >= 0) {
+            cb(ud, udp, ZN_OK, bytes,
+                    inet_ntoa(((struct sockaddr_in*)&udp->recvFrom)->sin_addr),
+                    ntohs(udp->recvFrom.sin_port));
+            return ZN_OK;
+        }
+        if (bytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
             close(udp->fd);
             udp->fd = -1;
-            return ZN_EPOLL;
+            return ZN_ERROR;
         }
+        udp->status &= ~EPOLLIN;
     }
 
-    znL_insert(&udp->S->requests, &udp->request);
     udp->recv_buffer.buff = buff;
     udp->recv_buffer.len = len;
-    udp->request.type |= ZN_OP_RECVFROM;
     udp->recv_handler = cb;
     udp->recv_ud = ud;
     return ZN_OK;
@@ -1658,26 +1695,21 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_URecvHandler *c
 
 static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
     zn_DataBuffer buff = udp->recv_buffer;
-    zn_URecvHandler *cb = udp->recv_handler;
+    zn_RecvFromHandler *cb = udp->recv_handler;
+    int err;
     udp->recv_handler = NULL;
     udp->recv_buffer.buff = NULL;
     udp->recv_buffer.len = 0;
 
-    if (udp->S == NULL) {
-        /* cb(udp->recv_ud, udp, ZN_ERROR, dwBytes, "0.0.0.0", 0); */
-        znL_remove(udp);
-        free(udp);
-        return;
+    if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0)
+        err = ZN_ERROR;
+    else {
+        err = zn_recvfrom(udp, buff.buff, buff.len, cb, udp->recv_ud);
+        if (err == ZN_OK)
+            return;
     }
 
-    if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0)
-        cb(udp->recv_ud, udp, ZN_ERROR, 0, "0.0.0.0", 0);
-    else if (zn_recvfrom(udp, buff.buff, buff.len, cb, udp->recv_ud) == ZN_OK
-            && udp->recv_handler == NULL)
-    {
-        udp->request.event.events &= ~EPOLLIN;
-        epoll_ctl(udp->S->epoll, EPOLL_CTL_MOD, udp->fd, &udp->request.event);
-    }
+    cb(udp->recv_ud, udp, err, 0, "0.0.0.0", 0);
 }
 
 /* poll */
@@ -1686,54 +1718,32 @@ ZN_API void zn_initialize(void) { }
 ZN_API void zn_deinitialize(void) { }
 
 ZN_API zn_State *zn_newstate(void) {
-    const int ZN_EVENTS_IGNORED = 1024;
-    zn_State *S = (zn_State*)malloc(sizeof(zn_State));
+    struct epoll_event event;
+    zn_EPollState *S = (zn_EPollState*)malloc(sizeof(zn_EPollState));
     if (S == NULL) return NULL;
-    S->epoll = epoll_create(ZN_EVENTS_IGNORED);
-    if (S->epoll == -1) {
+    event.events = EPOLLIN;
+    event.data.ptr = NULL;
+    S->epoll = epoll_create(ZN_MAX_EVENTS);
+    S->eventfd = eventfd(0, EFD_CLOEXEC|EFD_NONBLOCK);
+    if (S->epoll == -1
+            || S->eventfd == -1
+            || epoll_ctl(S->epoll, EPOLL_CTL_ADD, S->eventfd, &event) != 0)
+    {
+        if (S->epoll != -1) close(S->epoll);
+        if (S->eventfd != -1) close(S->eventfd);
         free(S);
         return NULL;
     }
-    znT_inittimerstate(&S->TS);
-    S->accepts = NULL;
-    S->tcps = NULL;
-    S->udps = NULL;
-    S->requests = NULL;
-    S->closing = 0;
-    znP_init(&S->messages);
-    return S;
+
+    znP_init(S);
+    znR_init(S);
+    return znS_init(&S->base);
 }
 
 ZN_API void zn_close(zn_State *S) {
-    zn_Accept *accept = S->accepts;
-    zn_Tcp *tcp       = S->tcps;
-    zn_Udp *udp       = S->udps;
-    /* 0. doesn't allow create new objects */
-    S->closing = 1;
-    /* 1. remove timers */
-    znT_cleartimers(&S->TS);
-    /* 2. cancel all operations */
-    while (accept) {
-        zn_Accept *next = accept->next;
-        zn_delaccept(accept);
-        accept = next;
-    }
-    while (tcp) {
-        zn_Tcp *next = tcp->next;
-        zn_deltcp(tcp);
-        tcp = next;
-    }
-    while (udp) {
-        zn_Udp *next = udp->next;
-        zn_deludp(udp);
-        udp = next;
-    }
-    /* 3. wait for uncompleted operations */
-    while (S->requests) {
-        zn_run(S, ZN_RUN_ONCE);
-    }
+    znS_close(S);
     /* 4. clear resources and exit */
-    close(S->epoll);
+    close(zn_epoll(S));
     free(S);
 }
 
@@ -1745,58 +1755,56 @@ ZN_API unsigned zn_time(void) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
-    zn_PostState *ps = (zn_PostState*)malloc(sizeof(zn_PostState));
+    zn_Post *ps = (zn_Post*)malloc(sizeof(zn_Post));
     if (ps == NULL) return 0;
     ps->handler = cb;
     ps->ud = ud;
-    return znP_add(&S->messages, ps);
-}
-
-static int znS_checknext(zn_State *S) {
-    return S->TS.timers != NULL
-        || S->requests != NULL; /* still have operations? */
+    znP_add(zn_state(S), ps);
+    eventfd_write(zn_state(S)->eventfd, (eventfd_t)1);
+    return 1;
 }
 
 static void zn_dispatch(zn_State *S, struct epoll_event *evt) {
-    zn_Request *req = (zn_Request*)evt->data.ptr;
+    zn_SocketInfo *info = (zn_SocketInfo*)evt->data.ptr;
+    zn_Tcp *tcp;
     int eventmask = evt->events;
-    znL_remove(req);
-    znL_init(req); /* for debug purpose */
-    switch (req->type) {
-    case ZN_TPOST:  
-        znP_process(S, &S->messages);
+    if (info == NULL) { /* post */
+        eventfd_t value;
+        eventfd_read(zn_state(S)->eventfd, &value);
+        znP_process(zn_state(S));
+        return;
+    }
+    switch (info->type) {
+    case ZN_SOCK_ACCEPT:
+        zn_onaccept((zn_Accept*)info->head, eventmask);
         break;
-    case ZN_TACCEPT:
-        if (zn_checkop(ACCEPT, req->type))
-            zn_onaccept(req->u.accept, eventmask);
+    case ZN_SOCK_TCP:
+        tcp = (zn_Tcp*)info->head;
+        if (tcp->connect_handler)
+            zn_onconnect(tcp, eventmask);
+        if (tcp->send_handler || tcp->recv_handler)
+            zn_onevent(tcp, eventmask);
         break;
-    case ZN_TTCP:
-        if (zn_checkop(CONNECT, req->type))
-            zn_onconnect(req->u.tcp, eventmask);
-        if (zn_checkop(SEND, req->type))
-            zn_onsend(req->u.tcp, eventmask);
-        if (zn_checkop(RECV, req->type))
-            zn_onrecv(req->u.tcp, eventmask);
-        break;
-    case ZN_TUDP:
-        if (zn_checkop(RECVFROM, req->type))
-            zn_onrecvfrom(req->u.udp, eventmask);
+    case ZN_SOCK_UDP:
+        zn_onrecvfrom((zn_Udp*)info->head, eventmask);
         break;
     default: ;
     }
 }
 
-static int zn_poll(zn_State *S, int check) {
+static int znS_poll(zn_State *S, int checkonly) {
     int i, ret;
+    struct epoll_event events[ZN_MAX_EVENTS];
     S->closing = ZN_CLOSE_IN_RUN;
-    znT_updatetimer(&S->TS, zn_time());
-    ret = epoll_wait(S->epoll, S->events, ZN_MAX_EVENTS,
-            check ? 0 : znT_getnexttime(&S->TS, zn_time()));
+    znT_updatetimer(S, zn_time());
+    ret = epoll_wait(zn_epoll(S), events, ZN_MAX_EVENTS,
+            checkonly ? 0 : znT_getnexttime(S, zn_time()));
     if (ret == -1 && errno != EINTR) /* error out */
         goto out;
-    znT_updatetimer(&S->TS, zn_time());
+    znT_updatetimer(S, zn_time());
     for (i = 0; i < ret; ++i)
-        zn_dispatch(S, &S->events[i]);
+        zn_dispatch(S, &events[i]);
+    znR_process(zn_state(S));
 out:
     if (S->closing == ZN_CLOSE_PREPARE_IN_RUN) {
         S->closing = ZN_CLOSE_NORMAL; /* trigger real close */
@@ -1814,66 +1822,33 @@ out:
 #endif /* System specified routines */
 
 
-/* common routines */
-
-ZN_API const char *zn_strerror (int err) {
-    const char *msg = "Unknown error";
-    switch (err) {
-#define X(name, str) case ZN_##name: msg = str; break;
-        ZN_ERRORS(X)
-#undef  X
+static void znS_clear(zn_State *S) {
+    zn_Accept *accept = S->accepts;
+    zn_Tcp *tcp = S->tcps;
+    zn_Udp *udp = S->udps;
+    znT_cleartimers(S);
+    while (accept) {
+        zn_Accept *next = accept->next;
+        zn_delaccept(accept);
+        accept = next;
     }
-    return msg;
-}
-
-ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *cb, void *ud) {
-    zn_Timer *t;
-    if (S->closing
-            || (t = znT_newtimer(S, &S->TS)) == NULL)
-        return NULL;
-    t->S = S;
-    t->ud = ud;
-    t->handler = cb;
-    return t;
-}
-
-ZN_API void zn_deltimer(zn_Timer *timer) {
-    znL_remove(timer);
-    free(timer);
-}
-
-ZN_API void zn_starttimer(zn_Timer *timer, unsigned delayms) {
-    timer->starttime = zn_time();
-    timer->time = timer->starttime + delayms;
-    znL_remove(timer);
-    znT_inserttimer(&timer->S->TS, timer);
-}
-
-ZN_API void zn_canceltimer(zn_Timer *timer) {
-    znL_remove(timer);
-    timer->time = ~(unsigned)0;
-}
-
-ZN_API int zn_run(zn_State *S, int mode) {
-    int err;
-    switch (mode) {
-    case ZN_RUN_CHECK:
-        return zn_poll(S, 1);
-    case ZN_RUN_ONCE:
-        return zn_poll(S, 0);
-    case ZN_RUN_LOOP:
-        while ((err = zn_poll(S, 0)) > 0)
-            ;
-        return err;
+    while (tcp) {
+        zn_Tcp *next = tcp->next;
+        zn_deltcp(tcp);
+        tcp = next;
     }
-    return -1;
+    while (udp) {
+        zn_Udp *next = udp->next;
+        zn_deludp(udp);
+        udp = next;
+    }
 }
 
 
 ZN_NS_END
 
 #endif /* ZN_IMPLEMENTATION */
-/* cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
- * cc: libs+='-lws2_32' output='znet.dll' */
-/* linuxcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
- * linuxcc: output='znet.so' */
+/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
+ * win32cc: libs+='-lws2_32' output='znet.dll' */
+/* unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
+ * unixcc: libs+='-lpthread' output='znet.so' */
