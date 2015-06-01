@@ -103,7 +103,7 @@ ZN_API void zn_canceltimer (zn_Timer *timer);
 /* znet accept routines */
 
 ZN_API zn_Accept* zn_newaccept   (zn_State *S);
-ZN_API void       zn_closeaccept (zn_Accept *accept);
+ZN_API int        zn_closeaccept (zn_Accept *accept);
 ZN_API void       zn_delaccept   (zn_Accept *accept);
 
 ZN_API int zn_listen (zn_Accept *accept, const char *addr, unsigned port);
@@ -113,7 +113,7 @@ ZN_API int zn_accept (zn_Accept *accept, zn_AcceptHandler *cb, void *ud);
 /* znet tcp socket routines */
 
 ZN_API zn_Tcp* zn_newtcp   (zn_State *S);
-ZN_API void    zn_closetcp (zn_Tcp *tcp);
+ZN_API int     zn_closetcp (zn_Tcp *tcp);
 ZN_API void    zn_deltcp   (zn_Tcp *tcp);
 
 ZN_API void zn_getpeerinfo (zn_Tcp *tcp, zn_PeerInfo *info);
@@ -444,11 +444,14 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
     return tcp;
 }
 
-ZN_API void zn_closetcp(zn_Tcp *tcp) {
+ZN_API int zn_closetcp(zn_Tcp *tcp) {
+    int ret = ZN_OK;
     if (tcp->socket != INVALID_SOCKET) {
-        closesocket(tcp->socket);
+        if (closesocket(tcp->socket) != 0)
+            ret = ZN_ERROR;
         tcp->socket = INVALID_SOCKET;
     }
+    return ret;
 }
 
 ZN_API void zn_deltcp(zn_Tcp *tcp) {
@@ -664,15 +667,19 @@ ZN_API void zn_delaccept(zn_Accept *accept) {
     free(accept);
 }
 
-ZN_API void zn_closeaccept(zn_Accept *accept) {
+ZN_API int zn_closeaccept(zn_Accept *accept) {
+    int ret = ZN_OK;
     if (accept->socket != INVALID_SOCKET) {
-        closesocket(accept->socket);
+        if (closesocket(accept->socket) != 0)
+            ret = ZN_ERROR;
         accept->socket = INVALID_SOCKET;
     }
     if (accept->client != INVALID_SOCKET) {
-        closesocket(accept->client);
+        if (closesocket(accept->client) != 0)
+            ret = ZN_ERROR;
         accept->client = INVALID_SOCKET;
     }
+    return ret;
 }
 
 ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
@@ -1239,14 +1246,17 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
     return tcp;
 }
 
-ZN_API void zn_closetcp(zn_Tcp *tcp) {
+ZN_API int zn_closetcp(zn_Tcp *tcp) {
+    int ret = ZN_OK;
     tcp->event.events = 0;
     epoll_ctl(zn_epoll(tcp->S), EPOLL_CTL_DEL,
             tcp->fd, &tcp->event);
     if (tcp->fd != -1) {
-        close(tcp->fd);
+        if (close(tcp->fd) != 0)
+            ret = ZN_ERROR;
         tcp->fd = -1;
     }
+    return ret;
 }
 
 ZN_API void zn_deltcp(zn_Tcp *tcp) {
@@ -1466,14 +1476,17 @@ ZN_API void zn_delaccept(zn_Accept *accept) {
     free(accept);
 }
 
-ZN_API void zn_closeaccept(zn_Accept *accept) {
+ZN_API int zn_closeaccept(zn_Accept *accept) {
+    int ret = ZN_OK;
     accept->event.events = 0;
     epoll_ctl(zn_epoll(accept->S), EPOLL_CTL_DEL,
             accept->fd, &accept->event);
     if (accept->fd != -1) {
-        close(accept->fd);
+        if (close(accept->fd) != 0)
+            ret = ZN_ERROR;
         accept->fd = -1;
     }
+    return ret;
 }
 
 ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
