@@ -2,25 +2,24 @@
 #define ZNET_HPP_INCLUDED
 
 
-#if ZNET_HPP_HEADER_ONLY
+#ifndef ZNET_HPP_NO_IMPLEMENTATION
 # define ZN_IMPLEMENTATION
 # define ZN_API static inline
 #endif
 #include "znet.h"
 
 
-#undef ZN_NS_BEGIN
-#undef ZN_NS_END
-#define ZN_NS_BEGIN namespace zsummer { namespace network {
-#define ZN_NS_END   }                   }
+#define ZNPP_NS_BEGIN namespace zsummer { namespace network {
+#define ZNPP_NS_END   }                   }
 
 
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 
-ZN_NS_BEGIN
+ZNPP_NS_BEGIN
 
 
 enum NetErrorCode
@@ -57,6 +56,7 @@ class EventLoop : public std::enable_shared_from_this<EventLoop>
 {
 public:
     zn_State *S = nullptr;
+    std::unordered_map<unsigned long long, OnTimerHandler> timers;
 
     bool initialize();
     void runOnce(bool isImeediately = false);
@@ -144,22 +144,29 @@ inline void EventLoop::post(OnPostHandler&& h)
 
 static inline void timer_cb(void *ud, zn_Timer *timer, unsigned elapsed)
 {
-    std::unique_ptr<OnTimerHandler> h
-        (reinterpret_cast<OnTimerHandler*>(ud));
-    (*h)();
+    EventLoop* loop = static_cast<EventLoop*>(ud);
+    auto it = loop->timers.find(reinterpret_cast<unsigned long long>(timer));
+    if (it == loop->timers.end()) return;
+    auto h = std::move(it->second);
+    loop->timers.erase(it);
+    h();
 }
 
 inline unsigned long long EventLoop::createTimer(unsigned int delayms, OnTimerHandler&& h)
 {
-    auto newh = new OnTimerHandler(h);
-    zn_Timer *t = zn_newtimer(S, timer_cb, newh);
+    zn_Timer *t = zn_newtimer(S, timer_cb, this);
+    auto timerID = reinterpret_cast<unsigned long long>(t);
+    timers[timerID] = std::move(h);
     zn_starttimer(t, delayms);
-    return (unsigned long long)(uintptr_t)t;
+    return timerID;
 }
 
 inline bool EventLoop::cancelTimer(unsigned long long timerID)
 {
+    auto it = timers.find(timerID);
+    if (it == timers.end()) return false;
     zn_canceltimer(reinterpret_cast<zn_Timer*>(timerID));
+    timers.erase(it);
     return true;
 }
 
@@ -262,7 +269,7 @@ inline bool UdpSocket::doRecv(char* buf, unsigned len, OnRecvFromHandler&& h)
 }
 
 
-ZN_NS_END
+ZNPP_NS_END
 
 #endif /* ZNET_HPP_INCLUDED */
 /* cc: flags+='-std=c++11' */
