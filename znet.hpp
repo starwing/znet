@@ -22,19 +22,19 @@
 ZNPP_NS_BEGIN
 
 
+/* declarations */
+struct EventLoop;
+struct TcpAccept;
+struct TcpSocket;
+struct UdpSocket;
+
 enum NetErrorCode
 {
-    NEC_SUCCESS = ZN_OK,
-    NEC_ERROR   = ZN_ERROR,
+    NEC_SUCCESS       = ZN_OK,
+    NEC_ERROR         = ZN_ERROR,
     NEC_REMOTE_CLOSED = ZN_ECLOSED,
     NEC_REMOTE_HANGUP = ZN_EHANGUP,
 };
-
-/* declarations */
-class EventLoop;
-class TcpAccept;
-class TcpSocket;
-class UdpSocket;
 
 /* pointers */
 using EventLoopPtr = std::shared_ptr<EventLoop>;
@@ -52,9 +52,14 @@ using OnRecvHandler     = std::function<void(NetErrorCode, unsigned)>;
 using OnRecvFromHandler = std::function<void(NetErrorCode, char const*, unsigned short, unsigned)>;
 
 
-class EventLoop : public std::enable_shared_from_this<EventLoop>
+/* interfaces */
+
+struct EventLoop : public std::enable_shared_from_this<EventLoop>
 {
-public:
+    EventLoop(zn_State *S = nullptr)
+        : S(S)
+    { }
+
     zn_State *S = nullptr;
     std::unordered_map<unsigned long long, OnTimerHandler> timers;
 
@@ -65,10 +70,8 @@ public:
     bool cancelTimer(unsigned long long timerID);
 };
 
-
-class TcpAccept : public std::enable_shared_from_this<TcpAccept>
+struct TcpAccept : public std::enable_shared_from_this<TcpAccept>
 {
-public:
     TcpAccept(zn_Accept *accept = nullptr)
         : accept(accept)
     { }
@@ -82,10 +85,8 @@ public:
     bool doAccept(TcpSocketPtr const& s, OnAcceptHandler&& h);
 };
 
-
-class TcpSocket : public std::enable_shared_from_this<TcpSocket>
+struct TcpSocket : public std::enable_shared_from_this<TcpSocket>
 {
-public:
     TcpSocket(zn_Tcp *tcp = nullptr)
         : tcp(tcp)
     { }
@@ -104,10 +105,8 @@ public:
     bool doRecv(char* buf, unsigned len, OnRecvHandler&& h);
 };
 
-
-class UdpSocket : public std::enable_shared_from_this<UdpSocket>
+struct UdpSocket : public std::enable_shared_from_this<UdpSocket>
 {
-public:
     UdpSocket(zn_Udp *udp = nullptr)
         : udp(udp)
     { }
@@ -187,9 +186,13 @@ static inline void accept_ud(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *
 
 inline bool TcpAccept::doAccept(TcpSocketPtr const& s, OnAcceptHandler&& h)
 {
-    client = s;
-    acceptHandler = h;
-    return zn_accept(accept, accept_ud, this) == ZN_OK;
+    if (zn_accept(accept, accept_ud, this) == ZN_OK)
+    {
+        client = s;
+        acceptHandler = h;
+        return true;
+    }
+    return false;
 }
 
 
@@ -217,8 +220,12 @@ static inline void connect_cb(void *ud, zn_Tcp *tcp, unsigned err)
 
 inline bool TcpSocket::doConnect(std::string const& remoteIP, unsigned short remotePort, OnConnectHandler&& h)
 {
-    connectHandler = h;
-    return zn_connect(tcp, remoteIP.c_str(), remotePort, connect_cb, this) == ZN_OK;
+    if (zn_connect(tcp, remoteIP.c_str(), remotePort, connect_cb, this) == ZN_OK)
+    {
+        connectHandler = h;
+        return true;
+    }
+    return false;
 }
 
 static inline void send_cb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count)
@@ -230,8 +237,12 @@ static inline void send_cb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count)
 
 inline bool TcpSocket::doSend(char const* buf, unsigned len, OnSendHandler&& h)
 {
-    sendHandler = h;
-    return zn_send(tcp, buf, len, send_cb, this) == ZN_OK;
+    if (zn_send(tcp, buf, len, send_cb, this) == ZN_OK)
+    {
+        sendHandler = h;
+        return true;
+    }
+    return false;
 }
 
 static inline void recv_cb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count)
@@ -243,10 +254,13 @@ static inline void recv_cb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count)
 
 inline bool TcpSocket::doRecv(char* buf, unsigned len, OnRecvHandler&& h)
 {
-    recvHandler = h;
-    return zn_recv(tcp, buf, len, recv_cb, this) == ZN_OK;
+    if (zn_recv(tcp, buf, len, recv_cb, this) == ZN_OK)
+    {
+        recvHandler = h;
+        return true;
+    }
+    return false;
 }
-
 
     
 inline bool UdpSocket::initialize(EventLoopPtr const& summer, std::string const& ip, unsigned short port)
@@ -264,8 +278,12 @@ static inline void recvfrom_cb(void *ud, zn_Udp *udp, unsigned err, unsigned cou
 
 inline bool UdpSocket::doRecv(char* buf, unsigned len, OnRecvFromHandler&& h)
 {
-    recvFromHandler = h;
-    return zn_recvfrom(udp, buf, len, recvfrom_cb, this) == ZN_OK;
+    if (zn_recvfrom(udp, buf, len, recvfrom_cb, this) == ZN_OK)
+    {
+        recvFromHandler = h;
+        return true;
+    }
+    return false;
 }
 
 
