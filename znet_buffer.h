@@ -254,10 +254,10 @@ ZN_API int zn_sendfinish(zn_SendBuffer *b, size_t count) {
             b->current->used = remaining;
             b->sent_count = 0;
         }
-    }
-    if (pending->used != 0) {
-        zn_addlstring(b->current, pending->buff, pending->used);
-        pending->used = 0;
+        if (pending->used != 0) {
+            zn_addlstring(b->current, pending->buff, pending->used);
+            pending->used = 0;
+        }
     }
     return b->current->used != 0;
 }
