@@ -43,7 +43,7 @@ typedef struct zn_Buffer {
 
 #define zn_addsize(b, sz) ((b)->used += (sz))
 #define zn_addchar(b, ch) \
-    ((void)((b)->used < (b)->size || luaL_prepbuffsize((b), 1)), \
+    ((void)((b)->used < (b)->size || zn_prepbuffsize((b), 1)), \
      ((b)->buff[(b)->used++] = (ch)))
 
 ZN_API void zn_initbuffer  (zn_Buffer *b);
@@ -150,9 +150,13 @@ ZN_API void zn_addlstring(zn_Buffer *b, const char *s, size_t len) {
 
 /* recv buffer */
 
+static void   zn_def_onpacket (void *ud, const char *buff, size_t len) {}
+static size_t zn_def_onheader (void *ud, const char *buff, size_t len)
+{ return len; }
+
 ZN_API void zn_initrecvbuffer (zn_RecvBuffer *b) {
-    b->header_handler = NULL; b->header_ud = NULL;
-    b->packet_handler = NULL; b->packet_handler = NULL;
+    b->header_handler = zn_def_onheader; b->header_ud = NULL;
+    b->packet_handler = zn_def_onpacket; b->packet_handler = NULL;
     b->expected = 0;
     zn_initbuffer(&b->readed);
 }
@@ -179,13 +183,12 @@ again:
             zn_addlstring(&b->readed, buff, count);
             return 1;
         }
-        if (ret < count) {
+        if (ret <= count) {
             b->packet_handler(b->packet_ud, buff, ret);
             buff += ret;
             count -= ret;
             goto again;
         }
-
         b->expected = ret;
         zn_addlstring(&b->readed, buff, count);
         return 1;
