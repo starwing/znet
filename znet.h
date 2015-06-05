@@ -144,7 +144,9 @@ ZN_NS_END
 
 
 /* implementations */
-#ifdef ZN_IMPLEMENTATION
+#if defined(ZN_IMPLEMENTATION) && !defined(znet_implemented)
+#define znet_implemented
+
 
 ZN_NS_BEGIN
 

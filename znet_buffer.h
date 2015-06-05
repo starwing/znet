@@ -68,7 +68,8 @@ typedef struct zn_RecvBuffer {
     char buff[ZN_BUFFERSIZE];
 } zn_RecvBuffer;
 
-ZN_API void zn_initrecvbuffer (zn_RecvBuffer *b);
+ZN_API void zn_initrecvbuffer  (zn_RecvBuffer *b);
+ZN_API void zn_resetrecvbuffer (zn_RecvBuffer *b);
 ZN_API void zn_recvonheader   (zn_RecvBuffer *b, zn_HeaderHandler *h, void *ud);
 ZN_API void zn_recvonpacket   (zn_RecvBuffer *b, zn_PacketHandler *h, void *ud);
 
@@ -85,11 +86,11 @@ typedef struct zn_SendBuffer {
     zn_Buffer pending;
 } zn_SendBuffer;
 
-ZN_API void zn_initsend  (zn_SendBuffer *sb);
-ZN_API void zn_resetsend (zn_SendBuffer *sb);
+ZN_API void zn_initsendbuffer  (zn_SendBuffer *b);
+ZN_API void zn_resetsendbuffer (zn_SendBuffer *b);
 
-ZN_API char *zn_sendprepare (zn_SendBuffer *sb, size_t len);
-ZN_API int   zn_sendfinish  (zn_SendBuffer *sb, size_t count);
+ZN_API char *zn_sendprepare (zn_SendBuffer *b, size_t len);
+ZN_API int   zn_sendfinish  (zn_SendBuffer *b, size_t count);
 
 
 ZN_NS_END
@@ -97,7 +98,8 @@ ZN_NS_END
 #endif /* znet_buffer_h */
 
 
-#ifdef ZN_IMPLEMENTATION
+#if defined(ZN_IMPLEMENTATION) && !defined(zn_buffer_implemented)
+#define zn_buffer_implemented
 
 
 #include <stdlib.h>
@@ -154,18 +156,25 @@ static void   zn_def_onpacket (void *ud, const char *buff, size_t len) {}
 static size_t zn_def_onheader (void *ud, const char *buff, size_t len)
 { return len; }
 
-ZN_API void zn_initrecvbuffer (zn_RecvBuffer *b) {
+ZN_API void zn_recvonheader(zn_RecvBuffer *b, zn_HeaderHandler *h, void *ud)
+{ b->header_handler = h ? h : zn_def_onheader; b->header_ud = ud; }
+
+ZN_API void zn_recvonpacket(zn_RecvBuffer *b, zn_PacketHandler *h, void *ud)
+{ b->packet_handler = h ? h : zn_def_onpacket; b->packet_ud = ud; }
+
+ZN_API void zn_initrecvbuffer(zn_RecvBuffer *b) {
     b->header_handler = zn_def_onheader; b->header_ud = NULL;
     b->packet_handler = zn_def_onpacket; b->packet_handler = NULL;
     b->expected = 0;
     zn_initbuffer(&b->readed);
 }
 
-ZN_API void zn_recvonheader(zn_RecvBuffer *b, zn_HeaderHandler *h, void *ud)
-{ b->header_handler = h; b->header_ud = ud; }
-
-ZN_API void zn_recvonpacket(zn_RecvBuffer *b, zn_PacketHandler *h, void *ud)
-{ b->packet_handler = h; b->packet_ud = ud; }
+ZN_API void zn_resetrecvbuffer(zn_RecvBuffer *b) {
+    b->header_handler = zn_def_onheader; b->header_ud = NULL;
+    b->packet_handler = zn_def_onpacket; b->packet_handler = NULL;
+    b->expected = 0;
+    zn_resetbuffer(&b->readed);
+}
 
 ZN_API char *zn_recvprepare(zn_RecvBuffer *b, size_t *plen) {
     *plen = ZN_BUFFERSIZE;
@@ -212,14 +221,14 @@ again:
 
 /* send buffer */
 
-ZN_API void zn_initsend(zn_SendBuffer *b) {
+ZN_API void zn_initsendbuffer(zn_SendBuffer *b) {
     b->current = &b->sending;
     b->sent_count = 0;
     zn_initbuffer(&b->sending);
     zn_initbuffer(&b->pending);
 }
 
-ZN_API void zn_resetsend (zn_SendBuffer *b) {
+ZN_API void zn_resetsendbuffer(zn_SendBuffer *b) {
     b->current = &b->sending;
     b->sent_count = 0;
     zn_resetbuffer(&b->sending);
