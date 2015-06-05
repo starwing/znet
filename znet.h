@@ -156,6 +156,9 @@ ZN_NS_BEGIN
 
 /* half list routines */
 
+#ifndef zn_list_h
+#define zn_list_h
+
 #define znL_cond(c,e) ((void)((c) && (e)))
 
 #define znL_type(T) struct T##_hlist { T *next; T **pprev; }
@@ -171,6 +174,8 @@ ZN_NS_BEGIN
 #define znL_remove(n)                             ((void)( \
     znL_cond((n)->next, (n)->next->pprev = (n)->pprev),    \
     *(n)->pprev = (n)->next                              ))
+
+#endif /* zn_list_h */
 
 
 /* global routines */

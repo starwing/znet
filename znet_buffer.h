@@ -25,7 +25,7 @@
 # define ZN_API extern
 #endif
 
-#define ZN_MIN_BUFFSIZ 512
+#define ZN_BUFFERSIZE 8192
 
 
 #include <stddef.h>
@@ -33,58 +33,63 @@
 ZN_NS_BEGIN
 
 
-/* ring buffer */
+/* buffer */
 
-typedef struct zn_RingBuffer {
+typedef struct zn_Buffer {
     char *buff;
-    size_t size, head, tail;
-    char init_buff[ZN_MIN_BUFFSIZ];
-} zn_RingBuffer;
+    size_t size, used;
+    char init_buff[ZN_BUFFERSIZE];
+} zn_Buffer;
 
-#define zn_size(b) ((b)->size)
+#define zn_addsize(b, sz) ((b)->used += (sz))
+#define zn_addchar(b, ch) \
+    ((void)((b)->used < (b)->size || luaL_prepbuffsize((b), 1)), \
+     ((b)->buff[(b)->used++] = (ch)))
 
-ZN_API void zn_initbuffer  (zn_RingBuffer *b);
-ZN_API void zn_resetbuffer (zn_RingBuffer *b);
+ZN_API void zn_initbuffer  (zn_Buffer *b);
+ZN_API void zn_resetbuffer (zn_Buffer *b);
 
-ZN_API size_t zn_count (zn_RingBuffer *b);
+ZN_API size_t zn_resizebuffer (zn_Buffer *b, size_t len);
 
-ZN_API char  *zn_prepare  (zn_RingBuffer *b, size_t len);
-ZN_API size_t zn_pushsize (zn_RingBuffer *b, size_t len);
-
-ZN_API const char *zn_buffer  (zn_RingBuffer *b, size_t *plen);
-ZN_API const char *zn_splice  (zn_RingBuffer *b, size_t *plen);
-ZN_API size_t      zn_popsize (zn_RingBuffer *b, size_t len);
-
-ZN_API size_t zn_enqueue (zn_RingBuffer *b, const char *s, size_t len);
-ZN_API size_t zn_dequeue (zn_RingBuffer *b, char *s, size_t len);
+ZN_API char *zn_prepbuffsize (zn_Buffer *b, size_t len);
+ZN_API void zn_addlstring    (zn_Buffer *b, const char *s, size_t len);
 
 
 /* recv buffer */
 
-typedef int zn_HeaderParser(void *ud, const char *buff, size_t len);
+typedef size_t zn_HeaderHandler (void *ud, const char *buff, size_t len);
+typedef void   zn_PacketHandler (void *ud, const char *buff, size_t len);
 
 typedef struct zn_RecvBuffer {
-    zn_RingBuffer recving;
-    zn_HeaderParser *parser;
-    void *ud;
+    zn_HeaderHandler *header_handler; void *header_ud;
+    zn_PacketHandler *packet_handler; void *packet_ud;
+    size_t expected;
+    zn_Buffer readed;
+    char buff[ZN_BUFFERSIZE];
 } zn_RecvBuffer;
 
-ZN_API char *zn_recvmore(zn_RecvBuffer *b, size_t *plen);
-ZN_API int zn_recvresult(zn_RecvBuffer *b, int count);
+ZN_API void zn_initrecvbuffer (zn_RecvBuffer *b);
+ZN_API void zn_recvonheader   (zn_RecvBuffer *b, zn_HeaderHandler *h, void *ud);
+ZN_API void zn_recvonpacket   (zn_RecvBuffer *b, zn_PacketHandler *h, void *ud);
+
+ZN_API char *zn_recvprepare (zn_RecvBuffer *b, size_t *plen);
+ZN_API int   zn_recvfinish  (zn_RecvBuffer *b, size_t count);
 
 
 /* send buffer */
 
 typedef struct zn_SendBuffer {
-    zn_RingBuffer pending;
-    zn_RingBuffer sending;
+    zn_Buffer *current;
+    size_t sent_count;
+    zn_Buffer sending;
+    zn_Buffer pending;
 } zn_SendBuffer;
 
-ZN_API void zn_initsend(zn_SendBuffer *sb);
-ZN_API void zn_resetsend(zn_SendBuffer *sb);
-ZN_API char *zn_prepsend(zn_SendBuffer *sb, size_t len);
-ZN_API int zn_sendmore(zn_SendBuffer *sb, const char *buff, size_t len);
-ZN_API int zn_sendresult(zn_SendBuffer *sb, int count);
+ZN_API void zn_initsend  (zn_SendBuffer *sb);
+ZN_API void zn_resetsend (zn_SendBuffer *sb);
+
+ZN_API char *zn_sendprepare (zn_SendBuffer *sb, size_t len);
+ZN_API int   zn_sendfinish  (zn_SendBuffer *sb, size_t count);
 
 
 ZN_NS_END
@@ -101,180 +106,160 @@ ZN_NS_END
 ZN_NS_BEGIN
 
 
-/* ring buffer */
+/* buffer */
 
 #define ZN_MAX_SIZET (~(size_t)0 - 100)
 
-static int zn_issplit(zn_RingBuffer *b)
-{ return b->head != 0 && b->head >= b->tail; }
-
-static void zn_reverse(char *b, char *e) {
-    for (; b < e; ++b, --e) {
-        int ch = *b;
-        *b = *e;
-        *e = ch;
-    }
-}
-
-ZN_API void zn_initbuffer(zn_RingBuffer *b) {
+ZN_API void zn_initbuffer(zn_Buffer *b) {
     b->buff = b->init_buff;
-    b->size = ZN_MIN_BUFFSIZ;
-    b->head = b->tail = 0;
+    b->size = ZN_BUFFERSIZE;
+    b->used = 0;
 }
 
-ZN_API void zn_resetbuffer(zn_RingBuffer *b) {
+ZN_API void zn_resetbuffer(zn_Buffer *b) {
     if (b->buff != b->init_buff)
         free(b->buff);
     zn_initbuffer(b);
 }
 
-ZN_API size_t zn_count(zn_RingBuffer *b) {
-    return zn_issplit(b) ?
-        (b->size - b->head) + b->tail :
-        b->tail - b->head;
-}
-
-ZN_API char *zn_prepare(zn_RingBuffer *b, size_t len) {
-    int issplit = zn_issplit(b);
+ZN_API size_t zn_resizebuffer(zn_Buffer *b, size_t len) {
     char *newbuff;
-    size_t required, newsize;
-    size_t space = issplit ? b->head - b->tail : b->size - b->tail;
-    if (space >= len)
-        return &b->buff[b->tail];
-    if (!issplit && space + b->head <= len) {
-        memmove(&b->buff[0], &b->buff[b->head], b->tail - b->head);
-        b->tail -= b->head;
-        b->head = 0;
-        return &b->buff[b->tail];
-    }
-    /* new memory required */
-    required = len + (issplit ?
-            b->size - b->head + b->tail : b->tail - b->head);
-    newsize = b->size;
-    while (newsize < ZN_MAX_SIZET/2 && newsize < required)
+    size_t newsize = b->size;
+    while (newsize < ZN_MAX_SIZET/2 && newsize < len)
         newsize <<= 1;
-    if (newsize < required || (newbuff = (char*)malloc(newsize)) == NULL)
+    newbuff = b->buff != b->init_buff ? b->buff : NULL;
+    if (newsize >= len
+            && ((newbuff = (char*)realloc(newbuff, newsize)) != NULL))
+    {
+        b->buff = newbuff;
+        b->size = newsize;
+    }
+    return b->size;
+}
+
+ZN_API char *zn_prepbuffsize(zn_Buffer *b, size_t len) {
+    if (b->used + len > b->size && zn_resizebuffer(b, b->size+len) == b->size)
         return NULL;
-    if (issplit) {
-        size_t headlen = b->size - b->head;
-        memcpy(newbuff, &b->buff[b->head], headlen);
-        memcpy(&newbuff[headlen], &b->buff[0], b->tail);
-    }
-    else {
-        memcpy(newbuff, b->buff, b->tail - b->head);
-    }
-    if (b->buff != b->init_buff) free(b->buff);
-    b->buff = newbuff;
-    b->size = newsize;
-    b->head = 0;
-    b->tail = required - len;
-    return &b->buff[b->tail];
+    return &b->buff[b->used];
 }
 
-ZN_API size_t zn_pushsize(zn_RingBuffer *b, size_t len) {
-    size_t space, total = 0;
-    if (!zn_issplit(b)) {
-        space = b->size - b->tail;
-        if (len < space || b->head == 0)
-            goto out;
-        b->tail = 0;
-        len -= space;
-        total += space;
-    }
-    space = b->head - b->tail;
-out:
-    space = len < space ? len : space;
-    b->tail += space;
-    return total + space;
+ZN_API void zn_addlstring(zn_Buffer *b, const char *s, size_t len) {
+    memcpy(zn_prepbuffsize(b, len), s, len);
+    b->used += len;
 }
 
-ZN_API const char *zn_splice(zn_RingBuffer *b, size_t *plen) {
-    if (plen) *plen = zn_issplit(b) ?
-        b->size - b->head : b->tail - b->head;
-    return &b->buff[b->head];
+/* recv buffer */
+
+ZN_API void zn_initrecvbuffer (zn_RecvBuffer *b) {
+    b->header_handler = NULL; b->header_ud = NULL;
+    b->packet_handler = NULL; b->packet_handler = NULL;
+    b->expected = 0;
+    zn_initbuffer(&b->readed);
 }
 
-ZN_API const char *zn_buffer(zn_RingBuffer *b, size_t *plen) {
-    if (zn_issplit(b)) {
-        size_t size = b->size - b->head + b->tail;
-        zn_reverse(&b->buff[b->head], &b->buff[b->size-1]);
-        zn_reverse(&b->buff[0], &b->buff[b->head-1]);
-        zn_reverse(&b->buff[0], &b->buff[b->size-1]);
-        b->head = 0;
-        b->tail = size;
-    }
-    if (plen)
-        *plen = b->tail - b->head;
-    return &b->buff[b->head];
+ZN_API void zn_recvonheader(zn_RecvBuffer *b, zn_HeaderHandler *h, void *ud)
+{ b->header_handler = h; b->header_ud = ud; }
+
+ZN_API void zn_recvonpacket(zn_RecvBuffer *b, zn_PacketHandler *h, void *ud)
+{ b->packet_handler = h; b->packet_ud = ud; }
+
+ZN_API char *zn_recvprepare(zn_RecvBuffer *b, size_t *plen) {
+    *plen = ZN_BUFFERSIZE;
+    return b->buff;
 }
 
-ZN_API size_t zn_popsize(zn_RingBuffer *b, size_t len) {
-    size_t space, total = 0;
-    if (zn_issplit(b)) {
-        space = b->size - b->head;
-        if (len < space) {
-            b->head += len;
-            return len;
+ZN_API int zn_recvfinish(zn_RecvBuffer *b, size_t count) {
+    char *buff = b->buff;
+again:
+    if (count == 0) return 0;
+
+    if (b->expected == 0) {
+        size_t ret = b->header_handler(b->header_ud, buff, count);
+        if (ret == 0) { /* need more result */
+            zn_addlstring(&b->readed, buff, count);
+            return 1;
         }
-        b->head = 0;
-        len -= space;
-        total += space;
+        if (ret < count) {
+            b->packet_handler(b->packet_ud, buff, ret);
+            buff += ret;
+            count -= ret;
+            goto again;
+        }
+
+        b->expected = ret;
+        zn_addlstring(&b->readed, buff, count);
+        return 1;
     }
-    space = b->tail - b->head;
-    space = len < space ? len : space;
-    b->head += space;
-    if (b->head == b->tail)
-        b->head = b->tail = 0;
-    return total + space;
+
+    if (b->readed.used + count >= b->expected) {
+        size_t remaining = b->expected - (b->readed.used + count);
+        zn_addlstring(&b->readed, buff, remaining);
+        b->packet_handler(b->packet_ud, b->readed.buff, b->expected);
+        buff += remaining;
+        count -= remaining;
+        b->expected = 0;
+        b->readed.used = 0;
+        goto again;
+    }
+
+    zn_addlstring(&b->readed, buff, count);
+    return 1;
 }
 
-ZN_API size_t zn_enqueue(zn_RingBuffer *b, const char *s, size_t len) {
-    size_t space, total = 0;
-    if (len > (space = b->size - zn_count(b))) {
-        char *buff;
-        if ((buff = zn_prepare(b, len)) != NULL) {
-            memcpy(buff, s, len);
-            return zn_pushsize(b, len);
-        }
-        len = space;
-    }
-    if (!zn_issplit(b)) {
-        space = b->size - b->tail;
-        if (space > len) space = len;
-        memcpy(&b->buff[b->tail], s, space);
-        if (b->head == 0) {
-            b->tail += space;
-            return space;
-        }
-        s += space;
-        len -= space;
-        total += space;
-        b->tail = 0;
-    }
-    memcpy(&b->buff[b->tail], s, len);
-    b->tail += len;
-    return total + len;
+
+/* send buffer */
+
+ZN_API void zn_initsend(zn_SendBuffer *b) {
+    b->current = &b->sending;
+    b->sent_count = 0;
+    zn_initbuffer(&b->sending);
+    zn_initbuffer(&b->pending);
 }
 
-ZN_API size_t zn_dequeue(zn_RingBuffer *b, char *s, size_t len) {
-    size_t slen;
-    const char *splice = zn_splice(b, &slen);
-    if (slen >= len) {
-        memcpy(s, splice, len);
-        b->head += len;
-        if (b->head == b->tail)
-            b->head = b->tail = 0;
-        return len;
+ZN_API void zn_resetsend (zn_SendBuffer *b) {
+    b->current = &b->sending;
+    b->sent_count = 0;
+    zn_resetbuffer(&b->sending);
+    zn_resetbuffer(&b->pending);
+}
+
+ZN_API char *zn_sendprepare(zn_SendBuffer *b, size_t len) {
+    char *buff;
+    zn_Buffer *pending = b->current == &b->sending ?
+        &b->pending : &b->sending;
+    if (b->current->used == 0)
+        pending = b->current;
+    buff = zn_prepbuffsize(pending, len);
+    zn_addsize(pending, len);
+    return buff;
+}
+
+ZN_API int zn_sendfinish(zn_SendBuffer *b, size_t count) {
+    zn_Buffer *pending = b->current == &b->sending ?
+        &b->pending : &b->sending;
+    if (b->current->used == count) { /* all sent? */
+        zn_Buffer *tmp;
+        b->current->used = 0;
+        b->sent_count = 0;
+        tmp = pending;
+        pending = b->current;
+        b->current = tmp;
     }
-    memcpy(s, splice, slen);
-    if (!zn_issplit(b)) {
-        b->head = b->tail = 0;
-        return slen;
+    else { /* still has something to send? */
+        char *buff = b->current->buff;
+        b->sent_count += count;
+        if (b->sent_count > b->current->used / 2) { /* too many garbage */
+            size_t remaining = b->current->used - b->sent_count;
+            memmove(buff, buff + b->sent_count, remaining);
+            b->current->used = remaining;
+            b->sent_count = 0;
+        }
     }
-    memcpy(s + slen, &b->buff[0], b->head);
-    len = b->head + slen;
-    b->head = b->tail = 0;
-    return len;
+    if (pending->used != 0) {
+        zn_addlstring(b->current, pending->buff, pending->used);
+        pending->used = 0;
+    }
+    return b->current->used != 0;
 }
 
 
