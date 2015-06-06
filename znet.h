@@ -199,10 +199,12 @@ struct zn_State {
     zn_Udp *udps;
     zn_Timer *timers;
     zn_Timer *unused_timers;
+    unsigned nexttime;
 };
 
 static zn_State *znS_init(zn_State *S) {
     memset(S, 0, sizeof(*S));
+    S->nexttime = ~(unsigned)0;
     return S;
 }
 
@@ -264,7 +266,14 @@ static void znT_cleartimers(zn_State *S) {
         free(S->timers);
         S->timers = next;
     }
+    S->nexttime = ~(unsigned)0;
 }
+
+static void znT_updatenexttime(zn_State *S)
+{ S->nexttime = S->timers ? S->timers->time : ~(unsigned)0; }
+
+static unsigned znT_gettimeout(zn_State *S, unsigned current)
+{ return S->nexttime < current ? 0 : S->nexttime - current; }
 
 ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *cb, void *ud) {
     zn_Timer *t;
@@ -281,6 +290,7 @@ ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *cb, void *ud) {
 
 ZN_API void zn_deltimer(zn_Timer *timer) {
     znL_remove(timer);
+    znT_updatenexttime(timer->S);
     free(timer);
 }
 
@@ -289,16 +299,19 @@ ZN_API void zn_starttimer(zn_Timer *timer, unsigned delayms) {
     timer->time = timer->starttime + delayms;
     znL_remove(timer);
     znT_inserttimer(timer);
+    timer->S->nexttime = timer->S->timers->time;
 }
 
 ZN_API void zn_canceltimer(zn_Timer *timer) {
     znL_remove(timer);
     znL_insert(&timer->S->unused_timers, timer);
     timer->time = ~(unsigned)0;
+    znT_updatenexttime(timer->S);
 }
 
 static void znT_updatetimer(zn_State *S, unsigned current) {
     zn_Timer *nextticks = NULL;
+    if (S->nexttime > current) return;
     while (S->timers && S->timers->time <= current) {
         zn_Timer *cur = S->timers;
         znL_remove(cur);
@@ -321,15 +334,9 @@ static void znT_updatetimer(zn_State *S, unsigned current) {
         znT_inserttimer(nextticks);
         nextticks = next;
     }
+    znT_updatenexttime(S);
 }
 
-static unsigned znT_getnexttime(zn_State *S, unsigned time) {
-    if (S->timers == NULL)
-        return ~(unsigned)0; /* no timer, wait forever */
-    if (S->timers->time <= time)
-        return 0; /* immediately */
-    return S->timers->time - time;
-}
 
 
 /* system specified routines */
@@ -358,8 +365,6 @@ typedef enum zn_RequestType {
 
 typedef struct zn_Request {
     OVERLAPPED overlapped; /* must be first */
-    struct zn_Request *next;
-    struct zn_Request **pprev;
     zn_RequestType type;
 } zn_Request;
 
@@ -371,11 +376,11 @@ typedef struct zn_Post {
 typedef struct zn_IOCPState {
     zn_State base;
     HANDLE iocp;
-    zn_Request *requests;
+    unsigned waitings;
 } zn_IOCPState;
 
-#define zn_iocp(S)     (((zn_IOCPState*)(S))->iocp)
-#define zn_requests(S) (((zn_IOCPState*)(S))->requests)
+#define zn_iocp(S)      (((zn_IOCPState*)(S))->iocp)
+#define zn_waittings(S) (((zn_IOCPState*)(S))->waitings)
 
 /* tcp */
 
@@ -511,7 +516,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
         return ZN_ECONNECT;
     }
 
-    znL_insert(&zn_requests(tcp->S), &tcp->connect_request);
+    ++zn_waittings(tcp->S);
     tcp->connect_handler = cb;
     tcp->connect_ud = ud;
     return ZN_OK;
@@ -536,7 +541,7 @@ ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *
         return ZN_ERROR;
     }
 
-    znL_insert(&zn_requests(&tcp->S), &tcp->send_request);
+    ++zn_waittings(tcp->S);
     tcp->send_handler = cb;
     tcp->send_ud = ud;
     return ZN_OK;
@@ -562,7 +567,7 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
         return ZN_ERROR;
     }
 
-    znL_insert(&zn_requests(tcp->S), &tcp->recv_request);
+    ++zn_waittings(tcp->S);
     tcp->recv_handler = cb;
     tcp->recv_ud = ud;
     return ZN_OK;
@@ -755,7 +760,7 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
         return ZN_ERROR;
     }
 
-    znL_insert(&zn_requests(accept->S), &accept->accept_request);
+    ++zn_waittings(accept->S);
     accept->accept_handler = cb;
     accept->accept_ud = ud;
     accept->client = socket;
@@ -926,7 +931,7 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
         return ZN_ERROR;
     }
 
-    znL_insert(&zn_requests(udp->S), &udp->recv_request);
+    ++zn_waittings(udp->S);
     udp->recv_handler = cb;
     udp->recv_ud = ud;
     return ZN_OK;
@@ -953,6 +958,7 @@ static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
 /* poll */
 
 static BOOL zn_initialized = FALSE;
+static LARGE_INTEGER counterFreq;
 
 ZN_API void zn_initialize(void) {
     if (!zn_initialized) {
@@ -975,9 +981,12 @@ ZN_API void zn_deinitialize(void) {
 ZN_API zn_State *zn_newstate(void) {
     zn_IOCPState *S = (zn_IOCPState*)malloc(sizeof(zn_IOCPState));
     if (S == NULL) return NULL;
+    if (counterFreq.QuadPart == 0) {
+        QueryPerformanceFrequency(&counterFreq);
+        counterFreq.QuadPart /= 1000;
+    }
     S->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
             NULL, (ULONG_PTR)0, 1);
-    S->requests = NULL;
     if (S->iocp != NULL)
         return znS_init(&S->base);
     free(S);
@@ -995,7 +1004,7 @@ ZN_API void zn_close(zn_State *S) {
     /* 1. cancel all operations */
     znS_clear(S);
     /* 2. wait for uncompleted operations */
-    while (zn_requests(S))
+    while (zn_waittings(S) != 0)
         zn_run(S, ZN_RUN_ONCE);
     /* 3. cleanup reources and free */
     CloseHandle(zn_iocp(S));
@@ -1003,8 +1012,9 @@ ZN_API void zn_close(zn_State *S) {
 }
 
 ZN_API unsigned zn_time(void) {
-    DWORD dwTick = GetTickCount();
-    return (unsigned)dwTick;
+    LARGE_INTEGER current;
+    QueryPerformanceCounter(&current);
+    return (unsigned)(current.QuadPart / counterFreq.QuadPart);
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
@@ -1022,12 +1032,13 @@ static int znS_poll(zn_State *S, int checkonly) {
     LPOVERLAPPED pOverlapped = NULL;
     zn_Request *req;
     BOOL bRet;
+    unsigned current;
 
     S->closing = ZN_CLOSE_IN_RUN;
-    znT_updatetimer(S, zn_time());
+    znT_updatetimer(S, current = zn_time());
     bRet = GetQueuedCompletionStatus(zn_iocp(S),
             &dwBytes, &upComKey, &pOverlapped,
-            checkonly ? 0 : znT_getnexttime(S, zn_time()));
+            checkonly ? 0 : znT_gettimeout(S, current));
     znT_updatetimer(S, zn_time());
     if (!bRet && !pOverlapped) /* time out */
         goto out;
@@ -1041,8 +1052,7 @@ static int znS_poll(zn_State *S, int checkonly) {
     }
 
     req = (zn_Request*)pOverlapped;
-    znL_remove(req);
-    znL_init(req); /* for debug purpose */
+    --zn_waittings(S);
     switch (req->type) {
         case ZN_TACCEPT:   zn_onaccept((zn_Accept*)upComKey, bRet); break;
         case ZN_TRECV:     zn_onrecv((zn_Tcp*)upComKey, bRet, dwBytes); break;
@@ -1060,7 +1070,7 @@ out:
         return 0;
     }
     S->closing = ZN_CLOSE_NORMAL;
-    return S->timers != NULL || zn_requests(S) != NULL;
+    return S->timers != NULL || zn_waittings(S) != 0;
 }
 
 
@@ -1782,7 +1792,7 @@ static int znS_poll(zn_State *S, int checkonly) {
     S->closing = ZN_CLOSE_IN_RUN;
     znT_updatetimer(S, zn_time());
     ret = epoll_wait(zn_epoll(S), events, ZN_MAX_EVENTS,
-            checkonly ? 0 : znT_getnexttime(S, zn_time()));
+            checkonly ? 0 : znT_gettimeout(S, zn_time()));
     if (ret == -1 && errno != EINTR) /* error out */
         goto out;
     znT_updatetimer(S, zn_time());
