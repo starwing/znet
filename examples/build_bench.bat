@@ -4,4 +4,5 @@
 )
 
 cl /nologo /Ox /MT  /Febench_flood.exe bench_flood.c
+cl /nologo /Ox /MT  /Febench_echo.exe  bench_echo.c
 pause
