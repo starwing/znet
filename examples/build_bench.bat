@@ -3,5 +3,5 @@
     set vs_seted=1
 )
 
-cl /nologo /Ox /MT  /Febench_echo.exe bench_echo.c
+cl /nologo /Ox /MT  /Febench_flood.exe bench_flood.c
 pause

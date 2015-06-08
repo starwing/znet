@@ -138,7 +138,7 @@ static void on_summary(void *ud, zn_Timer *timer, unsigned elapsed) {
 }
 
 int main(int argc, const char **argv) {
-    if (argc == 1) {
+    if (argc == 2 && strcmp(argv[1], "-h") == 0) {
         printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
         exit(0);
     }
