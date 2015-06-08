@@ -68,13 +68,15 @@ typedef struct zn_RecvBuffer {
     char buff[ZN_BUFFERSIZE];
 } zn_RecvBuffer;
 
+#define zn_recvbuff(b)  ((b)->buff)
+#define zn_recvsize(b)  ((void)(b), ZN_BUFFERSIZE)
+
 ZN_API void zn_initrecvbuffer  (zn_RecvBuffer *b);
 ZN_API void zn_resetrecvbuffer (zn_RecvBuffer *b);
 ZN_API void zn_recvonheader   (zn_RecvBuffer *b, zn_HeaderHandler *h, void *ud);
 ZN_API void zn_recvonpacket   (zn_RecvBuffer *b, zn_PacketHandler *h, void *ud);
 
-ZN_API char *zn_recvprepare (zn_RecvBuffer *b, size_t *plen);
-ZN_API int   zn_recvfinish  (zn_RecvBuffer *b, size_t count);
+ZN_API int zn_recvfinish (zn_RecvBuffer *b, size_t count);
 
 
 /* send buffer */
@@ -86,11 +88,14 @@ typedef struct zn_SendBuffer {
     zn_Buffer pending;
 } zn_SendBuffer;
 
+#define zn_sendbuff(b) ((b)->current->buff)
+#define zn_sendsize(b) ((b)->current->used)
+
 ZN_API void zn_initsendbuffer  (zn_SendBuffer *b);
 ZN_API void zn_resetsendbuffer (zn_SendBuffer *b);
 
-ZN_API char *zn_sendprepare (zn_SendBuffer *b, size_t len);
-ZN_API int   zn_sendfinish  (zn_SendBuffer *b, size_t count);
+ZN_API int zn_sendprepare (zn_SendBuffer *b, const char *buff, size_t len);
+ZN_API int zn_sendfinish  (zn_SendBuffer *b, size_t count);
 
 
 ZN_NS_END
@@ -176,11 +181,6 @@ ZN_API void zn_resetrecvbuffer(zn_RecvBuffer *b) {
     zn_resetbuffer(&b->readed);
 }
 
-ZN_API char *zn_recvprepare(zn_RecvBuffer *b, size_t *plen) {
-    *plen = ZN_BUFFERSIZE;
-    return b->buff;
-}
-
 ZN_API int zn_recvfinish(zn_RecvBuffer *b, size_t count) {
     char *buff = b->buff;
 again:
@@ -235,15 +235,16 @@ ZN_API void zn_resetsendbuffer(zn_SendBuffer *b) {
     zn_resetbuffer(&b->pending);
 }
 
-ZN_API char *zn_sendprepare(zn_SendBuffer *b, size_t len) {
-    char *buff;
+ZN_API int zn_sendprepare(zn_SendBuffer *b, const char *buff, size_t len) {
+    int can_send = 0;
     zn_Buffer *pending = b->current == &b->sending ?
         &b->pending : &b->sending;
-    if (b->current->used == 0)
+    if (b->current->used == 0) {
         pending = b->current;
-    buff = zn_prepbuffsize(pending, len);
-    zn_addsize(pending, len);
-    return buff;
+        can_send = 1;
+    }
+    zn_addlstring(pending, buff, len);
+    return can_send;
 }
 
 ZN_API int zn_sendfinish(zn_SendBuffer *b, size_t count) {

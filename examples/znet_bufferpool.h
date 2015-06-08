@@ -2,22 +2,22 @@
 #define zn_bufferpool_h
 
 
-#include "../znet.h"
-#include "../znet_buffer.h"
-
 #include <stddef.h>
 #include <stdlib.h>
 
 
+#ifndef ZN_BUFFER_FIELDS
+# define ZN_BUFFER_FIELDS uintptr_t user_data; 
+#endif
+
 typedef struct zn_BufferPoolNode {
     struct zn_BufferPoolNode *next;
-    uintptr_t user_data;
     zn_Tcp *tcp;
+    ZN_BUFFER_FIELDS
     zn_SendBuffer send;
     zn_RecvBuffer recv;
-} zn_BufferPoolNode;
+} zn_BufferPoolNode, *zn_BufferPool;
 
-typedef struct zn_BufferPoolNode* zn_BufferPool;
 
 static void zn_initbuffpool(zn_BufferPool *pool) {
     *pool = NULL;
