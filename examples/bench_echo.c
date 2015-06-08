@@ -1,10 +1,11 @@
 #define ZN_IMPLEMENTATION
 #include "../znet.h"
 #include <stdio.h>
+#include <string.h>
 
 
-const char *addr = "127.0.0.1";
-unsigned    port = 12345;
+char     addr[ZN_MAX_ADDRLEN] = "127.0.0.1";
+unsigned port = 8081;
 
 
 #define BLOCK_SIZE 1024
@@ -15,15 +16,11 @@ typedef struct Userdata {
     char recv[BLOCK_SIZE];
 } Userdata;
 
+int is_client;
 zn_State *S;
-#ifdef SERVER
 Userdata server;
-#endif
-#ifdef CLIENT
 Userdata client;
-#endif
 
-#ifdef CLIENT
 static void client_error(zn_Tcp *tcp);
 
 static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
@@ -72,9 +69,7 @@ static void client_error(zn_Tcp *tcp) {
     zn_deltcp(tcp);
     zn_post(S, on_error, NULL);
 }
-#endif
 
-#ifdef SERVER
 static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     Userdata *data = (Userdata*)ud;
     if (err != ZN_OK) {
@@ -110,9 +105,7 @@ static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
         zn_deltcp(tcp);
     zn_accept(accept, on_accept, ud);
 }
-#endif
 
-#if defined(CLIENT) || defined(SERVER)
 static void human_readed(size_t sz) {
     if (sz < 1024)
         printf("%dB", sz);
@@ -133,53 +126,54 @@ static void print_ud(Userdata *ud, const char *title) {
     ud->recv_ok = ud->recv_err = ud->recv_bytes = 0;
     ud->send_ok = ud->send_err = ud->send_bytes = 0;
 }
-#endif
 
 static void on_summary(void *ud, zn_Timer *timer, unsigned elapsed) {
     printf("%u: ", zn_time());
-#ifdef CLIENT
-    print_ud(&client, "client");
-#endif
-#if defined(CLIENT) && defined(SERVER)
-    printf(", ");
-#endif
-#ifdef SERVER
-    print_ud(&server, "server");
-#endif
+    if (is_client)
+        print_ud(&client, "client");
+    else
+        print_ud(&server, "server");
     printf("\n");
     zn_starttimer(timer, 1000);
 }
 
 int main(int argc, const char **argv) {
-    unsigned port = 12345;
-    if (argc == 2) {
-        unsigned p = atoi(argv[1]);
+    if (argc == 1) {
+        printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
+        exit(0);
+    }
+    if (argc > 1) {
+        if (strcmp(argv[1], "client") == 0)
+            is_client = 1;
+    }
+    if (argc > 2) {
+        strncpy(addr, argv[2], ZN_MAX_ADDRLEN-1);
+    }
+    if (argc > 3) {
+        unsigned p = atoi(argv[3]);
         if (p != 0) port = port;
     }
 
     zn_initialize();
     if ((S = zn_newstate()) == NULL) return 2;
 
-#ifdef SERVER
-    {
-        zn_Accept *accept;
-        if ((accept = zn_newaccept(S)) == NULL) return 2;
-        zn_listen(accept, "0.0.0.0", port);
-        zn_accept(accept, on_accept, NULL);
-        printf("listening at %s:%d ...\n", addr, port);
-    }
-#endif
-#ifdef CLIENT
-    {
+    if (is_client) {
         zn_Tcp *tcp;
         if ((tcp = zn_newtcp(S)) == NULL) return 2;
         zn_connect(tcp, addr, port, on_connect, NULL);
         printf("connecting to %s:%d ...\n", addr, port);
     }
-#endif
+    else {
+        zn_Accept *accept;
+        if ((accept = zn_newaccept(S)) == NULL) return 2;
+        zn_listen(accept, addr, port);
+        zn_accept(accept, on_accept, NULL);
+        printf("listening at %s:%d ...\n", addr, port);
+    }
+
 
     zn_starttimer(zn_newtimer(S, on_summary, NULL), 1000);
 
     return zn_run(S, ZN_RUN_LOOP);
 }
-/* cc: libs+='-lws2_32' */
+/* cc: flags+='-s -O3' libs+='-lws2_32' */
