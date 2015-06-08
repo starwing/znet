@@ -340,7 +340,8 @@ static void znT_updatetimer(zn_State *S, unsigned current) {
 
 
 /* system specified routines */
-#ifdef _WIN32 /* IOCP (Completion Port) implementations */
+#if defined(_WIN32) && !defined(ZN_USE_SELECT)
+/* IOCP (Completion Port) implementations */
 
 #ifndef WIN32_LEAN_AND_MEAN
 # define WIN32_LEAN_AND_MEAN
@@ -1074,7 +1075,8 @@ out:
 }
 
 
-#elif defined(__linux__) /* epoll implementations */
+#elif defined(__linux__) && !defined(ZN_USE_SELECT)
+/* epoll implementations */
 
 #include <unistd.h>
 #include <errno.h>
@@ -1843,7 +1845,7 @@ static void znS_clear(zn_State *S) {
 ZN_NS_END
 
 #endif /* ZN_IMPLEMENTATION */
-/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
+/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -DZN_USE_SELECT -xc'
  * win32cc: libs+='-lws2_32' output='znet.dll' */
 /* unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
  * unixcc: libs+='-lpthread' output='znet.so' */
