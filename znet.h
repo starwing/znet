@@ -83,6 +83,7 @@ ZN_API void zn_deinitialize (void);
 ZN_API const char *zn_strerror (int err);
 
 ZN_API zn_State *zn_newstate (void);
+ZN_API zn_State *zn_clone    (zn_State *S);
 ZN_API void      zn_close    (zn_State *S);
 
 ZN_API int zn_run  (zn_State *S, int mode);
@@ -161,7 +162,7 @@ ZN_NS_BEGIN
 #ifndef zn_list_h
 #define zn_list_h
 
-#define znL_cond(c,e) ((void)((c) && (e)))
+#define zn_cond(c,e) ((void)((c) && (e)))
 
 #define znL_type(T) struct T##_hlist { T *next; T **pprev; }
 
@@ -170,12 +171,24 @@ ZN_NS_BEGIN
 
 #define znL_insert(h, n)                          ((void)( \
     (n)->pprev = (h), (n)->next = *(h),                    \
-    znL_cond(*(h), (*(h))->pprev = &(n)->next),            \
+    zn_cond(*(h), (*(h))->pprev = &(n)->next),             \
     *(h) = (n)                                           ))
 
 #define znL_remove(n)                             ((void)( \
-    znL_cond((n)->next, (n)->next->pprev = (n)->pprev),    \
+    zn_cond((n)->next, (n)->next->pprev = (n)->pprev),     \
     *(n)->pprev = (n)->next                              ))
+
+#define znQ_type(T) struct T##_queue { T *first; T **plast; }
+#define znQ_init(h) \
+    ((void)((h)->first = NULL, (h)->plast = &(h)->first))
+#define znQ_enqueue(h, n)                         ((void)( \
+    *(h)->plast = (n),                                     \
+    (h)->plast = &(n)->next,                               \
+    (n)->next = NULL                                     ))
+#define znQ_dequeue(h, pn)                                 \
+    zn_cond(((pn) = (h)->first) != NULL,                   \
+            (h)->first = (h)->first->next)
+
 
 #endif /* zn_list_h */
 
@@ -994,6 +1007,13 @@ ZN_API zn_State *zn_newstate(void) {
     return NULL;
 }
 
+ZN_API zn_State *zn_clone(zn_State *S) {
+    zn_IOCPState *NS = (zn_IOCPState*)malloc(sizeof(zn_IOCPState));
+    if (NS == NULL) return NULL;
+    NS->iocp = zn_iocp(S);
+    return znS_init(&NS->base);
+}
+
 ZN_API void zn_close(zn_State *S) {
     int closing = S->closing;
     if (closing == ZN_CLOSE_IN_RUN || closing == ZN_CLOSE_PREPARE_IN_RUN) {
@@ -1103,7 +1123,6 @@ typedef struct zn_Post {
 
 typedef struct zn_Result {
     struct zn_Result *next; 
-    struct zn_Result **pprev; 
     int err;
     zn_Tcp *tcp;
 } zn_Result;
@@ -1113,8 +1132,8 @@ typedef struct zn_EPollState {
     int epoll;
     int eventfd;
     pthread_spinlock_t post_lock;
-    znL_type(zn_Post) posts;
-    znL_type(zn_Result) results;
+    znQ_type(zn_Post)   posts;
+    znQ_type(zn_Result) results;
 } zn_EPollState;
 
 #define zn_state(S) ((zn_EPollState*)(S))
@@ -1124,21 +1143,20 @@ typedef struct zn_EPollState {
 
 static void znP_init(zn_EPollState *S) {
     pthread_spin_init(&S->post_lock, 0);
-    znL_init(&S->posts);
+    znQ_init(&S->posts);
 }
 
 static void znP_add(zn_EPollState *S, zn_Post *ps) {
     pthread_spin_lock(&S->post_lock);
-    znL_insert(S->posts.pprev, ps);
-    S->posts.pprev = &ps->next;
+    znQ_enqueue(&S->posts, ps);
     pthread_spin_unlock(&S->post_lock);
 }
 
 static void znP_process(zn_EPollState *S) {
-    zn_Post *ps = S->posts.next;
+    zn_Post *ps = S->posts.first;
     if (ps == NULL) return;
     pthread_spin_lock(&S->post_lock);
-    znL_init(&S->posts);
+    znQ_init(&S->posts);
     pthread_spin_unlock(&S->post_lock);
     while (ps) {
         zn_Post *next = ps->next;
@@ -1153,24 +1171,19 @@ static void znP_process(zn_EPollState *S) {
 
 static void zn_onresult(zn_Result *result);
 
-static void znR_init(zn_EPollState *S) {
-    znL_init(&S->results);
-}
+static void znR_init(zn_EPollState *S) { znQ_init(&S->results); }
 
 static void znR_add(zn_EPollState *S, int err, zn_Result *result) {
     result->err = err;
-    znL_insert(S->results.pprev, result);
-    S->results.pprev = &result->next;
+    znQ_enqueue(&S->results, result);
 }
 
 static void znR_process(zn_EPollState *S) {
-    while (S->results.next) {
-        zn_Result *results = S->results.next;
-        znL_init(&S->results);
+    zn_Result *results;
+    while ((results = S->results.first) != NULL) {
+        znQ_init(&S->results);
         while (results) {
             zn_Result *next = results->next;
-            znL_remove(results);
-            znL_init(results); /* for debug */
             zn_onresult(results);
             results = next;
         }
@@ -1708,27 +1721,42 @@ static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
 ZN_API void zn_initialize(void) { }
 ZN_API void zn_deinitialize(void) { }
 
-ZN_API zn_State *zn_newstate(void) {
+static int zn_initstate(zn_EPollState *S, int epoll) {
     struct epoll_event event;
-    zn_EPollState *S = (zn_EPollState*)malloc(sizeof(zn_EPollState));
-    if (S == NULL) return NULL;
     event.events = EPOLLIN;
     event.data.ptr = NULL;
-    S->epoll = epoll_create(ZN_MAX_EVENTS);
+    S->epoll = epoll;
     S->eventfd = eventfd(0, EFD_CLOEXEC|EFD_NONBLOCK);
     if (S->epoll == -1
             || S->eventfd == -1
             || epoll_ctl(S->epoll, EPOLL_CTL_ADD, S->eventfd, &event) != 0)
     {
-        if (S->epoll != -1) close(S->epoll);
         if (S->eventfd != -1) close(S->eventfd);
+        return 0;
+    }
+    znP_init(S);
+    znR_init(S);
+    return znS_init(&S->base) != NULL;
+}
+
+ZN_API zn_State *zn_newstate(void) {
+    zn_EPollState *S = (zn_EPollState*)malloc(sizeof(zn_EPollState));
+    int epoll = epoll_create(ZN_MAX_EVENTS);
+    if (S == NULL || epoll == -1 || !zn_initstate(S, epoll)) {
+        if (epoll != -1) close(epoll);
         free(S);
         return NULL;
     }
+    return &S->base;
+}
 
-    znP_init(S);
-    znR_init(S);
-    return znS_init(&S->base);
+ZN_API zn_State *zn_clone(zn_State *S) {
+    zn_EPollState *NS = (zn_EPollState*)malloc(sizeof(zn_EPollState));
+    if (NS == NULL || zn_initstate(NS, zn_epoll(S))) {
+        free(NS);
+        return NULL;
+    }
+    return &NS->base;
 }
 
 ZN_API void zn_close(zn_State *S) {
@@ -1845,7 +1873,7 @@ static void znS_clear(zn_State *S) {
 ZN_NS_END
 
 #endif /* ZN_IMPLEMENTATION */
-/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -DZN_USE_SELECT -xc'
+/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
  * win32cc: libs+='-lws2_32' output='znet.dll' */
 /* unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
  * unixcc: libs+='-lpthread' output='znet.so' */
