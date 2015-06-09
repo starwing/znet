@@ -287,6 +287,16 @@ inline bool UdpSocket::doRecv(char* buf, unsigned len, OnRecvFromHandler&& h)
 }
 
 
+class GlobalEnv {
+    GlobalEnv() { zn_initialize(); }
+    ~GlobalEnv() { zn_deinitialize(); }
+    friend inline GlobalEnv& globalEnv() {
+        static GlobalEnv env;
+        return env;
+    }
+};
+
+
 ZNPP_NS_END
 
 #endif /* ZNET_HPP_INCLUDED */

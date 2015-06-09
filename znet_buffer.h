@@ -41,6 +41,8 @@ typedef struct zn_Buffer {
     char init_buff[ZN_BUFFERSIZE];
 } zn_Buffer;
 
+#define zn_buffer(b)      ((b)->buff)
+#define zn_bufflen(b)     ((b)->used)
 #define zn_addsize(b, sz) ((b)->used += (sz))
 #define zn_addchar(b, ch) \
     ((void)((b)->used < (b)->size || zn_prepbuffsize((b), 1)), \
@@ -82,19 +84,22 @@ ZN_API int zn_recvfinish (zn_RecvBuffer *b, size_t count);
 /* send buffer */
 
 typedef struct zn_SendBuffer {
-    zn_Buffer *current;
+    zn_Buffer *sending;
+    zn_Buffer *pending;
     size_t sent_count;
-    zn_Buffer sending;
-    zn_Buffer pending;
+    zn_Buffer buffers[2];
 } zn_SendBuffer;
-
-#define zn_sendbuff(b) ((b)->current->buff)
-#define zn_sendsize(b) ((b)->current->used)
 
 ZN_API void zn_initsendbuffer  (zn_SendBuffer *b);
 ZN_API void zn_resetsendbuffer (zn_SendBuffer *b);
 
+#define zn_sendbuff(b)   zn_buffer((b)->sending)
+#define zn_sendsize(b)   zn_bufflen((b)->sending)
 ZN_API int zn_sendprepare (zn_SendBuffer *b, const char *buff, size_t len);
+
+#define zn_sendbuffer(b)     (zn_sendsize(b) == 0 ? (b)->sending : (b)->pending)
+#define zn_needsend(b, buff) ((buff) == (b)->sending)
+
 ZN_API int zn_sendfinish  (zn_SendBuffer *b, size_t count);
 
 
@@ -222,57 +227,53 @@ again:
 /* send buffer */
 
 ZN_API void zn_initsendbuffer(zn_SendBuffer *b) {
-    b->current = &b->sending;
+    b->sending = &b->buffers[0];
+    b->pending = &b->buffers[1];
     b->sent_count = 0;
-    zn_initbuffer(&b->sending);
-    zn_initbuffer(&b->pending);
+    zn_initbuffer(&b->buffers[0]);
+    zn_initbuffer(&b->buffers[1]);
 }
 
 ZN_API void zn_resetsendbuffer(zn_SendBuffer *b) {
-    b->current = &b->sending;
+    b->sending = &b->buffers[0];
+    b->pending = &b->buffers[1];
     b->sent_count = 0;
-    zn_resetbuffer(&b->sending);
-    zn_resetbuffer(&b->pending);
+    zn_resetbuffer(&b->buffers[0]);
+    zn_resetbuffer(&b->buffers[1]);
 }
 
 ZN_API int zn_sendprepare(zn_SendBuffer *b, const char *buff, size_t len) {
-    int can_send = 0;
-    zn_Buffer *pending = b->current == &b->sending ?
-        &b->pending : &b->sending;
-    if (b->current->used == 0) {
-        pending = b->current;
-        can_send = 1;
-    }
-    zn_addlstring(pending, buff, len);
+    int can_send = b->sending->used == 0;
+    zn_Buffer *buffer = can_send ? b->sending : b->pending;
+    zn_addlstring(buffer, buff, len);
     return can_send;
 }
 
 ZN_API int zn_sendfinish(zn_SendBuffer *b, size_t count) {
-    zn_Buffer *pending = b->current == &b->sending ?
-        &b->pending : &b->sending;
-    if (b->current->used == count) { /* all sent? */
+    if (b->sending->used == count) { /* all sent? */
         zn_Buffer *tmp;
-        b->current->used = 0;
+        b->sending->used = 0;
         b->sent_count = 0;
-        tmp = pending;
-        pending = b->current;
-        b->current = tmp;
+        /* swap b->sending and b->pending */
+        tmp = b->pending;
+        b->pending = b->sending;
+        b->sending = tmp;
     }
     else { /* still has something to send? */
-        char *buff = b->current->buff;
+        char *buff = b->sending->buff;
         b->sent_count += count;
-        if (b->sent_count > b->current->used / 2) { /* too many garbage */
-            size_t remaining = b->current->used - b->sent_count;
+        if (b->sent_count > b->sending->used / 2) { /* too many garbage */
+            size_t remaining = b->sending->used - b->sent_count;
             memmove(buff, buff + b->sent_count, remaining);
-            b->current->used = remaining;
+            b->sending->used = remaining;
             b->sent_count = 0;
         }
-        if (pending->used != 0) {
-            zn_addlstring(b->current, pending->buff, pending->used);
-            pending->used = 0;
+        if (b->pending->used != 0) {
+            zn_addlstring(b->sending, b->pending->buff, b->pending->used);
+            b->pending->used = 0;
         }
     }
-    return b->current->used != 0;
+    return b->sending->used != 0;
 }
 
 
