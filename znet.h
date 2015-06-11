@@ -189,30 +189,29 @@ ZN_NS_BEGIN
     zn_cond(((pn) = (h)->first) != NULL,                   \
             (h)->first = (h)->first->next)
 
-
 #endif /* zn_list_h */
 
 
 /* global routines */
 
-static void znS_clear(zn_State *S);
-static int  znS_poll(zn_State *S, int checkonly);
+static void znS_clear (zn_State *S);
+static int  znS_poll  (zn_State *S, int checkonly);
 
-typedef enum zn_CloseSource {
-    ZN_CLOSE_IN_RUN  = -1,        /* now in zn_run() */
-    ZN_CLOSE_NORMAL  =  0,        /* not close */
-    ZN_CLOSE_PREPARE =  1,        /* prepare close */
-    ZN_CLOSE_PREPARE_IN_RUN = 2,  /* prepare close in run() */
-} zm_CloseSource;
+typedef enum zn_Status {
+    ZN_STATUS_IN_RUN  = -1,       /* now in zn_run() */
+    ZN_STATUS_READY   =  0,       /* not close */
+    ZN_STATUS_CLOSING =  1,       /* prepare close */
+    ZN_STATUS_CLOSING_IN_RUN = 2, /* prepare close in run() */
+} zn_Status;
 
 struct zn_State {
-    int closing;
     zn_Accept *accepts;
-    zn_Tcp *tcps;
-    zn_Udp *udps;
-    zn_Timer *timers;
-    zn_Timer *unused_timers;
-    unsigned nexttime;
+    zn_Tcp    *tcps;
+    zn_Udp    *udps;
+    zn_Timer  *timers;
+    zn_Timer  *unused_timers;
+    zn_Status  status;
+    unsigned   nexttime;
 };
 
 static zn_State *znS_init(zn_State *S) {
@@ -290,8 +289,9 @@ static unsigned znT_gettimeout(zn_State *S, unsigned current)
 
 ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *cb, void *ud) {
     zn_Timer *t;
-    if (S->closing > ZN_CLOSE_NORMAL
-            || (t = (zn_Timer*)malloc(sizeof(zn_Timer))) == NULL)
+    if (S->status > ZN_STATUS_READY)
+        return NULL;
+    if ((t = (zn_Timer*)malloc(sizeof(zn_Timer))) == NULL)
         return NULL;
     memset(t, 0, sizeof(*t));
     t->S = S;
@@ -304,7 +304,7 @@ ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *cb, void *ud) {
 ZN_API void zn_deltimer(zn_Timer *timer) {
     znL_remove(timer);
     znT_updatenexttime(timer->S);
-    free(timer);
+    free(timer); 
 }
 
 ZN_API void zn_starttimer(zn_Timer *timer, unsigned delayms) {
@@ -349,7 +349,6 @@ static void znT_updatetimer(zn_State *S, unsigned current) {
     }
     znT_updatenexttime(S);
 }
-
 
 
 /* system specified routines */
@@ -457,7 +456,7 @@ static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port) {
 
 ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
     zn_Tcp *tcp;
-    if (S->closing > ZN_CLOSE_NORMAL
+    if (S->status > ZN_STATUS_READY
             || (tcp = (zn_Tcp*)malloc(sizeof(zn_Tcp))) == NULL)
         return NULL;
     memset(tcp, 0, sizeof(*tcp));
@@ -670,7 +669,7 @@ struct zn_Accept {
 
 ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     zn_Accept *accept;
-    if (S->closing > ZN_CLOSE_NORMAL
+    if (S->status > ZN_STATUS_READY
             || (accept = (zn_Accept*)malloc(sizeof(zn_Accept))) == NULL)
         return NULL;
     memset(accept, 0, sizeof(*accept));
@@ -885,7 +884,7 @@ static int zn_initudp(zn_Udp *udp, const char *addr, unsigned port) {
 
 ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
     zn_Udp *udp;
-    if (S->closing > ZN_CLOSE_NORMAL
+    if (S->status > ZN_STATUS_READY
             || (udp = (zn_Udp*)malloc(sizeof(zn_Udp))) == NULL)
         return NULL;
     memset(udp, 0, sizeof(*udp));
@@ -1015,13 +1014,13 @@ ZN_API zn_State *zn_clone(zn_State *S) {
 }
 
 ZN_API void zn_close(zn_State *S) {
-    int closing = S->closing;
-    if (closing == ZN_CLOSE_IN_RUN || closing == ZN_CLOSE_PREPARE_IN_RUN) {
-        S->closing = ZN_CLOSE_PREPARE_IN_RUN;
+    int status = S->status;
+    if (status == ZN_STATUS_IN_RUN || status == ZN_STATUS_CLOSING_IN_RUN) {
+        S->status = ZN_STATUS_CLOSING_IN_RUN;
         return;
     }
     /* 0. doesn't allow create new objects */
-    S->closing = ZN_CLOSE_PREPARE;
+    S->status = ZN_STATUS_CLOSING;
     /* 1. cancel all operations */
     znS_clear(S);
     /* 2. wait for uncompleted operations */
@@ -1055,7 +1054,7 @@ static int znS_poll(zn_State *S, int checkonly) {
     BOOL bRet;
     unsigned current;
 
-    S->closing = ZN_CLOSE_IN_RUN;
+    S->status = ZN_STATUS_IN_RUN;
     znT_updatetimer(S, current = zn_time());
     bRet = GetQueuedCompletionStatus(zn_iocp(S),
             &dwBytes, &upComKey, &pOverlapped,
@@ -1085,12 +1084,12 @@ static int znS_poll(zn_State *S, int checkonly) {
     }
 
 out:
-    if (S->closing == ZN_CLOSE_PREPARE_IN_RUN) {
-        S->closing = ZN_CLOSE_NORMAL; /* trigger real close */
+    if (S->status == ZN_STATUS_CLOSING_IN_RUN) {
+        S->status = ZN_STATUS_READY; /* trigger real close */
         zn_close(S);
         return 0;
     }
-    S->closing = ZN_CLOSE_NORMAL;
+    S->status = ZN_STATUS_READY;
     return S->timers != NULL || zn_waittings(S) != 0;
 }
 
@@ -1262,7 +1261,7 @@ static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr
 
 ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
     zn_Tcp *tcp;
-    if (S->closing > ZN_CLOSE_NORMAL
+    if (S->status > ZN_STATUS_READY
             || (tcp = (zn_Tcp*)malloc(sizeof(zn_Tcp))) == NULL)
         return NULL;
     memset(tcp, 0, sizeof(*tcp));
@@ -1489,7 +1488,7 @@ struct zn_Accept {
 
 ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     zn_Accept *accept;
-    if (S->closing > ZN_CLOSE_NORMAL
+    if (S->status > ZN_STATUS_READY
             || (accept = (zn_Accept*)malloc(sizeof(zn_Accept))) == NULL)
         return NULL;
     memset(accept, 0, sizeof(*accept));
@@ -1639,7 +1638,7 @@ static int zn_initudp(zn_Udp *udp, const char *addr, unsigned port) {
 
 ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
     zn_Udp *udp;
-    if (S->closing > ZN_CLOSE_NORMAL
+    if (S->status > ZN_STATUS_READY
             || (udp = (zn_Udp*)malloc(sizeof(zn_Udp))) == NULL)
         return NULL;
     memset(udp, 0, sizeof(*udp));
@@ -1760,12 +1759,12 @@ ZN_API zn_State *zn_clone(zn_State *S) {
 }
 
 ZN_API void zn_close(zn_State *S) {
-    int closing = S->closing;
-    if (closing == ZN_CLOSE_IN_RUN || closing == ZN_CLOSE_PREPARE_IN_RUN) {
-        S->closing = ZN_CLOSE_PREPARE_IN_RUN;
+    int status = S->status;
+    if (status == ZN_STATUS_IN_RUN || status == ZN_STATUS_CLOSING_IN_RUN) {
+        S->status = ZN_STATUS_CLOSING_IN_RUN;
         return;
     }
-    S->closing = ZN_CLOSE_PREPARE;
+    S->status = ZN_STATUS_CLOSING;
     znS_clear(S);
     close(zn_epoll(S));
     free(S);
@@ -1819,7 +1818,7 @@ static void zn_dispatch(zn_State *S, struct epoll_event *evt) {
 static int znS_poll(zn_State *S, int checkonly) {
     int i, ret;
     struct epoll_event events[ZN_MAX_EVENTS];
-    S->closing = ZN_CLOSE_IN_RUN;
+    S->status = ZN_STATUS_IN_RUN;
     znT_updatetimer(S, zn_time());
     ret = epoll_wait(zn_epoll(S), events, ZN_MAX_EVENTS,
             checkonly ? 0 : znT_gettimeout(S, zn_time()));
@@ -1831,12 +1830,12 @@ static int znS_poll(zn_State *S, int checkonly) {
     znR_process(zn_state(S));
 
 out:
-    if (S->closing == ZN_CLOSE_PREPARE_IN_RUN) {
-        S->closing = ZN_CLOSE_NORMAL; /* trigger real close */
+    if (S->status == ZN_STATUS_CLOSING_IN_RUN) {
+        S->status = ZN_STATUS_READY; /* trigger real close */
         zn_close(S);
         return 0;
     }
-    S->closing = ZN_CLOSE_NORMAL;
+    S->status = ZN_STATUS_READY;
     return S->timers != NULL;
 }
 
