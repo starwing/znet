@@ -1102,7 +1102,7 @@ out:
 #define ZN_MAX_EVENTS 4096
 
 typedef struct zn_Post {
-    znL_entry(zn_Post);
+    znL_entry(struct zn_Post);
     zn_PostHandler *handler;
     void *ud;
 } zn_Post;

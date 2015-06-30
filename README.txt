@@ -20,3 +20,4 @@ TODO
 ----
 - Lua binding is working-in-progress.
 - select backend are planed.
+- multi-thread support.
