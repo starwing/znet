@@ -1,0 +1,706 @@
+#if !defined(znet_h) && !defined(ZN_USE_IOCP)
+# include "znet.h"
+#endif
+
+#if defined(_WIN32) && defined(ZN_USE_IOCP) && !defined(zn_iocp_imcluded)
+#define zn_iocp_imcluded 
+
+#ifndef WIN32_LEAN_AND_MEAN
+#  define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#include <WinSock2.h>
+#include <MSWSock.h>
+
+#ifdef _MSC_VER
+# pragma warning(disable:4996)
+# pragma comment(lib, "ws2_32")
+#endif /* _MSC_VER */
+
+typedef enum zn_RequestType {
+    ZN_TACCEPT,
+    ZN_TRECV,
+    ZN_TSEND,
+    ZN_TCONNECT,
+    ZN_TRECVFROM,
+    ZN_TSENDTO
+} zn_RequestType;
+
+typedef struct zn_Request {
+    OVERLAPPED overlapped; /* must be first */
+    zn_RequestType type;
+} zn_Request;
+
+typedef struct zn_Post {
+    zn_PostHandler *handler;
+    void *ud;
+} zn_Post;
+
+struct zn_State {
+    ZN_STATE_FIELDS
+    HANDLE iocp;
+    unsigned waittings;
+};
+
+/* tcp */
+
+struct zn_Tcp {
+    znL_entry(zn_Tcp);
+    zn_State *S;
+    void *connect_ud; zn_ConnectHandler *connect_handler;
+    void *send_ud; zn_SendHandler *send_handler;
+    void *recv_ud; zn_RecvHandler *recv_handler;
+    zn_Request connect_request;
+    zn_Request send_request;
+    zn_Request recv_request;
+    SOCKET socket;
+    zn_PeerInfo info;
+    WSABUF sendBuffer;
+    WSABUF recvBuffer;
+};
+
+static int zn_getextension(SOCKET socket, GUID* gid, void *fn) {
+    DWORD dwSize = 0;
+    return WSAIoctl(socket,
+            SIO_GET_EXTENSION_FUNCTION_POINTER,
+            gid, sizeof(*gid),
+            fn, sizeof(void(PASCAL*)(void)),
+            &dwSize, NULL, NULL) == 0;
+}
+
+static int zn_inittcp(zn_Tcp *tcp) {
+    SOCKET socket;
+    SOCKADDR_IN localAddr;
+
+    if ((socket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP,
+                    NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
+        return ZN_ESOCKET;
+
+    memset(&localAddr, 0, sizeof(localAddr));
+    localAddr.sin_family = AF_INET;
+    if (bind(socket, (struct sockaddr *)&localAddr,
+                sizeof(localAddr)) != 0) {
+        closesocket(socket);
+        return ZN_EBIND;
+    }
+
+    if (CreateIoCompletionPort((HANDLE)socket, tcp->S->iocp,
+                (ULONG_PTR)tcp, 1) == NULL)
+    {
+        closesocket(socket);
+        return ZN_EPOLL;
+    }
+
+    tcp->socket = socket;
+    return ZN_OK;
+}
+
+static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port) {
+    strcpy(tcp->info.addr, addr);
+    tcp->info.port = port;
+}
+
+ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
+    ZN_GETOBJECT(S, zn_Tcp, tcp);
+    tcp->socket = INVALID_SOCKET;
+    tcp->connect_request.type = ZN_TCONNECT;
+    tcp->send_request.type = ZN_TSEND;
+    tcp->recv_request.type = ZN_TRECV;
+    return tcp;
+}
+
+ZN_API void zn_deltcp(zn_Tcp *tcp) {
+    zn_closetcp(tcp);
+    if (tcp->connect_handler
+            || tcp->recv_handler
+            || tcp->send_handler)
+    {
+        tcp->S = NULL; /* mark tcp is dead */
+        return;
+    }
+    ZN_PUTOBJECT(tcp);
+}
+
+ZN_API int zn_closetcp(zn_Tcp *tcp) {
+    int ret = ZN_OK;
+    if (tcp->socket != INVALID_SOCKET) {
+        if (closesocket(tcp->socket) != 0)
+            ret = ZN_ERROR;
+        tcp->socket = INVALID_SOCKET;
+    }
+    return ret;
+}
+
+ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info) {
+    *info = tcp->info;
+}
+
+ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
+    static LPFN_CONNECTEX lpConnectEx = NULL;
+    static GUID gid = WSAID_CONNECTEX;
+    DWORD dwLength = 0;
+    SOCKADDR_IN remoteAddr;
+    char buf[1];
+    int err;
+    if (tcp->S == NULL)                return ZN_ESTATE;
+    if (tcp->socket != INVALID_SOCKET) return ZN_ESTATE;
+    if (tcp->connect_handler != NULL)  return ZN_EBUSY;
+    if (cb == NULL)                    return ZN_EPARAM;
+
+    if ((err = zn_inittcp(tcp)) != ZN_OK)
+        return err;
+
+    if (!lpConnectEx && !zn_getextension(tcp->socket, &gid, &lpConnectEx))
+        return ZN_ECONNECT;
+
+    memset(&remoteAddr, 0, sizeof(remoteAddr));
+    remoteAddr.sin_family = AF_INET;
+    remoteAddr.sin_addr.s_addr = inet_addr(addr);
+    remoteAddr.sin_port = htons(port);
+    zn_setinfo(tcp, addr, port);
+
+    if (!lpConnectEx(tcp->socket,
+                (struct sockaddr *)&remoteAddr, sizeof(remoteAddr),
+                buf, 0, &dwLength, &tcp->connect_request.overlapped)
+            && WSAGetLastError() != ERROR_IO_PENDING)
+    {
+        closesocket(tcp->socket);
+        tcp->socket = INVALID_SOCKET;
+        return ZN_ECONNECT;
+    }
+
+    ++tcp->S->waittings;
+    tcp->connect_handler = cb;
+    tcp->connect_ud = ud;
+    return ZN_OK;
+}
+
+ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *cb, void *ud) {
+    DWORD dwTemp1=0;
+    if (tcp->S == NULL)                return ZN_ESTATE;
+    if (tcp->socket == INVALID_SOCKET) return ZN_ESTATE;
+    if (tcp->send_handler != NULL)     return ZN_EBUSY;
+    if (cb == NULL || len == 0)        return ZN_EPARAM;
+
+    tcp->sendBuffer.buf = (char*)buff;
+    tcp->sendBuffer.len = len;
+    if (WSASend(tcp->socket, &tcp->sendBuffer, 1,
+                &dwTemp1, 0, &tcp->send_request.overlapped, NULL) != 0
+            && WSAGetLastError() != WSA_IO_PENDING)
+    {
+        tcp->sendBuffer.buf = NULL;
+        tcp->sendBuffer.len = 0;
+        zn_closetcp(tcp);
+        return ZN_ERROR;
+    }
+
+    ++tcp->S->waittings;
+    tcp->send_handler = cb;
+    tcp->send_ud = ud;
+    return ZN_OK;
+}
+
+ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, void *ud) {
+    DWORD dwRecv = 0;
+    DWORD dwFlag = 0;
+    if (tcp->S == NULL)                return ZN_ESTATE;
+    if (tcp->socket == INVALID_SOCKET) return ZN_ESTATE;
+    if (tcp->recv_handler != NULL)     return ZN_EBUSY;
+    if (cb == NULL || len == 0)        return ZN_EPARAM;
+
+    tcp->recvBuffer.buf = buff;
+    tcp->recvBuffer.len = len;
+    if (WSARecv(tcp->socket, &tcp->recvBuffer, 1,
+                &dwRecv, &dwFlag, &tcp->recv_request.overlapped, NULL) != 0
+            && WSAGetLastError() != WSA_IO_PENDING)
+    {
+        tcp->recvBuffer.buf = NULL;
+        tcp->recvBuffer.len = 0;
+        zn_closetcp(tcp);
+        return ZN_ERROR;
+    }
+
+    ++tcp->S->waittings;
+    tcp->recv_handler = cb;
+    tcp->recv_ud = ud;
+    return ZN_OK;
+}
+
+static void zn_onconnect(zn_Tcp *tcp, BOOL bSuccess) {
+    zn_ConnectHandler *cb = tcp->connect_handler;
+    assert(tcp->connect_handler);
+    tcp->connect_handler = NULL;
+    if (tcp->S == NULL) {
+        assert(tcp->socket == INVALID_SOCKET);
+        /* cb(tcp->connect_ud, tcp, ZN_ECLOSED); */
+        znL_remove(tcp);
+        free(tcp);
+    }
+    else if (!bSuccess) {
+        zn_closetcp(tcp);
+        cb(tcp->connect_ud, tcp, ZN_ERROR);
+    }
+    else {
+        BOOL bEnable = 1;
+        if (setsockopt(tcp->socket, IPPROTO_TCP, TCP_NODELAY,
+                    (char*)&bEnable, sizeof(bEnable)) != 0)
+        { /* XXX */ }
+        cb(tcp->connect_ud, tcp, ZN_OK);
+    }
+}
+
+static void zn_onsend(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
+    zn_SendHandler *cb = tcp->send_handler;
+    assert(tcp->send_handler);
+    tcp->send_handler = NULL;
+    if (tcp->S == NULL || tcp->socket == INVALID_SOCKET) {
+        assert(tcp->socket == INVALID_SOCKET);
+        /* cb(tcp->send_ud, tcp, ZN_ECLOSED, dwBytes); */
+        if (tcp->recv_handler == NULL) {
+            znL_remove(tcp);
+            free(tcp);
+        }
+    }
+    else if (!bSuccess) {
+        zn_closetcp(tcp);
+        cb(tcp->send_ud, tcp, ZN_ERROR, dwBytes);
+    }
+    else
+        cb(tcp->send_ud, tcp, ZN_OK, dwBytes);
+}
+
+static void zn_onrecv(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
+    zn_RecvHandler *cb = tcp->recv_handler;
+    assert(tcp->recv_handler);
+    tcp->recv_handler = NULL;
+    if (tcp->S == NULL) {
+        assert(tcp->socket == INVALID_SOCKET);
+        /* cb(tcp->recv_ud, tcp, ZN_ECLOSED, dwBytes); */
+        if (tcp->send_handler == NULL) {
+            znL_remove(tcp);
+            free(tcp);
+        }
+    }
+    else if (dwBytes == 0 || tcp->socket == INVALID_SOCKET) {
+        zn_closetcp(tcp);
+        cb(tcp->recv_ud, tcp, ZN_ECLOSED, dwBytes);
+    }
+    else if (!bSuccess) {
+        zn_closetcp(tcp);
+        cb(tcp->recv_ud, tcp, ZN_EHANGUP, dwBytes);
+    }
+    else 
+        cb(tcp->recv_ud, tcp, ZN_OK, dwBytes);
+}
+
+/* accept */
+
+struct zn_Accept {
+    znL_entry(zn_Accept);
+    zn_State *S;
+    void *accept_ud; zn_AcceptHandler *accept_handler;
+    zn_Request accept_request;
+    SOCKET socket;
+    SOCKET client;
+    DWORD recv_length;
+    char recv_buffer[(sizeof(SOCKADDR_IN)+16)*2];
+};
+
+ZN_API zn_Accept* zn_newaccept(zn_State *S) {
+    ZN_GETOBJECT(S, zn_Accept, accept);
+    accept->socket = INVALID_SOCKET;
+    accept->client = INVALID_SOCKET;
+    accept->accept_request.type = ZN_TACCEPT;
+    return accept;
+}
+
+ZN_API void zn_delaccept(zn_Accept *accept) {
+    if (accept->S == NULL) return;
+    zn_closeaccept(accept);
+    if (accept->accept_handler != NULL) {
+        accept->S = NULL; /* mark dead */
+        return;
+    }
+    ZN_PUTOBJECT(accept);
+}
+
+ZN_API int zn_closeaccept(zn_Accept *accept) {
+    int ret = ZN_OK;
+    if (accept->socket != INVALID_SOCKET) {
+        if (closesocket(accept->socket) != 0)
+            ret = ZN_ERROR;
+        accept->socket = INVALID_SOCKET;
+    }
+    if (accept->client != INVALID_SOCKET) {
+        if (closesocket(accept->client) != 0)
+            ret = ZN_ERROR;
+        accept->client = INVALID_SOCKET;
+    }
+    return ret;
+}
+
+ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
+    SOCKADDR_IN sockAddr;
+    BOOL bReuseAddr = TRUE;
+    SOCKET socket;
+    if (accept->socket != INVALID_SOCKET) return ZN_ESTATE;
+    if (accept->accept_handler != NULL)   return ZN_EBUSY;
+
+    if ((socket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP,
+                    NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
+        return ZN_ESOCKET;
+
+    if (setsockopt(accept->socket, SOL_SOCKET, SO_REUSEADDR,
+                (char*)&bReuseAddr, sizeof(BOOL)) != 0)
+    { /* XXX */ }
+
+    memset(&sockAddr, 0, sizeof(sockAddr));
+    sockAddr.sin_family = AF_INET;
+    sockAddr.sin_addr.s_addr = inet_addr(addr);
+    sockAddr.sin_port = htons(port);
+    if (bind(socket, (struct sockaddr *)&sockAddr,
+                sizeof(sockAddr)) != 0)
+    {
+        closesocket(socket);
+        return ZN_EBIND;
+    }
+
+    if (listen(socket, SOMAXCONN) != 0) {
+        closesocket(socket);
+        return ZN_ERROR;
+    }
+
+    if (CreateIoCompletionPort((HANDLE)socket, accept->S->iocp,
+                (ULONG_PTR)accept, 1) == NULL)
+    {
+        closesocket(socket);
+        return ZN_EPOLL;
+    }
+
+    accept->socket = socket;
+    return ZN_OK;
+}
+
+ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
+    static GUID gid = WSAID_ACCEPTEX;
+    static LPFN_ACCEPTEX lpAcceptEx = NULL;
+    SOCKET socket;
+    if (accept->socket == INVALID_SOCKET) return ZN_ESTATE;
+    if (cb == NULL)                       return ZN_EPARAM;
+
+    if (!lpAcceptEx && !zn_getextension(accept->socket, &gid, &lpAcceptEx))
+        return ZN_ERROR;
+
+    if ((socket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP,
+                    NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
+        return ZN_ESOCKET;
+
+    if (!lpAcceptEx(accept->socket, socket,
+                accept->recv_buffer, 0,
+                sizeof(SOCKADDR_IN)+16, sizeof(SOCKADDR_IN)+16,
+                &accept->recv_length, &accept->accept_request.overlapped)
+            && WSAGetLastError() != ERROR_IO_PENDING)
+    {
+        closesocket(socket);
+        return ZN_ERROR;
+    }
+
+    ++accept->S->waittings;
+    accept->accept_handler = cb;
+    accept->accept_ud = ud;
+    accept->client = socket;
+    return ZN_OK;
+}
+
+static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
+    static LPFN_GETACCEPTEXSOCKADDRS lpGetAcceptExSockaddrs = NULL;
+    static GUID gid = WSAID_GETACCEPTEXSOCKADDRS;
+    zn_AcceptHandler *cb = accept->accept_handler;
+    BOOL bEnable = 1;
+    zn_Tcp *tcp;
+    struct sockaddr *paddr1 = NULL;
+    struct sockaddr *paddr2 = NULL;
+    int tmp1 = 0;
+    int tmp2 = 0;
+    accept->accept_handler = NULL;
+
+    if (accept->S == NULL) {
+        /* cb(accept->ud, accept, ZN_ECLOSED, NULL); */
+        znL_remove(accept);
+        free(accept);
+        return;
+    }
+
+    if (!bSuccess) {
+        /* zn_closeaccept(accept); */
+        cb(accept->accept_ud, accept, ZN_ERROR, NULL);
+        return;
+    }
+
+    if (setsockopt(accept->client, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
+                (char*)&accept->socket, sizeof(accept->socket)) != 0)
+    { /* XXX */ }
+    if (setsockopt(accept->client, IPPROTO_TCP, TCP_NODELAY,
+                (char*)&bEnable, sizeof(bEnable)) != 0)
+    { /* XXX */ }
+
+    if (!lpGetAcceptExSockaddrs && !zn_getextension(accept->client,
+                &gid, &lpGetAcceptExSockaddrs))
+        return;
+
+    lpGetAcceptExSockaddrs(accept->recv_buffer,
+            accept->recv_length,
+            sizeof(SOCKADDR_IN)+16,
+            sizeof(SOCKADDR_IN)+16,
+            &paddr1, &tmp1, &paddr2, &tmp2);
+
+    tcp = zn_newtcp(accept->S);
+    tcp->socket = accept->client;
+    accept->client = INVALID_SOCKET;
+    if (CreateIoCompletionPort((HANDLE)tcp->socket,
+                tcp->S->iocp, (ULONG_PTR)tcp, 1) == NULL)
+    {
+        closesocket(tcp->socket);
+        znL_remove(tcp);
+        free(tcp);
+        return;
+    }
+
+    zn_setinfo(tcp, 
+            inet_ntoa(((struct sockaddr_in*)paddr2)->sin_addr),
+            ntohs(((struct sockaddr_in*)paddr2)->sin_port));
+    cb(accept->accept_ud, accept, ZN_OK, tcp);
+}
+
+/* udp */
+
+struct zn_Udp {
+    znL_entry(zn_Udp);
+    zn_State *S;
+    void *recv_ud; zn_RecvFromHandler *recv_handler;
+    zn_Request recv_request;
+    SOCKET socket;
+    WSABUF recvBuffer;
+    SOCKADDR_IN recvFrom;
+    INT recvFromLen;
+};
+
+static int zn_initudp(zn_Udp *udp, const char *addr, unsigned port) {
+    SOCKET socket;
+    SOCKADDR_IN sockAddr;
+
+    memset(&sockAddr, 0, sizeof(sockAddr));
+    sockAddr.sin_family = AF_INET;
+    sockAddr.sin_addr.s_addr = inet_addr(addr);
+    sockAddr.sin_port = htons(port);
+
+    socket = WSASocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0,
+            WSA_FLAG_OVERLAPPED);
+    if (socket == INVALID_SOCKET)
+        return ZN_ESOCKET;
+
+    if (bind(socket, (struct sockaddr*)&sockAddr, sizeof(SOCKADDR_IN)) != 0)
+        return ZN_EBIND;
+
+    if (CreateIoCompletionPort((HANDLE)socket, udp->S->iocp,
+                (ULONG_PTR)udp, 1) == NULL)
+    {
+        closesocket(socket);
+        return ZN_EPOLL;
+    }
+
+    udp->socket = socket;
+    return ZN_OK;
+}
+
+ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
+    ZN_GETOBJECT(S, zn_Udp, udp);
+    udp->socket = INVALID_SOCKET;
+    udp->recv_request.type = ZN_TRECVFROM;
+    if (!zn_initudp(udp, addr, port)) {
+        free(udp);
+        return NULL;
+    }
+    return udp;
+}
+
+ZN_API void zn_deludp(zn_Udp *udp) {
+    closesocket(udp->socket);
+    if (udp->recv_handler != NULL) {
+        udp->S = NULL; /* mark dead */
+        return;
+    }
+    ZN_PUTOBJECT(udp);
+}
+
+ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
+    SOCKADDR_IN dst;
+    if (udp->socket == INVALID_SOCKET) return ZN_ESTATE;
+    if (len == 0 || len >1200)         return ZN_EPARAM;
+
+    memset(&dst, 0, sizeof(SOCKADDR_IN));
+    dst.sin_family = AF_INET;
+    dst.sin_addr.s_addr = inet_addr(addr);
+    dst.sin_port = htons(port);
+    sendto(udp->socket, buff, len, 0, (struct sockaddr*)&dst, sizeof(dst));
+    return ZN_OK;
+}
+
+ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler *cb, void *ud) {
+    DWORD dwRecv = 0;
+    DWORD dwFlag = 0;
+    if (udp->socket == INVALID_SOCKET) return ZN_ESTATE;
+    if (udp->recv_handler)             return ZN_EBUSY;
+    if (len == 0 || cb == NULL)        return ZN_EPARAM;
+
+    udp->recvBuffer.buf = buff;
+    udp->recvBuffer.len = len;
+
+    memset(&udp->recvFrom, 0, sizeof(udp->recvFrom));
+    udp->recvFromLen = sizeof(udp->recvFrom);
+    if ((WSARecvFrom(udp->socket, &udp->recvBuffer, 1, &dwRecv, &dwFlag,
+                (struct sockaddr*)&udp->recvFrom, &udp->recvFromLen,
+                &udp->recv_request.overlapped, NULL) != 0)
+            && WSAGetLastError() != WSA_IO_PENDING)
+    {
+        udp->recvBuffer.buf = NULL;
+        udp->recvBuffer.len = 0;
+        return ZN_ERROR;
+    }
+
+    ++udp->S->waittings;
+    udp->recv_handler = cb;
+    udp->recv_ud = ud;
+    return ZN_OK;
+}
+
+static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
+    zn_RecvFromHandler *cb = udp->recv_handler;
+    if (udp->S == NULL) {
+        /* cb(udp->recv_ud, udp, ZN_ERROR, dwBytes, "0.0.0.0", 0); */
+        znL_remove(udp);
+        free(udp);
+        return;
+    }
+    if (!cb) return;
+    udp->recv_handler = NULL;
+    if (bSuccess && dwBytes > 0)
+        cb(udp->recv_ud, udp, ZN_OK, dwBytes,
+                inet_ntoa(((struct sockaddr_in*)&udp->recvFrom)->sin_addr),
+                ntohs(udp->recvFrom.sin_port));
+    else cb(udp->recv_ud, udp, ZN_ERROR, dwBytes,
+            "0.0.0.0", 0);
+}
+
+/* poll */
+
+static BOOL zn_initialized = FALSE;
+static LARGE_INTEGER counterFreq;
+
+ZN_API void zn_initialize(void) {
+    if (!zn_initialized) {
+        WORD version = MAKEWORD(2, 2);
+        WSADATA d;
+        if (WSAStartup(version, &d) != 0) {
+            abort();
+        }
+        zn_initialized = TRUE;
+    }
+}
+
+ZN_API void zn_deinitialize(void) {
+    if (zn_initialized) {
+        WSACleanup();
+        zn_initialized = FALSE;
+    }
+}
+
+ZN_API unsigned zn_time(void) {
+    LARGE_INTEGER current;
+    QueryPerformanceCounter(&current);
+    return (unsigned)(current.QuadPart / counterFreq.QuadPart);
+}
+
+ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
+    zn_Post *ps = (zn_Post*)malloc(sizeof(zn_Post));
+    if (ps == NULL) return 0;
+    ps->handler = cb;
+    ps->ud = ud;
+    PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)ps);
+    return 1;
+}
+
+static int znS_init(zn_State *S) {
+    if (counterFreq.QuadPart == 0) {
+        QueryPerformanceFrequency(&counterFreq);
+        counterFreq.QuadPart /= 1000;
+    }
+    S->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
+            NULL, (ULONG_PTR)0, 1);
+    return S->iocp != NULL;
+}
+
+static void znS_close(zn_State *S) {
+    while (S->waittings != 0)
+        zn_run(S, ZN_RUN_ONCE);
+    CloseHandle(S->iocp);
+}
+
+static int znS_clone(zn_State *NS, zn_State *S) {
+    NS->iocp = S->iocp;
+    return 1;
+}
+
+static int znS_poll(zn_State *S, int checkonly) {
+    DWORD dwBytes = 0;
+    ULONG_PTR upComKey = (ULONG_PTR)0;
+    LPOVERLAPPED pOverlapped = NULL;
+    zn_Request *req;
+    BOOL bRet;
+    unsigned current;
+
+    S->status = ZN_STATUS_IN_RUN;
+    znT_updatetimer(S, current = zn_time());
+    bRet = GetQueuedCompletionStatus(S->iocp,
+            &dwBytes, &upComKey, &pOverlapped,
+            checkonly ? 0 : znT_gettimeout(S, current));
+    znT_updatetimer(S, zn_time());
+    if (!bRet && !pOverlapped) /* time out */
+        goto out;
+
+    if (upComKey == 0) {
+        zn_Post *ps = (zn_Post*)pOverlapped;
+        if (ps->handler)
+            ps->handler(ps->ud, S);
+        free(ps);
+        goto out;
+    }
+
+    req = (zn_Request*)pOverlapped;
+    --S->waittings;
+    switch (req->type) {
+        case ZN_TACCEPT:   zn_onaccept((zn_Accept*)upComKey, bRet); break;
+        case ZN_TRECV:     zn_onrecv((zn_Tcp*)upComKey, bRet, dwBytes); break;
+        case ZN_TSEND:     zn_onsend((zn_Tcp*)upComKey, bRet, dwBytes); break;
+        case ZN_TCONNECT:  zn_onconnect((zn_Tcp*)upComKey, bRet); break;
+        case ZN_TRECVFROM: zn_onrecvfrom((zn_Udp*)upComKey, bRet, dwBytes); break;
+        case ZN_TSENDTO: /* do not have this operation */
+        default: ;
+    }
+
+out:
+    if (S->status == ZN_STATUS_CLOSING_IN_RUN) {
+        S->status = ZN_STATUS_READY; /* trigger real close */
+        zn_close(S);
+        return 0;
+    }
+    S->status = ZN_STATUS_READY;
+    return S->active_timers != NULL || S->waittings != 0;
+}
+
+
+#endif /* ZN_USE_IOCP */
+/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
+ * win32cc: libs+='-lws2_32' output='znet.dll' */
+/* unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
+ * unixcc: libs+='-lpthread' output='znet.so' */
