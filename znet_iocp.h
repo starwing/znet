@@ -2,20 +2,21 @@
 # include "znet.h"
 #endif
 
+
 #if defined(_WIN32) && defined(ZN_USE_IOCP) && !defined(zn_iocp_imcluded)
 #define zn_iocp_imcluded 
 
-#ifndef WIN32_LEAN_AND_MEAN
-#  define WIN32_LEAN_AND_MEAN
-#endif
-#include <Windows.h>
-#include <WinSock2.h>
-#include <MSWSock.h>
+# ifndef WIN32_LEAN_AND_MEAN
+#   define WIN32_LEAN_AND_MEAN
+# endif
+# include <Windows.h>
+# include <WinSock2.h>
+# include <MSWSock.h>
 
-#ifdef _MSC_VER
-# pragma warning(disable:4996)
-# pragma comment(lib, "ws2_32")
-#endif /* _MSC_VER */
+# ifdef _MSC_VER
+#  pragma warning(disable:4996)
+#  pragma comment(lib, "ws2_32")
+# endif /* _MSC_VER */
 
 typedef enum zn_RequestType {
     ZN_TACCEPT,
@@ -41,6 +42,26 @@ struct zn_State {
     HANDLE iocp;
     unsigned waittings;
 };
+
+/* utils */
+
+static int znU_set_nodelay(SOCKET socket) {
+    BOOL bEnable = 1;
+    return setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
+            (char*)&bEnable, sizeof(bEnable)) == 0;
+}
+
+static int znU_update_acceptinfo(SOCKET server, SOCKET client) {
+    return setsockopt(client, SOL_SOCKET,
+            SO_UPDATE_ACCEPT_CONTEXT,
+            (char*)&server, sizeof(server)) == 0;
+}
+
+static int znU_set_reuseaddr(SOCKET socket) {
+    BOOL bReuseAddr = TRUE;
+    return setsockopt(socket, SOL_SOCKET, SO_REUSEADDR,
+            (char*)&bReuseAddr, sizeof(BOOL)) == 0;
+}
 
 /* tcp */
 
@@ -241,10 +262,7 @@ static void zn_onconnect(zn_Tcp *tcp, BOOL bSuccess) {
         cb(tcp->connect_ud, tcp, ZN_ERROR);
     }
     else {
-        BOOL bEnable = 1;
-        if (setsockopt(tcp->socket, IPPROTO_TCP, TCP_NODELAY,
-                    (char*)&bEnable, sizeof(bEnable)) != 0)
-        { /* XXX */ }
+        znU_set_nodelay(tcp->socket);
         cb(tcp->connect_ud, tcp, ZN_OK);
     }
 }
@@ -341,7 +359,6 @@ ZN_API int zn_closeaccept(zn_Accept *accept) {
 
 ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
     SOCKADDR_IN sockAddr;
-    BOOL bReuseAddr = TRUE;
     SOCKET socket;
     if (accept->socket != INVALID_SOCKET) return ZN_ESTATE;
     if (accept->accept_handler != NULL)   return ZN_EBUSY;
@@ -350,10 +367,7 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
-    if (setsockopt(accept->socket, SOL_SOCKET, SO_REUSEADDR,
-                (char*)&bReuseAddr, sizeof(BOOL)) != 0)
-    { /* XXX */ }
-
+    znU_set_reuseaddr(accept->socket);
     memset(&sockAddr, 0, sizeof(sockAddr));
     sockAddr.sin_family = AF_INET;
     sockAddr.sin_addr.s_addr = inet_addr(addr);
@@ -416,7 +430,6 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
     static LPFN_GETACCEPTEXSOCKADDRS lpGetAcceptExSockaddrs = NULL;
     static GUID gid = WSAID_GETACCEPTEXSOCKADDRS;
     zn_AcceptHandler *cb = accept->accept_handler;
-    BOOL bEnable = 1;
     zn_Tcp *tcp;
     struct sockaddr *paddr1 = NULL;
     struct sockaddr *paddr2 = NULL;
@@ -437,12 +450,8 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
         return;
     }
 
-    if (setsockopt(accept->client, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
-                (char*)&accept->socket, sizeof(accept->socket)) != 0)
-    { /* XXX */ }
-    if (setsockopt(accept->client, IPPROTO_TCP, TCP_NODELAY,
-                (char*)&bEnable, sizeof(bEnable)) != 0)
-    { /* XXX */ }
+    znU_update_acceptinfo(accept->socket, accept->client);
+    znU_set_nodelay(accept->client);
 
     if (!lpGetAcceptExSockaddrs && !zn_getextension(accept->client,
                 &gid, &lpGetAcceptExSockaddrs))
@@ -660,11 +669,11 @@ static int znS_poll(zn_State *S, int checkonly) {
     unsigned current;
 
     S->status = ZN_STATUS_IN_RUN;
-    znT_updatetimer(S, current = zn_time());
+    znT_updatetimers(S, current = zn_time());
     bRet = GetQueuedCompletionStatus(S->iocp,
             &dwBytes, &upComKey, &pOverlapped,
             checkonly ? 0 : znT_gettimeout(S, current));
-    znT_updatetimer(S, zn_time());
+    znT_updatetimers(S, zn_time());
     if (!bRet && !pOverlapped) /* time out */
         goto out;
 
@@ -695,7 +704,7 @@ out:
         return 0;
     }
     S->status = ZN_STATUS_READY;
-    return S->active_timers != NULL || S->waittings != 0;
+    return znT_hastimers(S) || S->waittings != 0;
 }
 
 

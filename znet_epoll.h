@@ -2,6 +2,7 @@
 # include "znet.h"
 #endif
 
+
 #if defined(__linux__) && defined(ZN_USE_EPOLL) && !defined(zn_epoll_imcluded)
 #define zn_epoll_imcluded 
 
@@ -15,7 +16,6 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
-
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 
@@ -46,6 +46,25 @@ struct zn_State {
     int epoll;
     int eventfd;
 };
+
+/* utils */
+
+static int znU_set_nodelay(int socket) {
+    int enable = 1;
+    return setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
+            (char*)&enable, sizeof(enable)) == 0;
+}
+
+static int znU_set_nonblock(int socket) {
+    return fcntl(socket, F_SETFL,
+            fcntl(socket, F_GETFL)|O_NONBLOCK) == 0;
+}
+
+static int znU_set_reuseaddr(int socket) {
+    int reuse_addr = 1;
+    return setsockopt(socket, SOL_SOCKET, SO_REUSEADDR,
+            (char*)&reuse_addr, sizeof(reuse_addr)) == 0;
+}
 
 /* post queue */
 
@@ -135,13 +154,10 @@ static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port) {
 }
 
 static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr) {
-    int flag = 1;
     zn_Tcp *tcp = zn_newtcp(S);
     tcp->fd = fd;
 
-    if (fcntl(tcp->fd, F_SETFL, fcntl(tcp->fd, F_GETFL)|O_NONBLOCK) != 0)
-    { /* XXX */ }
-
+    znU_set_nonblock(tcp->fd);
     tcp->status = EPOLLIN|EPOLLOUT;
     tcp->event.events = EPOLLET|EPOLLIN|EPOLLOUT|EPOLLRDHUP;
     if (epoll_ctl(tcp->S->epoll, EPOLL_CTL_ADD,
@@ -151,10 +167,7 @@ static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr
         return NULL;
     }
 
-    if (setsockopt(tcp->fd, IPPROTO_TCP, TCP_NODELAY,
-                (char*)&flag, sizeof(flag)) != 0)
-    { /* XXX */ }
-
+    znU_set_nodelay(tcp->fd);
     zn_setinfo(tcp, 
             inet_ntoa(remote_addr->sin_addr),
             ntohs(remote_addr->sin_port));
@@ -206,9 +219,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
     if ((fd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
         return ZN_ESOCKET;
 
-    if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL)|O_NONBLOCK) != 0)
-    { /* XXX */ }
-
+    znU_set_nonblock(fd);
     memset(&remoteAddr, 0, sizeof(remoteAddr));
     remoteAddr.sin_family = AF_INET;
     remoteAddr.sin_addr.s_addr = inet_addr(addr);
@@ -285,7 +296,6 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
 }
 
 static void zn_onconnect(zn_Tcp *tcp, int eventmask) {
-    int flag = 1;
     zn_ConnectHandler *cb = tcp->connect_handler;
     assert(tcp->connect_handler);
     tcp->connect_handler = NULL;
@@ -306,10 +316,7 @@ static void zn_onconnect(zn_Tcp *tcp, int eventmask) {
         return;
     }
 
-    if (setsockopt(tcp->fd, IPPROTO_TCP, TCP_NODELAY,
-                (char*)&flag, sizeof(flag)) != 0)
-    { /* XXX */ }
-
+    znU_set_nodelay(tcp->fd);
     cb(tcp->connect_ud, tcp, ZN_OK);
 }
 
@@ -409,7 +416,6 @@ ZN_API int zn_closeaccept(zn_Accept *accept) {
 
 ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
     struct sockaddr_in sock_addr;
-    int reuse_addr = 1;
     int fd;
     if (accept->fd != -1)               return ZN_ESTATE;
     if (accept->accept_handler != NULL) return ZN_EBUSY;
@@ -425,10 +431,7 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
         return ZN_EPOLL;
     }
 
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR,
-                (char*)&reuse_addr, sizeof(reuse_addr)) != 0)
-    { /* XXX */ }
-
+    znU_set_reuseaddr(fd);
     memset(&sock_addr, 0, sizeof(sock_addr));
     sock_addr.sin_family = AF_INET;
     sock_addr.sin_addr.s_addr = inet_addr(addr);
@@ -666,12 +669,12 @@ static int znS_poll(zn_State *S, int checkonly) {
     int i, ret;
     struct epoll_event events[ZN_MAX_EVENTS];
     S->status = ZN_STATUS_IN_RUN;
-    znT_updatetimer(S, zn_time());
+    znT_updatetimers(S, zn_time());
     ret = epoll_wait(S->epoll, events, ZN_MAX_EVENTS,
             checkonly ? 0 : znT_gettimeout(S, zn_time()));
     if (ret == -1 && errno != EINTR) /* error out */
         goto out;
-    znT_updatetimer(S, zn_time());
+    znT_updatetimers(S, zn_time());
     for (i = 0; i < ret; ++i)
         zn_dispatch(S, &events[i]);
     znR_process(S);
@@ -683,7 +686,7 @@ out:
         return 0;
     }
     S->status = ZN_STATUS_READY;
-    return S->active_timers != NULL;
+    return znT_hastimers(S);
 }
 
 static int znS_init(zn_State *S) {
