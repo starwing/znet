@@ -122,11 +122,15 @@ struct UdpSocket : public std::enable_shared_from_this<UdpSocket>
 
 /* implements */
 
-inline bool EventLoop::initialize()
-{ return (S = zn_newstate()) != nullptr; }
-
 inline void EventLoop::runOnce(bool isImeediately/* = false*/)
 { zn_run(S, isImeediately ? ZN_RUN_CHECK : ZN_RUN_ONCE); }
+
+inline bool EventLoop::initialize()
+{
+    if (S == nullptr)
+        return (S = zn_newstate()) != nullptr;
+    return true;
+}
 
 inline void post_cb(void *ud, zn_State *) 
 {
@@ -170,13 +174,16 @@ inline bool EventLoop::cancelTimer(unsigned long long timerID)
 }
 
 
-inline bool TcpAccept::initialize(EventLoopPtr const& summer)
-{ return (accept = zn_newaccept(summer->S)) != nullptr; }
-
 inline bool TcpAccept::openAccept(std::string const& ip, unsigned short port)
 { return zn_listen(accept, ip.c_str(), port) == ZN_OK; }
 
-static inline void accept_ud(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp)
+inline bool TcpAccept::initialize(EventLoopPtr const& summer) {
+    if (accept == nullptr)
+        return (accept = zn_newaccept(summer->S)) != nullptr;
+    return true;
+}
+
+static inline void accept_cb(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp)
 {
     TcpAccept *ta = static_cast<TcpAccept*>(ud);
     OnAcceptHandler h(std::move(ta->acceptHandler));
@@ -186,7 +193,7 @@ static inline void accept_ud(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *
 
 inline bool TcpAccept::doAccept(TcpSocketPtr const& s, OnAcceptHandler&& h)
 {
-    if (zn_accept(accept, accept_ud, this) == ZN_OK)
+    if (zn_accept(accept, accept_cb, this) == ZN_OK)
     {
         client = s;
         acceptHandler = h;
@@ -196,11 +203,14 @@ inline bool TcpAccept::doAccept(TcpSocketPtr const& s, OnAcceptHandler&& h)
 }
 
 
-inline bool TcpSocket::initialize(EventLoopPtr const& summer)
-{ return (tcp = zn_newtcp(summer->S)) != nullptr; }
-
 inline bool TcpSocket::doClose()
 { return zn_closetcp(tcp) == ZN_OK; }
+
+inline bool TcpSocket::initialize(EventLoopPtr const& summer) {
+    if (tcp == nullptr)
+        return (tcp = zn_newtcp(summer->S)) != nullptr;
+    return true;
+}
 
 inline bool TcpSocket::getPeerInfo(std::string& remoteIP, unsigned short& remotePort) const
 { 
@@ -263,11 +273,14 @@ inline bool TcpSocket::doRecv(char* buf, unsigned len, OnRecvHandler&& h)
 }
 
     
-inline bool UdpSocket::initialize(EventLoopPtr const& summer, std::string const& ip, unsigned short port)
-{ return (udp = zn_newudp(summer->S, ip.c_str(), port)) != nullptr; }
-
 inline bool UdpSocket::doSendTo(char const* buf, unsigned len, std::string const& remoteIP, unsigned short remotePort)
 { return zn_sendto(udp, buf, len, remoteIP.c_str(), remotePort) == ZN_OK; }
+
+inline bool UdpSocket::initialize(EventLoopPtr const& summer, std::string const& ip, unsigned short port) {
+    if (udp == nullptr)
+        return (udp = zn_newudp(summer->S, ip.c_str(), port)) != nullptr;
+    return true;
+}
 
 static inline void recvfrom_cb(void *ud, zn_Udp *udp, unsigned err, unsigned count, const char *ip, unsigned port)
 {
@@ -288,9 +301,10 @@ inline bool UdpSocket::doRecv(char* buf, unsigned len, OnRecvFromHandler&& h)
 
 
 class GlobalEnv {
+public:
     GlobalEnv() { zn_initialize(); }
     ~GlobalEnv() { zn_deinitialize(); }
-    friend inline GlobalEnv& globalEnv() {
+    static inline GlobalEnv& globalEnv() {
         static GlobalEnv env;
         return env;
     }
