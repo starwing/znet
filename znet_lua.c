@@ -118,18 +118,20 @@ static int Ltimer_delete(lua_State *L) {
 static int Ltimer_start(lua_State *L) {
     lzn_Timer *obj = (lzn_Timer*)lbind_check(L, 1, &lbT_Timer);
     lua_Integer delayms = luaL_optinteger(L, 2, 0);
+    if (!obj->timer) return 0;
     if (delayms < 0) delayms = 0;
     obj->delayms = (unsigned)delayms;
     if (zn_starttimer(obj->timer, obj->delayms))
         lzn_ref(L, 1, &obj->ref);
-    lbind_returnself(L);
+    return_self(L);
 }
 
 static int Ltimer_cancel(lua_State *L) {
     lzn_Timer *obj = (lzn_Timer*)lbind_check(L, 1, &lbT_Timer);
+    if (!obj->timer) return 0;
     lzn_unref(L, &obj->ref);
     zn_canceltimer(obj->timer);
-    lbind_returnself(L);
+    return_self(L);
 }
 
 static void open_timer(lua_State *L) {
@@ -198,9 +200,9 @@ static void lzn_tcperror(lua_State *L, lzn_Tcp *obj, int err) {
     lua_pushinteger(L, err);
     if (lbind_pcall(L, 3, 0) != LUA_OK) {
         fprintf(stderr, "%s\n", lua_tostring(L, -1));
-        lzn_unref(L, &obj->ref);
         lua_pop(L, 1);
     }
+    lzn_freetcp(L, obj);
 }
 
 static size_t lzn_onheader(void *ud, const char *buff, size_t len) {
@@ -320,6 +322,7 @@ static int Ltcp_delete(lua_State *L) {
 
 static int Ltcp_onerror(lua_State *L) {
     lzn_Tcp *obj = (lzn_Tcp*)lbind_check(L, 1, &lbT_Tcp);
+    if (!obj->tcp) return 0;
     luaL_checktype(L, 2, LUA_TFUNCTION);
     lzn_ref(L, 2, &obj->onerror_ref);
     return_self(L);
@@ -333,7 +336,7 @@ static int Ltcp_send(lua_State *L) {
     lua_Integer j = lzn_posrelat(luaL_optinteger(L, 4, len), len);
     int ret = ZN_OK;
     len = (size_t)(i > j ? 0 : j - i + 1);
-    if (obj->closing) return 0;
+    if (!obj->tcp || obj->closing) return 0;
     if (!zn_sendprepare(&obj->send, data + i - 1, len))
         return_self(L);
     lzn_ref(L, 1, &obj->ref);
@@ -346,6 +349,7 @@ static int Ltcp_send(lua_State *L) {
 static int Ltcp_receive(lua_State *L) {
     lzn_Tcp *obj = (lzn_Tcp*)lbind_check(L, 1, &lbT_Tcp);
     int ret;
+    if (!obj->tcp) return 0;
     luaL_checktype(L, 2, LUA_TFUNCTION);
     if (lua_isfunction(L, 3))
         lzn_ref(L, 3, &obj->onpacket_ref);
@@ -359,12 +363,14 @@ static int Ltcp_receive(lua_State *L) {
 
 static int Ltcp_close(lua_State *L) {
     lzn_Tcp *obj = (lzn_Tcp*)lbind_check(L, 1, &lbT_Tcp);
-    if (zn_sendsize(&obj->send) == 0) {
-        int ret = zn_closetcp(obj->tcp);
-        lzn_freetcp(L, obj);
-        return_result(L, ret);
+    if (obj->tcp) {
+        if (zn_sendsize(&obj->send) == 0) {
+            int ret = zn_closetcp(obj->tcp);
+            lzn_freetcp(L, obj);
+            return_result(L, ret);
+        }
+        obj->closing = 1;
     }
-    obj->closing = 1;
     return_self(L);
 }
 
@@ -421,6 +427,12 @@ static void lzn_onaccept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp)
     lua_pop(L, 1);
 }
 
+static void lzn_freeaccept(lua_State *L, lzn_Accept *obj) {
+    lzn_unref(L, &obj->onaccept_ref);
+    lzn_unref(L, &obj->ref);
+    obj->accept = NULL;
+}
+
 static int Laccept_new(lua_State *L) {
     zn_State *S = (zn_State*)lbind_check(L, 1, &lbT_State);
     lzn_Accept *obj;
@@ -439,12 +451,10 @@ static int Laccept_new(lua_State *L) {
 
 static int Laccept_delete(lua_State *L) {
     lzn_Accept *obj = (lzn_Accept*)lbind_test(L, 1, &lbT_Accept);
-    if (obj->accept != NULL) {
+    if (obj && obj->accept != NULL) {
         zn_delaccept(obj->accept);
+        lzn_freeaccept(L, obj);
         lbind_delete(L, 1);
-        lzn_unref(L, &obj->onaccept_ref);
-        lzn_unref(L, &obj->ref);
-        obj->accept = NULL;
     }
     return 0;
 }
@@ -454,6 +464,7 @@ static int Laccept_listen(lua_State *L) {
     const char *addr = luaL_optstring(L, 2, "127.0.0.1");
     lua_Integer port = luaL_checkinteger(L, 3);
     int ret;
+    if (!obj->accept) return 0;
     if (port < 0) luaL_argerror(L, 2, "port out of range");
     if ((ret = zn_listen(obj->accept, addr, (unsigned)port)) == ZN_OK)
         ret = zn_accept(obj->accept, lzn_onaccept, obj);
@@ -463,9 +474,10 @@ static int Laccept_listen(lua_State *L) {
 
 static int Laccept_close(lua_State *L) {
     lzn_Accept *obj = (lzn_Accept*)lbind_check(L, 1, &lbT_Accept);
-    int ret = zn_closeaccept(obj->accept);
-    lzn_unref(L, &obj->onaccept_ref);
-    lzn_unref(L, &obj->ref);
+    int ret;
+    if (!obj->accept) return 0;
+    ret = zn_closeaccept(obj->accept);
+    lzn_freeaccept(L, obj);
     return_result(L, ret);
 }
 
