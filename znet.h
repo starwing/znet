@@ -422,7 +422,7 @@ ZN_API int zn_starttimer(zn_Timer *timer, unsigned delayms) {
     if (ts->heap_size == ts->heap_used && !znT_resizeheap(ts, ts->heap_size*2))
         return 0;
     index = ts->heap_used++;
-    timer->starttime = ts->current;
+    timer->starttime = zn_time();
     timer->emittime = timer->starttime + delayms;
     while (index) {
         unsigned parent = (index-1)>>1;

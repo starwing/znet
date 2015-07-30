@@ -300,15 +300,17 @@ inline bool UdpSocket::doRecv(char* buf, unsigned len, OnRecvFromHandler&& h)
 }
 
 
-class GlobalEnv {
+class ZSummerEnvironment {
 public:
-    GlobalEnv() { zn_initialize(); }
-    ~GlobalEnv() { zn_deinitialize(); }
-    static inline GlobalEnv& globalEnv() {
-        static GlobalEnv env;
-        return env;
-    }
+    ZSummerEnvironment() { zn_initialize(); }
+    ~ZSummerEnvironment() { zn_deinitialize(); }
 };
+
+extern ZSummerEnvironment g_appEnvironment;
+
+#ifdef ZNPP_DEFINE_ENV
+ZSummerEnvironment g_appEnvironment;
+#endif
 
 
 ZNPP_NS_END

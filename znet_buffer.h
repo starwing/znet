@@ -120,7 +120,9 @@ ZN_NS_BEGIN
 
 /* buffer */
 
-#define ZN_MAX_SIZET (~(size_t)0 - 100)
+#ifndef ZN_MAX_SIZET
+# define ZN_MAX_SIZET (~(size_t)0 - 100)
+#endif
 
 ZN_API void zn_initbuffer(zn_Buffer *b) {
     b->buff = b->init_buff;
@@ -198,7 +200,8 @@ again:
             return 1;
         }
         if (ret <= count) {
-            b->packet_handler(b->packet_ud, buff, ret);
+            if (b->packet_handler)
+                b->packet_handler(b->packet_ud, buff, ret);
             buff += ret;
             count -= ret;
             goto again;
@@ -211,7 +214,8 @@ again:
     if (b->readed.used + count >= b->expected) {
         size_t remaining = b->expected - (b->readed.used + count);
         zn_addlstring(&b->readed, buff, remaining);
-        b->packet_handler(b->packet_ud, b->readed.buff, b->expected);
+        if (b->packet_handler)
+            b->packet_handler(b->packet_ud, b->readed.buff, b->expected);
         buff += remaining;
         count -= remaining;
         b->expected = 0;
