@@ -37,8 +37,6 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 }
 
 static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
-    size_t len;
-    char *buff;
     zn_BufferPoolNode *node = (zn_BufferPoolNode*)ud;
     if (err != ZN_OK) {
         zn_putbuffer(&pool, node);
@@ -47,8 +45,9 @@ static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     }
     recv_count += count;
     zn_recvfinish(&node->recv, count);
-    buff = zn_recvprepare(&node->recv, &len);
-    zn_recv(tcp, buff, len, on_recv, ud);
+    zn_recv(tcp,
+        zn_recvbuff(&node->recv),
+        zn_recvsize(&node->recv), on_recv, ud);
 }
 
 static size_t on_header(void *ud, const char *buff, size_t len) {
@@ -60,15 +59,14 @@ static size_t on_header(void *ud, const char *buff, size_t len) {
 
 static void on_packet(void *ud, const char *buff, size_t len) {
     zn_BufferPoolNode *node = (zn_BufferPoolNode*)ud;
-    char *sb = zn_sendprepare(&node->send, len);
-    memcpy(sb, buff, len);
-    zn_send(node->tcp, sb, len, on_send, node);
+    if (zn_sendprepare(&node->send, buff, len))
+        zn_send(node->tcp,
+            zn_sendbuff(&node->send),
+            zn_sendsize(&node->send), on_send, node);
     ++node->user_data;
 }
 
 static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
-    size_t len;
-    char *buff;
     zn_BufferPoolNode *node = (zn_BufferPoolNode*)ud;
     if (err != ZN_OK) {
         zn_putbuffer(&pool, node);
@@ -76,12 +74,13 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
         return;
     }
     ++connect_count;
-    buff = zn_recvprepare(&node->recv, &len);
-    zn_recv(tcp, buff, len, on_recv, ud);
-    len = DATA_SIZE + 2;
-    buff = zn_sendprepare(&node->send, len);
-    memcpy(buff, data, len);
-    zn_send(tcp, buff, len, on_send, ud);
+    zn_recv(tcp,
+        zn_recvbuff(&node->recv),
+        zn_recvsize(&node->recv), on_recv, ud);
+    if (zn_sendprepare(&node->send, data, DATA_SIZE+2))
+        zn_send(tcp,
+            zn_sendbuff(&node->send),
+            zn_sendsize(&node->send), on_send, ud);
 }
 
 static void on_client(void *ud, zn_Timer *timer, unsigned elapsed) {

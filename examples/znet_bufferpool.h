@@ -30,6 +30,7 @@ static zn_BufferPoolNode *zn_getbuffer(zn_BufferPool *pool) {
         return node;
     }
     node = (zn_BufferPoolNode*)malloc(sizeof(zn_BufferPoolNode));
+    if (node == NULL) return NULL;
     node->next = NULL;
     node->tcp = NULL;
     zn_initrecvbuffer(&node->recv);

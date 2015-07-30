@@ -208,7 +208,7 @@ static void lzn_tcperror(lua_State *L, lzn_Tcp *obj, int err) {
 static size_t lzn_onheader(void *ud, const char *buff, size_t len) {
     lzn_Tcp *obj = (lzn_Tcp*)ud;
     lua_State *L = obj->L;
-    size_t ret = 0;
+    size_t ret = len;
     if (obj->onheader_ref == LUA_NOREF) return ret;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onheader_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
@@ -217,7 +217,7 @@ static size_t lzn_onheader(void *ud, const char *buff, size_t len) {
         fprintf(stderr, "%s\n", lua_tostring(L, -1));
         lzn_unref(L, &obj->ref);
     }
-    else
+    else if (lua_isinteger(L, -1))
         ret = (size_t)lua_tointeger(L, -1);
     lua_pop(L, 1);
     return ret;

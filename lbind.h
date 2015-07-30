@@ -1306,8 +1306,10 @@ LB_API void *lbind_check(lua_State *L, int idx, const lbind_Type *t) {
   void *u = NULL;
   if (!check_size(L, idx))
     luaL_argerror(L, idx, "invalid lbind userdata");
-  if (obj != NULL && obj->o.instance == NULL)
+  if (obj == NULL || obj->o.instance == NULL) {
     luaL_argerror(L, idx, "null lbind object");
+    return NULL;
+  }
   u = lbT_testmeta(L, idx, t) ? obj->o.instance : lbT_trycast(L, idx, t);
   if (u == NULL)
     lbind_typeerror(L, idx, t->name);

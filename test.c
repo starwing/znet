@@ -35,6 +35,7 @@ void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
         return;
     }
     char *buff = malloc(128);
+    if (!buff) return;
     memset(buff, 0, 128);
     strcpy(buff, "hello world!");
     zn_send(tcp, buff, 128, on_send, buff);
