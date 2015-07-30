@@ -66,7 +66,6 @@ typedef struct lzn_Timer {
 static void lzn_ontimer(void *ud, zn_Timer *timer, unsigned elapsed) {
     lzn_Timer *obj = (lzn_Timer*)ud;
     lua_State *L = obj->L;
-    if (obj->ontimer_ref == LUA_NOREF) return;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ontimer_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
     lua_pushinteger(L, (lua_Integer)elapsed);
@@ -178,9 +177,9 @@ static void lzn_freetcp(lua_State *L, lzn_Tcp *obj) {
 static void lzn_onconnect(void *ud, zn_Tcp *tcp, unsigned err) {
     lzn_Tcp *obj = (lzn_Tcp*)ud;
     lua_State *L = obj->L;
-    if (obj->onconnect_ref == LUA_NOREF) return;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onconnect_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
+    lzn_unref(L, &obj->ref);
     if (err != ZN_OK) {
         lua_pushstring(L, zn_strerror(err));
         lua_pushinteger(L, err);
@@ -189,7 +188,6 @@ static void lzn_onconnect(void *ud, zn_Tcp *tcp, unsigned err) {
         fprintf(stderr, "%s\n", lua_tostring(L, -1));
         lua_pop(L, 1);
     }
-    lzn_unref(L, &obj->ref);
 }
 
 static void lzn_tcperror(lua_State *L, lzn_Tcp *obj, int err) {
@@ -209,7 +207,6 @@ static size_t lzn_onheader(void *ud, const char *buff, size_t len) {
     lzn_Tcp *obj = (lzn_Tcp*)ud;
     lua_State *L = obj->L;
     size_t ret = len;
-    if (obj->onheader_ref == LUA_NOREF) return ret;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onheader_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
     lua_pushlstring(L, buff, len);
@@ -413,7 +410,6 @@ typedef struct lzn_Accept {
 static void lzn_onaccept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     lzn_Accept *obj = (lzn_Accept*)ud;
     lua_State *L = obj->L;
-    if (obj->onaccept_ref == LUA_NOREF) return;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onaccept_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
     lzn_newtcp(L, tcp);
@@ -508,7 +504,6 @@ typedef struct lzn_Udp {
 static void lzn_onrecvfrom(void *ud, zn_Udp *udp, unsigned err, unsigned count, const char *addr, unsigned port) {
     lzn_Udp *obj = (lzn_Udp*)ud;
     lua_State *L = obj->L;
-    if (obj->onrecvfrom_ref == LUA_NOREF) return;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onrecvfrom_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
     if (err == ZN_OK) {
@@ -581,11 +576,7 @@ static int Ludp_receivefrom(lua_State *L) {
     lzn_Udp *obj = (lzn_Udp*)lbind_check(L, 1, &lbT_Udp);
     int ret;
     luaL_checktype(L, 2, LUA_TFUNCTION);
-    lua_settop(L, 2);
-    if (obj->onrecvfrom_ref == LUA_NOREF)
-        obj->onrecvfrom_ref = luaL_ref(L, LUA_REGISTRYINDEX);
-    else
-        lua_rawseti(L, LUA_REGISTRYINDEX, obj->onrecvfrom_ref);
+    lzn_ref(L, 2, &obj->onrecvfrom_ref);
     ret = zn_recvfrom(obj->udp,
             zn_prepbuffsize(&obj->recv, LZN_UDP_RECVSIZE),
             LZN_UDP_RECVSIZE, lzn_onrecvfrom, obj);
