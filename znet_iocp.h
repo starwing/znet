@@ -14,7 +14,8 @@
 # include <MSWSock.h>
 
 # ifdef _MSC_VER
-#  pragma warning(disable:4996)
+#  pragma warning(disable: 4996) /* deprecated stuffs */
+#  pragma warning(disable: 4127) /* for do {} while(0) */
 #  pragma comment(lib, "ws2_32")
 # endif /* _MSC_VER */
 
@@ -177,7 +178,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
     memset(&remoteAddr, 0, sizeof(remoteAddr));
     remoteAddr.sin_family = AF_INET;
     remoteAddr.sin_addr.s_addr = inet_addr(addr);
-    remoteAddr.sin_port = htons(port);
+    remoteAddr.sin_port = htons((unsigned short)port);
     zn_setinfo(tcp, addr, port);
 
     if (!lpConnectEx(tcp->socket,
@@ -371,7 +372,7 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
     memset(&sockAddr, 0, sizeof(sockAddr));
     sockAddr.sin_family = AF_INET;
     sockAddr.sin_addr.s_addr = inet_addr(addr);
-    sockAddr.sin_port = htons(port);
+    sockAddr.sin_port = htons((unsigned short)port);
     if (bind(socket, (struct sockaddr *)&sockAddr,
                 sizeof(sockAddr)) != 0)
     {
@@ -501,7 +502,7 @@ static int zn_initudp(zn_Udp *udp, const char *addr, unsigned port) {
     memset(&sockAddr, 0, sizeof(sockAddr));
     sockAddr.sin_family = AF_INET;
     sockAddr.sin_addr.s_addr = inet_addr(addr);
-    sockAddr.sin_port = htons(port);
+    sockAddr.sin_port = htons((unsigned short)port);
 
     socket = WSASocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0,
             WSA_FLAG_OVERLAPPED);
@@ -550,7 +551,7 @@ ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *ad
     memset(&dst, 0, sizeof(SOCKADDR_IN));
     dst.sin_family = AF_INET;
     dst.sin_addr.s_addr = inet_addr(addr);
-    dst.sin_port = htons(port);
+    dst.sin_port = htons((unsigned short)port);
     sendto(udp->socket, buff, len, 0, (struct sockaddr*)&dst, sizeof(dst));
     return ZN_OK;
 }

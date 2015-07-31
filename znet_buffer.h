@@ -164,9 +164,11 @@ ZN_API void zn_addlstring(zn_Buffer *b, const char *s, size_t len) {
 
 /* recv buffer */
 
-static void   zn_def_onpacket (void *ud, const char *buff, size_t len) {}
+static void zn_def_onpacket(void *ud, const char *buff, size_t len)
+{ (void)ud; (void)buff; (void)len; }
+
 static size_t zn_def_onheader (void *ud, const char *buff, size_t len)
-{ return len; }
+{ (void)ud; (void)buff; return len; }
 
 ZN_API void zn_recvonheader(zn_RecvBuffer *b, zn_HeaderHandler *h, void *ud)
 { b->header_handler = h ? h : zn_def_onheader; b->header_ud = ud; }

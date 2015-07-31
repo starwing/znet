@@ -32,6 +32,17 @@ LUALIB_API void (luaL_setfuncs) (lua_State *L, const luaL_Reg *l, int nup);
 # define LB_NS_END
 #endif
 
+#ifdef LBIND_STATIC_API
+# ifndef LBIND_IMPLEMENTATION
+#  define LBIND_IMPLEMENTATION
+# endif
+# if __GNUC__
+#   define LB_API static __attribute((unused))
+# else
+#   define LB_API static
+# endif
+#endif
+
 #if !defined(LB_API) && defined(_WIN32)
 # ifdef LBIND_IMPLEMENTATION
 #   define LB_API __declspec(dllexport)
@@ -1437,11 +1448,10 @@ LB_API lbind_EnumItem *lbind_findenum(lbind_Enum *et, const char *s, size_t len)
   return NULL;
 }
 
-LB_API int lbind_pushmask(lua_State *L, int evalue, lbind_Enum *et) {
+LB_API int lbind_pushmask(lua_State *L, int value, lbind_Enum *et) {
   luaL_Buffer b;
   lbind_EnumItem *items;
   int first = 1;
-  unsigned value = lbind_checkmask(L, 2, et);
   if (et->items == NULL) {
     lua_pushliteral(L, "");
     return 0;
@@ -1462,7 +1472,7 @@ LB_API int lbind_pushmask(lua_State *L, int evalue, lbind_Enum *et) {
 }
 
 LB_API int lbind_pushenum(lua_State *L, const char *name, lbind_Enum *et) {
-  lbind_EnumItem *item = lbind_findenum(et, name, -1);
+  lbind_EnumItem *item = lbind_findenum(et, name, ~(size_t)0);
   if (item == NULL)
     return -1;
   lua_pushinteger(L, item->value);

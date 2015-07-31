@@ -1,10 +1,9 @@
 #define LUA_LIB
-#define LBIND_IMPLEMENTATION
-#undef LBIND_DEFAULT_FLAG
-#define LBIND_DEFAULT_FLAG (LBIND_TRACK|LBIND_INTERN|LBIND_ACCESSOR)
+#define LBIND_STATIC_API
+#define LBIND_DEFAULT_FLAG (LBIND_TRACK|LBIND_ACCESSOR)
 #include "lbind.h"
 
-#define ZN_IMPLEMENTATION
+#define ZN_STATIC_API
 #include "znet.h"
 #include "znet_buffer.h"
 
@@ -177,6 +176,7 @@ static void lzn_freetcp(lua_State *L, lzn_Tcp *obj) {
 static void lzn_onconnect(void *ud, zn_Tcp *tcp, unsigned err) {
     lzn_Tcp *obj = (lzn_Tcp*)ud;
     lua_State *L = obj->L;
+    (void)tcp;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onconnect_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
     lzn_unref(L, &obj->ref);
@@ -238,14 +238,14 @@ static void lzn_onsend(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     if (err == ZN_OK) {
         if (!zn_sendfinish(&obj->send, count))
             goto check_close;
-        err = zn_send(obj->tcp,
+        err = zn_send(tcp,
                 zn_sendbuff(&obj->send),
                 zn_sendsize(&obj->send), lzn_onsend, obj);
     }
     if (err != ZN_OK) lzn_tcperror(obj->L, obj, err);
 check_close:
     if (obj->closing && zn_sendsize(&obj->send) == 0) {
-        zn_closetcp(obj->tcp);
+        zn_closetcp(tcp);
         lzn_freetcp(obj->L, obj);
     }
 }
@@ -254,7 +254,7 @@ static void lzn_onrecv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     lzn_Tcp *obj = (lzn_Tcp*)ud;
     if (err == ZN_OK) {
         zn_recvfinish(&obj->recv, count);
-        err = zn_recv(obj->tcp,
+        err = zn_recv(tcp,
                 zn_recvbuff(&obj->recv),
                 zn_recvsize(&obj->recv), lzn_onrecv, obj);
     }
@@ -410,6 +410,7 @@ typedef struct lzn_Accept {
 static void lzn_onaccept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     lzn_Accept *obj = (lzn_Accept*)ud;
     lua_State *L = obj->L;
+    if (err != ZN_OK) return;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onaccept_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
     lzn_newtcp(L, tcp);
@@ -418,7 +419,7 @@ static void lzn_onaccept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp)
         lzn_unref(L, &obj->ref);
     }
     else if (lua_toboolean(L, -1))
-        zn_accept(obj->accept, lzn_onaccept, ud);
+        zn_accept(accept, lzn_onaccept, ud);
     else lzn_unref(L, &obj->ref);
     lua_pop(L, 1);
 }
@@ -632,6 +633,7 @@ static int Lstate_run(lua_State *L) {
 }
 
 static int lzn_deinitialize(lua_State *L) {
+    (void)L;
     zn_deinitialize();
     return 0;
 }

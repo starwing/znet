@@ -13,6 +13,17 @@
 # endif
 #endif /* ZN_NS_BEGIN */
 
+#ifdef ZN_STATIC_API
+# ifndef ZN_IMPLEMENTATION
+#  define ZN_IMPLEMENTATION
+# endif
+# if __GNUC__
+#   define ZN_API static __attribute((unused))
+# else
+#   define ZN_API static
+# endif
+#endif
+
 #if !defined(ZN_API) && defined(_WIN32)
 # ifdef ZN_IMPLEMENTATION
 #  define ZN_API __declspec(dllexport)
@@ -490,7 +501,7 @@ static unsigned znT_gettimeout(zn_State *S, unsigned current) {
         unsigned emittime = S->timers.heap[0]->emittime;
         return emittime < current ? 0 : emittime - current;
     }
-    return -1;
+    return ~(unsigned)0;
 }
 
 
