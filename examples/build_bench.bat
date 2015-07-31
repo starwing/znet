@@ -5,5 +5,7 @@
 
 cl /nologo /Ox /MT  /Febench_flood.exe bench_flood.c
 cl /nologo /Ox /MT  /Febench_echo.exe  bench_echo.c
+cl /nologo /Ox /MT  /Febench_flood.exe  bench_flood.c
 cl /nologo /Ox /MT  /Febench_echo_buffer.exe  bench_echo_buffer.c
+@del *.exp *.lib *.obj
 pause
