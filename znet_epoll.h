@@ -3,8 +3,8 @@
 #endif
 
 
-#if defined(__linux__) && defined(ZN_USE_EPOLL) && !defined(zn_epoll_imcluded)
-#define zn_epoll_imcluded 
+#if defined(__linux__) && defined(ZN_USE_EPOLL) && !defined(znet_epoll_h)
+#define znet_epoll_h 
 
 #include <unistd.h>
 #include <errno.h>

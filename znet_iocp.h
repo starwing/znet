@@ -3,8 +3,8 @@
 #endif
 
 
-#if defined(_WIN32) && defined(ZN_USE_IOCP) && !defined(zn_iocp_imcluded)
-#define zn_iocp_imcluded 
+#if defined(_WIN32) && defined(ZN_USE_IOCP) && !defined(znet_iocp_h)
+#define znet_iocp_h
 
 # ifndef WIN32_LEAN_AND_MEAN
 #   define WIN32_LEAN_AND_MEAN
@@ -628,7 +628,7 @@ ZN_API void zn_deinitialize(void) {
 ZN_API unsigned zn_time(void) {
     LARGE_INTEGER current;
     QueryPerformanceCounter(&current);
-    return (unsigned)(current.QuadPart / counterFreq.QuadPart);
+    return (unsigned)(current.QuadPart * 1000 / counterFreq.QuadPart);
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
@@ -641,10 +641,8 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
 }
 
 static int znS_init(zn_State *S) {
-    if (counterFreq.QuadPart == 0) {
+    if (counterFreq.QuadPart == 0)
         QueryPerformanceFrequency(&counterFreq);
-        counterFreq.QuadPart /= 1000;
-    }
     S->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
             NULL, (ULONG_PTR)0, 1);
     return S->iocp != NULL;

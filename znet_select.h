@@ -3,8 +3,8 @@
 #endif
 
 
-#if defined(ZN_USE_SELECT) && !defined(zn_select_imcluded)
-#define zn_select_imcluded 
+#if defined(ZN_USE_SELECT) && !defined(znet_select_h)
+#define znet_select_h 
 
 #include <unistd.h>
 #include <errno.h>

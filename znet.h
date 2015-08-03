@@ -495,7 +495,7 @@ static void znT_updatetimers(zn_State *S, unsigned current) {
     ts->current = current;
     while (ts->heap_used && ts->heap[0]->emittime <= current) {
         zn_Timer *timer = ts->heap[0];
-        zn_canceltimer(ts->heap[0]);
+        zn_canceltimer(timer);
         if (timer->handler) {
             int ret = timer->handler(timer->u.ud, timer, current - timer->starttime);
             if (ret > 0) zn_starttimer(timer, ret);

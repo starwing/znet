@@ -2,7 +2,7 @@
 #define ZNET_HPP_INCLUDED
 
 
-#ifndef ZNET_HPP_NO_IMPLEMENTATION
+#ifdef ZNPP_STATIC_API
 # define ZN_IMPLEMENTATION
 # define ZN_API static inline
 #endif
@@ -151,9 +151,9 @@ static inline int timer_cb(void *ud, zn_Timer *timer, unsigned elapsed)
     EventLoop* loop = static_cast<EventLoop*>(ud);
     auto it = loop->timers.find(timer);
     if (it == loop->timers.end()) return 0;
-    auto h = std::move(it->second);
-    loop->timers.erase(it);
-    return h();
+    int ret = it->second();
+    if (ret <= 0) loop->timers.erase(it);
+    return ret;
 }
 
 inline TimerID EventLoop::createTimer(unsigned int delayms, OnTimerHandler&& h)
