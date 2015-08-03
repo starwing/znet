@@ -41,10 +41,11 @@ using EventLoopPtr = std::shared_ptr<EventLoop>;
 using TcpAcceptPtr = std::shared_ptr<TcpAccept>;
 using TcpSocketPtr = std::shared_ptr<TcpSocket>;
 using UdpSocketPtr = std::shared_ptr<UdpSocket>;
+using TimerID = zn_Timer*;
 
 /* callbacks */
 using OnPostHandler     = std::function<void()>;
-using OnTimerHandler    = std::function<void()>;
+using OnTimerHandler    = std::function<int()>;
 using OnAcceptHandler   = std::function<void(NetErrorCode, TcpSocketPtr)>;
 using OnConnectHandler  = std::function<void(NetErrorCode)>;
 using OnSendHandler     = std::function<void(NetErrorCode, unsigned)>;
@@ -61,13 +62,13 @@ struct EventLoop : public std::enable_shared_from_this<EventLoop>
     { }
 
     zn_State *S = nullptr;
-    std::unordered_map<unsigned long long, OnTimerHandler> timers;
+    std::unordered_map<TimerID, OnTimerHandler> timers;
 
     bool initialize();
     void runOnce(bool isImeediately = false);
     void post(OnPostHandler&& h);
-    unsigned long long createTimer(unsigned int delayms, OnTimerHandler&& h);
-    bool cancelTimer(unsigned long long timerID);
+    TimerID createTimer(unsigned int delayms, OnTimerHandler&& h);
+    bool cancelTimer(TimerID timerID);
 };
 
 struct TcpAccept : public std::enable_shared_from_this<TcpAccept>
@@ -145,30 +146,29 @@ inline void EventLoop::post(OnPostHandler&& h)
     zn_post(S, post_cb, newh);
 }
 
-static inline void timer_cb(void *ud, zn_Timer *timer, unsigned elapsed)
+static inline int timer_cb(void *ud, zn_Timer *timer, unsigned elapsed)
 {
     EventLoop* loop = static_cast<EventLoop*>(ud);
-    auto it = loop->timers.find(reinterpret_cast<unsigned long long>(timer));
-    if (it == loop->timers.end()) return;
+    auto it = loop->timers.find(timer);
+    if (it == loop->timers.end()) return 0;
     auto h = std::move(it->second);
     loop->timers.erase(it);
-    h();
+    return h();
 }
 
-inline unsigned long long EventLoop::createTimer(unsigned int delayms, OnTimerHandler&& h)
+inline TimerID EventLoop::createTimer(unsigned int delayms, OnTimerHandler&& h)
 {
     zn_Timer *t = zn_newtimer(S, timer_cb, this);
-    auto timerID = reinterpret_cast<unsigned long long>(t);
-    timers[timerID] = std::move(h);
+    timers[t] = std::move(h);
     zn_starttimer(t, delayms);
-    return timerID;
+    return t;
 }
 
-inline bool EventLoop::cancelTimer(unsigned long long timerID)
+inline bool EventLoop::cancelTimer(TimerID timerID)
 {
     auto it = timers.find(timerID);
     if (it == timers.end()) return false;
-    zn_canceltimer(reinterpret_cast<zn_Timer*>(timerID));
+    zn_canceltimer(timerID);
     timers.erase(it);
     return true;
 }

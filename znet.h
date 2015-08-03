@@ -78,7 +78,7 @@ typedef struct zn_PeerInfo {
 } zn_PeerInfo;
 
 typedef void zn_PostHandler     (void *ud, zn_State *S);
-typedef void zn_TimerHandler    (void *ud, zn_Timer *timer, unsigned delayed);
+typedef int  zn_TimerHandler    (void *ud, zn_Timer *timer, unsigned delayed);
 typedef void zn_AcceptHandler   (void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp);
 typedef void zn_ConnectHandler  (void *ud, zn_Tcp *tcp, unsigned err);
 typedef void zn_SendHandler     (void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
@@ -491,8 +491,10 @@ static void znT_updatetimers(zn_State *S, unsigned current) {
     while (ts->heap_used && ts->heap[0]->emittime <= current) {
         zn_Timer *timer = ts->heap[0];
         zn_canceltimer(ts->heap[0]);
-        if (timer->handler)
-            timer->handler(timer->u.ud, timer, current - timer->starttime);
+        if (timer->handler) {
+            int ret = timer->handler(timer->u.ud, timer, current - timer->starttime);
+            if (ret > 0) zn_starttimer(timer, ret);
+        }
     }
 }
 

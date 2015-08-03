@@ -62,7 +62,7 @@ typedef struct lzn_Timer {
     unsigned delayms;
 } lzn_Timer;
 
-static void lzn_ontimer(void *ud, zn_Timer *timer, unsigned elapsed) {
+static int lzn_ontimer(void *ud, zn_Timer *timer, unsigned elapsed) {
     lzn_Timer *obj = (lzn_Timer*)ud;
     lua_State *L = obj->L;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ontimer_ref);
@@ -72,17 +72,14 @@ static void lzn_ontimer(void *ud, zn_Timer *timer, unsigned elapsed) {
         fprintf(stderr, "%s\n", lua_tostring(L, -1));
         lzn_unref(L, &obj->ref);
     }
-    else if (lua_isinteger(L, -1)) {
-        lua_Integer ms = lua_tointeger(L, -1);
-        if (ms < 0) ms = 0;
-        obj->delayms = (unsigned)ms;
-        zn_starttimer(timer, obj->delayms);
-    }
+    else if (lua_isinteger(L, -1))
+        return (int)lua_tointeger(L, -1);
     else if (lua_toboolean(L, -1))
         zn_starttimer(timer, obj->delayms);
     else
         lzn_unref(L, &obj->ref);
     lua_pop(L, 1);
+    return 0;
 }
 
 static int Ltimer_new(lua_State *L) {
