@@ -113,6 +113,8 @@ ZN_API unsigned zn_time (void);
 ZN_API zn_Timer *zn_newtimer (zn_State *S, zn_TimerHandler *cb, void *ud);
 ZN_API void      zn_deltimer (zn_Timer *timer);
 
+ZN_API zn_TimerHandler *zn_gettimerf(zn_Timer *timer, void **ud);
+
 ZN_API int  zn_starttimer  (zn_Timer *timer, unsigned delayms);
 ZN_API void zn_canceltimer (zn_Timer *timer);
 
@@ -382,6 +384,9 @@ ZN_API int zn_run(zn_State *S, int mode) {
 
 static int znT_hastimers(zn_State *S)
 { return S->timers.heap_used != 0; }
+
+ZN_API zn_TimerHandler *zn_gettimerf(zn_Timer *timer, void **ud)
+{ if (ud) *ud = timer->u.ud; return timer->handler; }
 
 static int znT_resizeheap(zn_Timers *S, size_t size) {
     zn_Timer **heap;
