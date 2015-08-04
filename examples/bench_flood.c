@@ -127,14 +127,14 @@ static void print_ud(Userdata *ud, const char *title) {
     ud->send_ok = ud->send_err = ud->send_bytes = 0;
 }
 
-static void on_summary(void *ud, zn_Timer *timer, unsigned elapsed) {
+static int on_summary(void *ud, zn_Timer *timer, unsigned elapsed) {
     printf("%u: ", zn_time());
     if (is_client)
         print_ud(&client, "client");
     else
         print_ud(&server, "server");
     printf("\n");
-    zn_starttimer(timer, 1000);
+    return 1000;
 }
 
 int main(int argc, const char **argv) {

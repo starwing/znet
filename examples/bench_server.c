@@ -28,8 +28,6 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 }
 
 static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
-    size_t len;
-    char *buff;
     zn_BufferPoolNode *node = (zn_BufferPoolNode*)ud;
     if (err != ZN_OK) {
         zn_putbuffer(&pool, node);
@@ -38,8 +36,9 @@ static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     }
     recv_count += count;
     zn_recvfinish(&node->recv, count);
-    buff = zn_recvprepare(&node->recv, &len);
-    zn_recv(tcp, buff, len, on_recv, ud);
+    zn_recv(tcp,
+            zn_recvbuff(&node->recv),
+            zn_recvsize(&node->recv), on_recv, ud);
 }
 
 static size_t on_header(void *ud, const char *buff, size_t len) {
@@ -51,14 +50,13 @@ static size_t on_header(void *ud, const char *buff, size_t len) {
 
 static void on_packet(void *ud, const char *buff, size_t len) {
     zn_BufferPoolNode *node = (zn_BufferPoolNode*)ud;
-    char *sb = zn_sendprepare(&node->send, len);
-    memcpy(sb, buff, len);
-    zn_send(node->tcp, sb, len, on_send, node);
+    zn_sendprepare(&node->send, buff, len);
+    zn_send(node->tcp,
+            zn_sendbuff(&node->send),
+            zn_sendsize(&node->send), on_send, node);
 }
 
 static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
-    size_t len;
-    char *buff;
     zn_BufferPoolNode *node;
     if (err != ZN_OK)
         exit(2);
@@ -67,22 +65,22 @@ static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     zn_recvonheader(&node->recv, on_header, node);
     zn_recvonpacket(&node->recv, on_packet, node);
     node->tcp = tcp;
-    buff = zn_recvprepare(&node->recv, &len);
-    if (zn_recv(tcp, buff, len, on_recv, node) != ZN_OK) {
-        free(buff);
+    if (zn_recv(tcp,
+               zn_recvbuff(&node->recv),
+               zn_recvsize(&node->recv), on_recv, node) != ZN_OK) {
         zn_putbuffer(&pool, node);
         zn_deltcp(tcp);
     }
     zn_accept(accept, on_accept, ud);
 }
 
-static void on_timer(void *ud, zn_Timer *timer, unsigned elapsed) {
+static int on_timer(void *ud, zn_Timer *timer, unsigned elapsed) {
     printf("%d: connect=%d, recv=%d, send=%d\n",
             zn_time(), connect_count, recv_count, send_count);
     connect_count = 0;
     recv_count = 0;
     send_count = 0;
-    zn_starttimer(timer, INTERVAL);
+    return INTERVAL;
 }
 
 int main(int argc, char **argv) {

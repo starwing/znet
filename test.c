@@ -41,7 +41,7 @@ void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
     zn_send(tcp, buff, 128, on_send, buff);
 }
 
-void on_timer(void *ud, zn_Timer *t, unsigned elapsed) {
+int on_timer(void *ud, zn_Timer *t, unsigned elapsed) {
     static int i = 0;
 
     printf("%d>> %d\n", i, elapsed);
@@ -53,9 +53,9 @@ void on_timer(void *ud, zn_Timer *t, unsigned elapsed) {
     if (i++ == 5) {
         printf("stop listening ...\n");
         zn_delaccept(a);
-        return;
+        return 0;
     }
-    zn_starttimer(t, 1000);
+    return 1000;
 }
 
 int deinited = 0;

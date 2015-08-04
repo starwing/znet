@@ -83,7 +83,7 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
             zn_sendsize(&node->send), on_send, ud);
 }
 
-static void on_client(void *ud, zn_Timer *timer, unsigned elapsed) {
+static int on_client(void *ud, zn_Timer *timer, unsigned elapsed) {
     zn_BufferPoolNode *node = zn_getbuffer(&pool);
     zn_Tcp *tcp = zn_newtcp(S);
     zn_recvonheader(&node->recv, on_header, node);
@@ -91,7 +91,7 @@ static void on_client(void *ud, zn_Timer *timer, unsigned elapsed) {
     node->user_data = 0;
     node->tcp = tcp;
     zn_connect(tcp, addr, port, on_connect, node);
-    zn_starttimer(timer, 0);
+    return 1;
 }
 
 static void init_data(void) {
@@ -106,13 +106,13 @@ static void init_data(void) {
     }
 }
 
-static void on_timer(void *ud, zn_Timer *timer, unsigned elapsed) {
+static int on_timer(void *ud, zn_Timer *timer, unsigned elapsed) {
     printf("%d: connect=%d, recv=%d, send=%d\n",
             zn_time(), connect_count, recv_count, send_count);
     connect_count = 0;
     recv_count = 0;
     send_count = 0;
-    zn_starttimer(timer, INTERVAL);
+    return INTERVAL;
 }
 
 int main(int argc, char **argv) {
