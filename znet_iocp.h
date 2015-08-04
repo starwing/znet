@@ -606,6 +606,7 @@ static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
 
 static BOOL zn_initialized = FALSE;
 static LARGE_INTEGER counterFreq;
+static LARGE_INTEGER startTime;
 
 ZN_API void zn_initialize(void) {
     if (!zn_initialized) {
@@ -628,7 +629,8 @@ ZN_API void zn_deinitialize(void) {
 ZN_API unsigned zn_time(void) {
     LARGE_INTEGER current;
     QueryPerformanceCounter(&current);
-    return (unsigned)(current.QuadPart * 1000 / counterFreq.QuadPart);
+    return (unsigned)((current.QuadPart - startTime.QuadPart) * 1000
+            / counterFreq.QuadPart);
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
@@ -641,8 +643,10 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
 }
 
 static int znS_init(zn_State *S) {
-    if (counterFreq.QuadPart == 0)
+    if (counterFreq.QuadPart == 0) {
         QueryPerformanceFrequency(&counterFreq);
+        QueryPerformanceCounter(&startTime);
+    }
     S->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
             NULL, (ULONG_PTR)0, 1);
     return S->iocp != NULL;

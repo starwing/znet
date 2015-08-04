@@ -20,6 +20,8 @@
 #include <sys/select.h>
 
 # ifdef __APPLE__ /* apple don't have spinlock :( */
+#   include <mach/mach.h>
+#   include <mach/mach_time.h>
 #   define pthread_spinlock_t  pthread_mutex_t
 #   define pthread_spin_init   pthread_mutex_init
 #   define pthread_spin_lock   pthread_mutex_lock
@@ -529,6 +531,11 @@ static void zn_onrecvfrom(zn_Udp *udp, int err) {
 
 /* poll */
 
+#ifdef __APPLE__
+static mach_timebase_info_data_t time_info;
+static uint64_t start;
+#endif
+
 ZN_API void zn_initialize(void) { }
 ZN_API void zn_deinitialize(void) { }
 
@@ -548,17 +555,35 @@ static int zn_initstate(zn_State *S) {
     return 1;
 }
 
-static int znS_init(zn_State *S)
-{ return zn_initstate(S); }
-
-ZN_API int znS_clone(zn_State *NS, zn_State *S)
-{ return zn_initstate(NS); }
-
 ZN_API unsigned zn_time(void) {
-    struct timeval tv;
-    if (gettimeofday(&tv, NULL) == -1)
+#ifdef __APPLE__
+    uint64_t now = mach_absolute_time();
+    return (unsigned)((now - start) * time_info.numer / time_info.denom / 1000000);
+#else
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
         return 0;
-    return (unsigned)(tv.tv_sec*1000+tv.tv_usec/1000);
+    return (unsigned)(ts.tv_sec*1000+ts.tv_nsec/1000000);
+#endif
+}
+
+static int znS_init(zn_State *S) {
+#ifdef __APPLE__
+    if (!time_info.numer) {
+        start = mach_absolute_time();
+	(void)mach_timebase_info(&time_info);
+    }
+#endif
+    return zn_initstate(S);
+}
+
+static void znS_close(zn_State *S) {
+    close(S->sockpairs[0]);
+    close(S->sockpairs[1]);
+}
+
+ZN_API int znS_clone(zn_State *NS, zn_State *S) {
+    return zn_initstate(NS);
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
@@ -638,11 +663,6 @@ out:
     }
     S->status = ZN_STATUS_READY;
     return znT_hastimers(S);
-}
-
-static void znS_close(zn_State *S) {
-    close(S->sockpairs[0]);
-    close(S->sockpairs[1]);
 }
 
 

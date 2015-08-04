@@ -621,10 +621,10 @@ static int zn_initstate(zn_State *S, int epoll) {
 }
 
 ZN_API unsigned zn_time(void) {
-    struct timeval tv;
-    if (gettimeofday(&tv, NULL) == -1)
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
         return 0;
-    return (unsigned)(tv.tv_sec*1000+tv.tv_usec/1000);
+    return (unsigned)(ts.tv_sec*1000+ts.tv_nsec/1000000);
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {

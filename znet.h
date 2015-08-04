@@ -235,7 +235,6 @@ ZN_NS_BEGIN
     zn_Udp    *udps;                        \
     zn_Timers  timers;                      \
     zn_Status  status;                      \
-    unsigned   nexttime;                    \
 
 # define ZN_GETOBJECT(S, type, name)        \
                          type* name;   do { \
@@ -276,10 +275,10 @@ typedef struct zn_Timers {
     zn_TimerPool *pool;
     zn_Timer *freed;
     zn_Timer **heap;
+    unsigned nexttime;
     unsigned pool_free;
     unsigned heap_used;
     unsigned heap_size;
-    unsigned current;
 } zn_Timers;
 
 /* routines implemented in this header and can be used
@@ -327,7 +326,7 @@ ZN_API zn_State *zn_newstate(void) {
     zn_State *S = (zn_State*)malloc(sizeof(zn_State));
     if (S == NULL) return NULL;
     memset(S, 0, sizeof(*S));
-    S->nexttime = ~(unsigned)0;
+    S->timers.nexttime = ~(unsigned)0;
     if (!znS_init(S)) {
         free(S);
         return NULL;
@@ -356,7 +355,6 @@ ZN_API zn_State *zn_clone(zn_State *S) {
     zn_State *NS = (zn_State*)malloc(sizeof(zn_State));
     if (NS == NULL) return NULL;
     memset(NS, 0, sizeof(zn_State));
-    NS->nexttime = ~(unsigned)0;
     if (!znS_clone(NS, S)) {
         free(NS);
         return NULL;
@@ -450,16 +448,17 @@ ZN_API int zn_starttimer(zn_Timer *timer, unsigned delayms) {
     }
     ts->heap[index] = timer;
     timer->index = index;
+    if (index == 0) ts->nexttime = timer->emittime;
     return 1;
 }
 
 ZN_API void zn_canceltimer(zn_Timer *timer) {
     zn_Timers *ts = &timer->S->timers;
-    unsigned index = timer->index;
+    unsigned index = timer->index, oldindex = index;
     if (index == ZN_TIMER_NOINDEX) return;
     timer->index = ZN_TIMER_NOINDEX;
     if (ts->heap_used == 0 || timer == ts->heap[--ts->heap_used])
-        return;
+        goto update_nexttime;
     timer = ts->heap[ts->heap_used];
     while (1) {
         unsigned left = (index<<1)|1, right = (index+1)<<1;
@@ -477,10 +476,18 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
     }
     ts->heap[index] = timer;
     timer->index = index;
+update_nexttime:
+    if (oldindex == 0) {
+        if (ts->heap_used == 0)
+            ts->nexttime = ~(unsigned)0;
+        else
+            ts->nexttime = ts->heap[0]->emittime;
+    }
 }
 
 static void znT_cleartimers(zn_State *S) {
     zn_Timers *ts = &S->timers;
+    ts->nexttime = ~(unsigned)0;
     while (ts->pool != NULL) {
         zn_TimerPool *next = ts->pool->next;
         free(ts->pool);
@@ -492,7 +499,7 @@ static void znT_cleartimers(zn_State *S) {
 
 static void znT_updatetimers(zn_State *S, unsigned current) {
     zn_Timers *ts = &S->timers;
-    ts->current = current;
+    if (ts->nexttime > current) return;
     while (ts->heap_used && ts->heap[0]->emittime <= current) {
         zn_Timer *timer = ts->heap[0];
         zn_canceltimer(timer);
@@ -504,11 +511,9 @@ static void znT_updatetimers(zn_State *S, unsigned current) {
 }
 
 static unsigned znT_gettimeout(zn_State *S, unsigned current) {
-    if (znT_hastimers(S)) {
-        unsigned emittime = S->timers.heap[0]->emittime;
-        return emittime < current ? 0 : emittime - current;
-    }
-    return ~(unsigned)0;
+    unsigned emittime = S->timers.nexttime;
+    if (emittime < current) return 0;
+    return emittime < current ? 0 : emittime - current;
 }
 
 
