@@ -555,15 +555,15 @@ static int zn_initstate(zn_State *S) {
     return 1;
 }
 
-ZN_API unsigned zn_time(void) {
+ZN_API zn_Time zn_time(void) {
 #ifdef __APPLE__
     uint64_t now = mach_absolute_time();
-    return (unsigned)((now - start) * time_info.numer / time_info.denom / 1000000);
+    return (zn_Time)((now - start) * time_info.numer / time_info.denom / 1000000);
 #else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
         return 0;
-    return (unsigned)(ts.tv_sec*1000+ts.tv_nsec/1000000);
+    return (zn_Time)(ts.tv_sec*1000+ts.tv_nsec/1000000);
 #endif
 }
 
@@ -636,11 +636,11 @@ static int znS_poll(zn_State *S, int checkonly) {
     fd_set writefds = S->writefds;
     fd_set exceptfds = S->exceptfds;
     struct timeval timeout = { 0, 0 };
+    zn_Time current;
     S->status = ZN_STATUS_IN_RUN;
-    unsigned current = zn_time();
-    znT_updatetimers(S, current);
+    znT_updatetimers(S, current = zn_time());
     if (!checkonly) {
-        unsigned ms = znT_gettimeout(S, current);
+        zn_Time ms = znT_gettimeout(S, current);
         timeout.tv_sec = ms/1000;
         timeout.tv_usec = ms%1000*1000;
     }

@@ -626,10 +626,10 @@ ZN_API void zn_deinitialize(void) {
     }
 }
 
-ZN_API unsigned zn_time(void) {
+ZN_API zn_Time zn_time(void) {
     LARGE_INTEGER current;
     QueryPerformanceCounter(&current);
-    return (unsigned)((current.QuadPart - startTime.QuadPart) * 1000
+    return (zn_Time)((current.QuadPart - startTime.QuadPart) * 1000
             / counterFreq.QuadPart);
 }
 
@@ -667,15 +667,19 @@ static int znS_poll(zn_State *S, int checkonly) {
     DWORD dwBytes = 0;
     ULONG_PTR upComKey = (ULONG_PTR)0;
     LPOVERLAPPED pOverlapped = NULL;
+    DWORD timeout = 0;
+    zn_Time current;
     zn_Request *req;
     BOOL bRet;
-    unsigned current;
 
     S->status = ZN_STATUS_IN_RUN;
     znT_updatetimers(S, current = zn_time());
+    if (!checkonly) {
+        zn_Time ms = znT_gettimeout(S, current);
+        timeout = ms >= INFINITE ? INFINITE : (DWORD)ms;
+    }
     bRet = GetQueuedCompletionStatus(S->iocp,
-            &dwBytes, &upComKey, &pOverlapped,
-            checkonly ? 0 : znT_gettimeout(S, current));
+            &dwBytes, &upComKey, &pOverlapped, timeout);
     znT_updatetimers(S, zn_time());
     if (!bRet && !pOverlapped) /* time out */
         goto out;

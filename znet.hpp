@@ -44,13 +44,20 @@ using UdpSocketPtr = std::shared_ptr<UdpSocket>;
 using TimerID = zn_Timer*;
 
 /* callbacks */
+#ifdef ZN_USE_NEW_TIMERHANDLER
+using OnTimerHandler    = std::function<zn_Time()>;
+#else
+using OnTimerHandler    = std::function<void()>;
+#endif
+
 using OnPostHandler     = std::function<void()>;
-using OnTimerHandler    = std::function<int()>;
 using OnAcceptHandler   = std::function<void(NetErrorCode, TcpSocketPtr)>;
 using OnConnectHandler  = std::function<void(NetErrorCode)>;
 using OnSendHandler     = std::function<void(NetErrorCode, unsigned)>;
 using OnRecvHandler     = std::function<void(NetErrorCode, unsigned)>;
 using OnRecvFromHandler = std::function<void(NetErrorCode, char const*, unsigned short, unsigned)>;
+
+const TimerID InvalidTimerID = nullptr;
 
 
 /* interfaces */
@@ -67,7 +74,7 @@ struct EventLoop : public std::enable_shared_from_this<EventLoop>
     bool initialize();
     void runOnce(bool isImeediately = false);
     void post(OnPostHandler&& h);
-    TimerID createTimer(unsigned int delayms, OnTimerHandler&& h);
+    TimerID createTimer(zn_Time delayms, OnTimerHandler&& h);
     bool cancelTimer(TimerID timerID);
 };
 
@@ -146,19 +153,27 @@ inline void EventLoop::post(OnPostHandler&& h)
     zn_post(S, post_cb, newh);
 }
 
-static inline int timer_cb(void *ud, zn_Timer *timer, unsigned elapsed)
+static inline zn_Time timer_cb(void *ud, zn_Timer *timer, unsigned elapsed)
 {
-    EventLoop* loop = static_cast<EventLoop*>(ud);
+    auto loop = static_cast<EventLoop*>(ud);
     auto it = loop->timers.find(timer);
     if (it == loop->timers.end()) return 0;
-    int ret = it->second();
-    if (ret <= 0) loop->timers.erase(it);
+#ifdef ZN_USE_NEW_TIMERHANDLER
+    auto ret = it->second();
+    if (ret == 0) loop->timers.erase(it);
+    return ret;
+#else
+    zn_Time ret = 0;
+    auto h = std::move(it->second);
+    h();
+    loop->timers.erase(it);
+#endif
     return ret;
 }
 
-inline TimerID EventLoop::createTimer(unsigned int delayms, OnTimerHandler&& h)
+inline TimerID EventLoop::createTimer(zn_Time delayms, OnTimerHandler&& h)
 {
-    zn_Timer *t = zn_newtimer(S, timer_cb, this);
+    auto t = zn_newtimer(S, timer_cb, this);
     timers[t] = std::move(h);
     zn_starttimer(t, delayms);
     return t;
@@ -185,8 +200,8 @@ inline bool TcpAccept::initialize(EventLoopPtr const& summer) {
 
 static inline void accept_cb(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp)
 {
-    TcpAccept *ta = static_cast<TcpAccept*>(ud);
-    OnAcceptHandler h(std::move(ta->acceptHandler));
+    auto ta = static_cast<TcpAccept*>(ud);
+    auto h(std::move(ta->acceptHandler));
     ta->client->tcp = tcp;
     h(static_cast<NetErrorCode>(err), std::move(ta->client));
 }
@@ -196,7 +211,7 @@ inline bool TcpAccept::doAccept(TcpSocketPtr const& s, OnAcceptHandler&& h)
     if (zn_accept(accept, accept_cb, this) == ZN_OK)
     {
         client = s;
-        acceptHandler = h;
+        acceptHandler = std::move(h);
         return true;
     }
     return false;
@@ -223,8 +238,8 @@ inline bool TcpSocket::getPeerInfo(std::string& remoteIP, unsigned short& remote
 
 static inline void connect_cb(void *ud, zn_Tcp *tcp, unsigned err)
 {
-    TcpSocket *ts = static_cast<TcpSocket*>(ud);
-    OnConnectHandler h(std::move(ts->connectHandler));
+    auto ts = static_cast<TcpSocket*>(ud);
+    auto h(std::move(ts->connectHandler));
     h(static_cast<NetErrorCode>(err));
 }
 
@@ -232,7 +247,7 @@ inline bool TcpSocket::doConnect(std::string const& remoteIP, unsigned short rem
 {
     if (zn_connect(tcp, remoteIP.c_str(), remotePort, connect_cb, this) == ZN_OK)
     {
-        connectHandler = h;
+        connectHandler = std::move(h);
         return true;
     }
     return false;
@@ -240,8 +255,8 @@ inline bool TcpSocket::doConnect(std::string const& remoteIP, unsigned short rem
 
 static inline void send_cb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count)
 {
-    TcpSocket *ts = static_cast<TcpSocket*>(ud);
-    OnSendHandler h(std::move(ts->sendHandler));
+    auto ts = static_cast<TcpSocket*>(ud);
+    auto h(std::move(ts->sendHandler));
     h(static_cast<NetErrorCode>(err), count);
 }
 
@@ -249,7 +264,7 @@ inline bool TcpSocket::doSend(char const* buf, unsigned len, OnSendHandler&& h)
 {
     if (zn_send(tcp, buf, len, send_cb, this) == ZN_OK)
     {
-        sendHandler = h;
+        sendHandler = std::move(h);
         return true;
     }
     return false;
@@ -257,8 +272,8 @@ inline bool TcpSocket::doSend(char const* buf, unsigned len, OnSendHandler&& h)
 
 static inline void recv_cb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count)
 {
-    TcpSocket *ts = static_cast<TcpSocket*>(ud);
-    OnRecvHandler h(std::move(ts->recvHandler));
+    auto ts = static_cast<TcpSocket*>(ud);
+    auto h(std::move(ts->recvHandler));
     h(static_cast<NetErrorCode>(err), count);
 }
 
@@ -266,7 +281,7 @@ inline bool TcpSocket::doRecv(char* buf, unsigned len, OnRecvHandler&& h)
 {
     if (zn_recv(tcp, buf, len, recv_cb, this) == ZN_OK)
     {
-        recvHandler = h;
+        recvHandler = std::move(h);
         return true;
     }
     return false;
@@ -284,8 +299,8 @@ inline bool UdpSocket::initialize(EventLoopPtr const& summer, std::string const&
 
 static inline void recvfrom_cb(void *ud, zn_Udp *udp, unsigned err, unsigned count, const char *ip, unsigned port)
 {
-    UdpSocket *us = static_cast<UdpSocket*>(ud);
-    OnRecvFromHandler h(std::move(us->recvFromHandler));
+    auto us = static_cast<UdpSocket*>(ud);
+    auto h(std::move(us->recvFromHandler));
     h(static_cast<NetErrorCode>(err), ip, port, count);
 }
 
@@ -293,13 +308,14 @@ inline bool UdpSocket::doRecv(char* buf, unsigned len, OnRecvFromHandler&& h)
 {
     if (zn_recvfrom(udp, buf, len, recvfrom_cb, this) == ZN_OK)
     {
-        recvFromHandler = h;
+        recvFromHandler = std::move(h);
         return true;
     }
     return false;
 }
 
 
+#ifndef ZNPP_NO_ENV
 class ZSummerEnvironment {
 public:
     ZSummerEnvironment() { zn_initialize(); }
@@ -308,8 +324,9 @@ public:
 
 extern ZSummerEnvironment g_appEnvironment;
 
-#ifdef ZNPP_DEFINE_ENV
+# ifdef ZNPP_DEFINE_ENV
 ZSummerEnvironment g_appEnvironment;
+# endif
 #endif
 
 

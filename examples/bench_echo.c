@@ -129,8 +129,8 @@ static void print_ud(Userdata *ud, const char *title) {
     ud->send_ok = ud->send_err = ud->send_bytes = 0;
 }
 
-static int on_summary(void *ud, zn_Timer *timer, unsigned elapsed) {
-    printf("%u: ", zn_time());
+static zn_Time on_summary(void *ud, zn_Timer *timer, zn_Time elapsed) {
+    printf("%u: ", (unsigned)zn_time());
     if (is_client)
         print_ud(&client, "client");
     else

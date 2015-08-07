@@ -41,6 +41,7 @@
 #define ZN_MAX_TIMERHEAP 512
 
 #define ZN_TIMER_NOINDEX  (~(unsigned)0)
+#define ZN_FOREVER        (~(zn_Time)0)
 #define ZN_MAX_SIZET      ((~(size_t)0)-100)
 
 
@@ -72,13 +73,20 @@ typedef struct zn_Tcp    zn_Tcp;
 typedef struct zn_Udp    zn_Udp;
 typedef struct zn_Timer  zn_Timer;
 
+#ifdef ZN_USE_64BIT_TIMER
+typedef unsigned long long zn_Time;
+#else
+typedef unsigned zn_Time;
+#endif
+
 typedef struct zn_PeerInfo {
     char     addr[ZN_MAX_ADDRLEN];
     unsigned port;
 } zn_PeerInfo;
 
+typedef zn_Time zn_TimerHandler (void *ud, zn_Timer *timer, zn_Time delayed);
+
 typedef void zn_PostHandler     (void *ud, zn_State *S);
-typedef int  zn_TimerHandler    (void *ud, zn_Timer *timer, unsigned delayed);
 typedef void zn_AcceptHandler   (void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp);
 typedef void zn_ConnectHandler  (void *ud, zn_Tcp *tcp, unsigned err);
 typedef void zn_SendHandler     (void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
@@ -108,14 +116,14 @@ ZN_API int zn_post (zn_State *S, zn_PostHandler *cb, void *ud);
 
 /* znet timer routines */
 
-ZN_API unsigned zn_time (void);
+ZN_API zn_Time zn_time (void);
 
 ZN_API zn_Timer *zn_newtimer (zn_State *S, zn_TimerHandler *cb, void *ud);
 ZN_API void      zn_deltimer (zn_Timer *timer);
 
 ZN_API zn_TimerHandler *zn_gettimerf(zn_Timer *timer, void **ud);
 
-ZN_API int  zn_starttimer  (zn_Timer *timer, unsigned delayms);
+ZN_API int  zn_starttimer  (zn_Timer *timer, zn_Time delayms);
 ZN_API void zn_canceltimer (zn_Timer *timer);
 
 
@@ -262,8 +270,8 @@ struct zn_Timer {
     zn_TimerHandler *handler;
     zn_State *S;
     unsigned index;
-    unsigned starttime;
-    unsigned emittime;
+    zn_Time starttime;
+    zn_Time emittime;
 };
 
 typedef struct zn_TimerPool {
@@ -275,7 +283,7 @@ typedef struct zn_Timers {
     zn_TimerPool *pool;
     zn_Timer *freed;
     zn_Timer **heap;
-    unsigned nexttime;
+    zn_Time nexttime;
     unsigned pool_free;
     unsigned heap_used;
     unsigned heap_size;
@@ -283,10 +291,10 @@ typedef struct zn_Timers {
 
 /* routines implemented in this header and can be used
  * in platform-specified headers */
-static void     znT_cleartimers  (zn_State *S);
-static void     znT_updatetimers (zn_State *S, unsigned current);
-static int      znT_hastimers    (zn_State *S);
-static unsigned znT_gettimeout   (zn_State *S, unsigned current);
+static void    znT_cleartimers  (zn_State *S);
+static void    znT_updatetimers (zn_State *S, zn_Time current);
+static int     znT_hastimers    (zn_State *S);
+static zn_Time znT_gettimeout   (zn_State *S, zn_Time current);
 
 /* static functions should be implement
  * in platform-specified headers */
@@ -326,7 +334,7 @@ ZN_API zn_State *zn_newstate(void) {
     zn_State *S = (zn_State*)malloc(sizeof(zn_State));
     if (S == NULL) return NULL;
     memset(S, 0, sizeof(*S));
-    S->timers.nexttime = ~(unsigned)0;
+    S->timers.nexttime = ZN_FOREVER;
     if (!znS_init(S)) {
         free(S);
         return NULL;
@@ -428,12 +436,13 @@ ZN_API void zn_deltimer(zn_Timer *timer) {
     timer->S->timers.freed = timer;
 }
 
-ZN_API int zn_starttimer(zn_Timer *timer, unsigned delayms) {
+ZN_API int zn_starttimer(zn_Timer *timer, zn_Time delayms) {
     unsigned index;
     zn_Timers *ts = &timer->S->timers;
     if (timer->index != ZN_TIMER_NOINDEX)
         zn_canceltimer(timer);
-    if (ts->heap_size == ts->heap_used && !znT_resizeheap(ts, ts->heap_size*2))
+    if (ts->heap_size == ts->heap_used
+            && !znT_resizeheap(ts, ts->heap_size * 2))
         return 0;
     index = ts->heap_used++;
     timer->starttime = zn_time();
@@ -454,11 +463,11 @@ ZN_API int zn_starttimer(zn_Timer *timer, unsigned delayms) {
 
 ZN_API void zn_canceltimer(zn_Timer *timer) {
     zn_Timers *ts = &timer->S->timers;
-    unsigned index = timer->index, oldindex = index;
+    unsigned index = timer->index;
     if (index == ZN_TIMER_NOINDEX) return;
     timer->index = ZN_TIMER_NOINDEX;
     if (ts->heap_used == 0 || timer == ts->heap[--ts->heap_used])
-        goto update_nexttime;
+        return;
     timer = ts->heap[ts->heap_used];
     while (1) {
         unsigned left = (index<<1)|1, right = (index+1)<<1;
@@ -476,18 +485,10 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
     }
     ts->heap[index] = timer;
     timer->index = index;
-update_nexttime:
-    if (oldindex == 0) {
-        if (ts->heap_used == 0)
-            ts->nexttime = ~(unsigned)0;
-        else
-            ts->nexttime = ts->heap[0]->emittime;
-    }
 }
 
 static void znT_cleartimers(zn_State *S) {
     zn_Timers *ts = &S->timers;
-    ts->nexttime = ~(unsigned)0;
     while (ts->pool != NULL) {
         zn_TimerPool *next = ts->pool->next;
         free(ts->pool);
@@ -495,25 +496,28 @@ static void znT_cleartimers(zn_State *S) {
     }
     free(ts->heap);
     memset(ts, 0, sizeof(zn_Timers));
+    ts->nexttime = ZN_FOREVER;
 }
 
-static void znT_updatetimers(zn_State *S, unsigned current) {
+static void znT_updatetimers(zn_State *S, zn_Time current) {
     zn_Timers *ts = &S->timers;
     if (ts->nexttime > current) return;
     while (ts->heap_used && ts->heap[0]->emittime <= current) {
         zn_Timer *timer = ts->heap[0];
         zn_canceltimer(timer);
         if (timer->handler) {
-            int ret = timer->handler(timer->u.ud, timer, current - timer->starttime);
+            int ret = timer->handler(timer->u.ud,
+                    timer, current - timer->starttime);
             if (ret > 0) zn_starttimer(timer, ret);
         }
     }
+    ts->nexttime = ts->heap_used == 0 ? ZN_FOREVER : ts->heap[0]->emittime;
 }
 
-static unsigned znT_gettimeout(zn_State *S, unsigned current) {
-    unsigned emittime = S->timers.nexttime;
+static zn_Time znT_gettimeout(zn_State *S, zn_Time current) {
+    zn_Time emittime = S->timers.nexttime;
     if (emittime < current) return 0;
-    return emittime < current ? 0 : emittime - current;
+    return emittime - current;
 }
 
 

@@ -620,11 +620,11 @@ static int zn_initstate(zn_State *S, int epoll) {
     return 1;
 }
 
-ZN_API unsigned zn_time(void) {
+ZN_API zn_Time zn_time(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) == -1)
-        return 0;
-    return (unsigned)(ts.tv_sec*1000+ts.tv_nsec/1000000);
+        return 1;
+    return (zn_Time)((zn_Time)ts.tv_sec*1000+ts.tv_nsec/1000000);
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
@@ -669,9 +669,14 @@ static int znS_poll(zn_State *S, int checkonly) {
     int i, ret;
     struct epoll_event events[ZN_MAX_EVENTS];
     S->status = ZN_STATUS_IN_RUN;
-    znT_updatetimers(S, zn_time());
-    ret = epoll_wait(S->epoll, events, ZN_MAX_EVENTS,
-            checkonly ? 0 : znT_gettimeout(S, zn_time()));
+    zn_Time current;
+    int timeout = 0;
+    znT_updatetimers(S, current = zn_time());
+    if (!checkonly) {
+        zn_Time ms = znT_gettimeout(S, current);
+        timeout = ms > INT_MAX ? -1 : (int)ms;
+    }
+    ret = epoll_wait(S->epoll, events, ZN_MAX_EVENTS, timeout);
     if (ret == -1 && errno != EINTR) /* error out */
         goto out;
     znT_updatetimers(S, zn_time());

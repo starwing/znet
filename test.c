@@ -5,13 +5,13 @@
 zn_State *S;
 zn_Accept *a;
 
-void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     printf("%p: sent: %s (%u): %s\n", tcp, (char*)ud, count, zn_strerror(err));
     free(ud);
     zn_deltcp(tcp);
 }
 
-void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     printf("%p: received: %s (%d) %s\n", tcp, (char*)ud, count, zn_strerror(err));
     if (err == ZN_OK)
         zn_send(tcp, ud, count, on_send, ud);
@@ -19,7 +19,7 @@ void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
         free(ud);
 }
 
-void on_accept(void *ud, zn_Accept *a, unsigned err, zn_Tcp *tcp) {
+static void on_accept(void *ud, zn_Accept *a, unsigned err, zn_Tcp *tcp) {
     char *buff = malloc(128);
     printf("%p: accepted: %s\n", tcp, zn_strerror(err));
     printf("%p: receiving ... ", tcp);
@@ -28,7 +28,7 @@ void on_accept(void *ud, zn_Accept *a, unsigned err, zn_Tcp *tcp) {
     zn_accept(a, on_accept, ud);
 }
 
-void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
+static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
     printf("%p: on_connect: %s\n", tcp, zn_strerror(err));
     if (err != ZN_OK) {
         zn_deltcp(tcp);
@@ -41,10 +41,10 @@ void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
     zn_send(tcp, buff, 128, on_send, buff);
 }
 
-int on_timer(void *ud, zn_Timer *t, unsigned elapsed) {
+static zn_Time on_timer(void *ud, zn_Timer *t, zn_Time elapsed) {
     static int i = 0;
 
-    printf("%d>> %d\n", i, elapsed);
+    printf("%d>> %u\n", i, (unsigned)elapsed);
     zn_Tcp *tcp = zn_newtcp(S);
     printf("%p: connecting ...", tcp);
     int ret = zn_connect(tcp, "127.0.0.1", 12345, on_connect, NULL);
@@ -59,7 +59,7 @@ int on_timer(void *ud, zn_Timer *t, unsigned elapsed) {
 }
 
 int deinited = 0;
-void cleanup(void) {
+static void cleanup(void) {
     if (!deinited) {
         deinited = 1;
         printf("exiting ... ");
@@ -72,7 +72,7 @@ void cleanup(void) {
 }
 
 #ifdef _WIN32
-BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
+static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
     zn_post(S, (zn_PostHandler*)cleanup, NULL);
     return TRUE;
 }
