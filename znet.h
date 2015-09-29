@@ -472,12 +472,14 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
     while (1) {
         unsigned left = (index<<1)|1, right = (index+1)<<1;
         unsigned newindex = right;
-        if (left >= ts->heap_used || right >= ts->heap_used) break;
+        if (left >= ts->heap_used) break;
         if (timer->emittime >= ts->heap[left]->emittime) {
-            if (ts->heap[left]->emittime < ts->heap[right]->emittime)
+            if (right >= ts->heap_used
+                    || ts->heap[left]->emittime < ts->heap[right]->emittime)
                 newindex = left;
         }
-        else if (timer->emittime <= ts->heap[right]->emittime)
+        else if (right >= ts->heap_used
+                || timer->emittime <= ts->heap[right]->emittime)
             break;
         ts->heap[index] = ts->heap[newindex];
         ts->heap[index]->index = index;

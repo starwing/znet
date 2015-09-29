@@ -18,11 +18,8 @@ LBIND_TYPE(lbT_Udp, "znet.Udp");
 
 /* utils */
 
-#define return_self(L) \
-    do { lua_settop(L, 1); return 1; } while (0)
-
 #define return_result(L, err) do {       \
-    if (err == ZN_OK) return_self(L);    \
+    if (err == ZN_OK) lbind_returnself(L);    \
     else return lzn_pushresult(L, err); } while (0)
 
 static int lzn_pushresult(lua_State *L, int err) {
@@ -120,7 +117,7 @@ static int Ltimer_start(lua_State *L) {
     obj->delayms = (unsigned)delayms;
     if (zn_starttimer(obj->timer, obj->delayms))
         lzn_ref(L, 1, &obj->ref);
-    return_self(L);
+    lbind_returnself(L);
 }
 
 static int Ltimer_cancel(lua_State *L) {
@@ -128,7 +125,7 @@ static int Ltimer_cancel(lua_State *L) {
     if (!obj->timer) return 0;
     lzn_unref(L, &obj->ref);
     zn_canceltimer(obj->timer);
-    return_self(L);
+    lbind_returnself(L);
 }
 
 static void open_timer(lua_State *L) {
@@ -321,7 +318,7 @@ static int Ltcp_onerror(lua_State *L) {
     if (!obj->tcp) return 0;
     luaL_checktype(L, 2, LUA_TFUNCTION);
     lzn_ref(L, 2, &obj->onerror_ref);
-    return_self(L);
+    lbind_returnself(L);
 }
 
 static int Ltcp_send(lua_State *L) {
@@ -334,7 +331,7 @@ static int Ltcp_send(lua_State *L) {
     len = (size_t)(i > j ? 0 : j - i + 1);
     if (!obj->tcp || obj->closing) return 0;
     if (!zn_sendprepare(&obj->send, data + i - 1, len))
-        return_self(L);
+        lbind_returnself(L);
     lzn_ref(L, 1, &obj->ref);
     ret = zn_send(obj->tcp,
             zn_sendbuff(&obj->send),
@@ -367,7 +364,7 @@ static int Ltcp_close(lua_State *L) {
         }
         obj->closing = 1;
     }
-    return_self(L);
+    lbind_returnself(L);
 }
 
 static int Ltcp_getpeerinfo(lua_State *L) {
