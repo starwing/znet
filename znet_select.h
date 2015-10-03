@@ -464,7 +464,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
     udp->info.type = ZN_SOCK_UDP;
     udp->info.head = udp;
     if (!zn_initudp(udp, addr, port)) {
-        free(udp);
+        ZN_PUTOBJECT(udp);
         return NULL;
     }
     return udp;

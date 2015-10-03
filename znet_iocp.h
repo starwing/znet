@@ -133,13 +133,6 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
 
 ZN_API void zn_deltcp(zn_Tcp *tcp) {
     zn_closetcp(tcp);
-    if (tcp->connect_handler
-            || tcp->recv_handler
-            || tcp->send_handler)
-    {
-        tcp->S = NULL; /* mark tcp is dead */
-        return;
-    }
     ZN_PUTOBJECT(tcp);
 }
 
@@ -164,7 +157,6 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
     SOCKADDR_IN remoteAddr;
     char buf[1];
     int err;
-    if (tcp->S == NULL)                return ZN_ESTATE;
     if (tcp->socket != INVALID_SOCKET) return ZN_ESTATE;
     if (tcp->connect_handler != NULL)  return ZN_EBUSY;
     if (cb == NULL)                    return ZN_EPARAM;
@@ -199,7 +191,6 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
 
 ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *cb, void *ud) {
     DWORD dwTemp1=0;
-    if (tcp->S == NULL)                return ZN_ESTATE;
     if (tcp->socket == INVALID_SOCKET) return ZN_ESTATE;
     if (tcp->send_handler != NULL)     return ZN_EBUSY;
     if (cb == NULL || len == 0)        return ZN_EPARAM;
@@ -225,7 +216,6 @@ ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *
 ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, void *ud) {
     DWORD dwRecv = 0;
     DWORD dwFlag = 0;
-    if (tcp->S == NULL)                return ZN_ESTATE;
     if (tcp->socket == INVALID_SOCKET) return ZN_ESTATE;
     if (tcp->recv_handler != NULL)     return ZN_EBUSY;
     if (cb == NULL || len == 0)        return ZN_EPARAM;
@@ -252,11 +242,9 @@ static void zn_onconnect(zn_Tcp *tcp, BOOL bSuccess) {
     zn_ConnectHandler *cb = tcp->connect_handler;
     assert(tcp->connect_handler);
     tcp->connect_handler = NULL;
-    if (tcp->S == NULL) {
-        assert(tcp->socket == INVALID_SOCKET);
+    if (tcp->socket == INVALID_SOCKET) {
         /* cb(tcp->connect_ud, tcp, ZN_ECLOSED); */
-        znL_remove(tcp);
-        free(tcp);
+        ZN_PUTOBJECT(tcp);
     }
     else if (!bSuccess) {
         zn_closetcp(tcp);
@@ -272,12 +260,11 @@ static void zn_onsend(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
     zn_SendHandler *cb = tcp->send_handler;
     assert(tcp->send_handler);
     tcp->send_handler = NULL;
-    if (tcp->S == NULL || tcp->socket == INVALID_SOCKET) {
+    if (tcp->socket == INVALID_SOCKET) {
         assert(tcp->socket == INVALID_SOCKET);
         /* cb(tcp->send_ud, tcp, ZN_ECLOSED, dwBytes); */
         if (tcp->recv_handler == NULL) {
-            znL_remove(tcp);
-            free(tcp);
+            ZN_PUTOBJECT(tcp);
         }
     }
     else if (!bSuccess) {
@@ -292,12 +279,10 @@ static void zn_onrecv(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
     zn_RecvHandler *cb = tcp->recv_handler;
     assert(tcp->recv_handler);
     tcp->recv_handler = NULL;
-    if (tcp->S == NULL) {
-        assert(tcp->socket == INVALID_SOCKET);
+    if (tcp->socket == INVALID_SOCKET) {
         /* cb(tcp->recv_ud, tcp, ZN_ECLOSED, dwBytes); */
         if (tcp->send_handler == NULL) {
-            znL_remove(tcp);
-            free(tcp);
+            ZN_PUTOBJECT(tcp);
         }
     }
     else if (dwBytes == 0 || tcp->socket == INVALID_SOCKET) {
@@ -440,8 +425,7 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
 
     if (accept->S == NULL) {
         /* cb(accept->ud, accept, ZN_ECLOSED, NULL); */
-        znL_remove(accept);
-        free(accept);
+        ZN_PUTOBJECT(accept);
         return;
     }
 
@@ -471,8 +455,7 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
                 tcp->S->iocp, (ULONG_PTR)tcp, 1) == NULL)
     {
         closesocket(tcp->socket);
-        znL_remove(tcp);
-        free(tcp);
+        ZN_PUTOBJECT(tcp);
         return;
     }
 
@@ -528,7 +511,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
     udp->socket = INVALID_SOCKET;
     udp->recv_request.type = ZN_TRECVFROM;
     if (!zn_initudp(udp, addr, port)) {
-        free(udp);
+        ZN_PUTOBJECT(udp);
         return NULL;
     }
     return udp;
@@ -588,8 +571,7 @@ static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
     zn_RecvFromHandler *cb = udp->recv_handler;
     if (udp->S == NULL) {
         /* cb(udp->recv_ud, udp, ZN_ERROR, dwBytes, "0.0.0.0", 0); */
-        znL_remove(udp);
-        free(udp);
+        ZN_PUTOBJECT(udp);
         return;
     }
     if (!cb) return;
