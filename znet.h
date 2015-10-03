@@ -107,7 +107,6 @@ ZN_API void zn_deinitialize (void);
 ZN_API const char *zn_strerror (int err);
 
 ZN_API zn_State *zn_newstate (void);
-ZN_API zn_State *zn_clone    (zn_State *S);
 ZN_API void      zn_close    (zn_State *S);
 
 ZN_API int zn_run  (zn_State *S, int mode);
@@ -300,7 +299,6 @@ static zn_Time znT_gettimeout   (zn_State *S, zn_Time current);
  * in platform-specified headers */
 static int  znS_init  (zn_State *S);
 static void znS_close (zn_State *S);
-static int  znS_clone (zn_State *NS, zn_State *S);
 static int  znS_poll  (zn_State *S, int checkonly);
 
 
@@ -357,17 +355,6 @@ ZN_API void zn_close(zn_State *S) {
     znL_apply(zn_Udp,    S->udps,    zn_deludp);
     znS_close(S);
     free(S);
-}
-
-ZN_API zn_State *zn_clone(zn_State *S) {
-    zn_State *NS = (zn_State*)malloc(sizeof(zn_State));
-    if (NS == NULL) return NULL;
-    memset(NS, 0, sizeof(zn_State));
-    if (!znS_clone(NS, S)) {
-        free(NS);
-        return NULL;
-    }
-    return NS;
 }
 
 ZN_API int zn_run(zn_State *S, int mode) {

@@ -630,7 +630,7 @@ ZN_API zn_Time zn_time(void) {
     LARGE_INTEGER current;
     QueryPerformanceCounter(&current);
     return (zn_Time)((current.QuadPart - startTime.QuadPart) * 1000
-            / counterFreq.QuadPart);
+            / counterFreq.LowPart);
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
@@ -646,6 +646,7 @@ static int znS_init(zn_State *S) {
     if (counterFreq.QuadPart == 0) {
         QueryPerformanceFrequency(&counterFreq);
         QueryPerformanceCounter(&startTime);
+        assert(counterFreq.HighPart == 0);
     }
     S->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
             NULL, (ULONG_PTR)0, 1);
@@ -656,11 +657,6 @@ static void znS_close(zn_State *S) {
     while (S->waittings != 0)
         zn_run(S, ZN_RUN_ONCE);
     CloseHandle(S->iocp);
-}
-
-static int znS_clone(zn_State *NS, zn_State *S) {
-    NS->iocp = S->iocp;
-    return 1;
 }
 
 static int znS_poll(zn_State *S, int checkonly) {

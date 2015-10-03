@@ -696,15 +696,12 @@ out:
 
 static int znS_init(zn_State *S) {
     int epoll = epoll_create(ZN_MAX_EVENTS);
-    if (epoll == -1 || !zn_initstate(S, epoll)) {
-        if (epoll != -1) close(epoll);
+    if (epoll == -1) return 0;
+    if (!zn_initstate(S, epoll)) {
+        close(epoll);
         return 0;
     }
     return 1;
-}
-
-ZN_API int znS_clone(zn_State *NS, zn_State *S) {
-    return zn_initstate(NS, S->epoll);
 }
 
 static void znS_close(zn_State *S) {

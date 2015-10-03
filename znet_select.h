@@ -582,10 +582,6 @@ static void znS_close(zn_State *S) {
     close(S->sockpairs[1]);
 }
 
-ZN_API int znS_clone(zn_State *NS, zn_State *S) {
-    return zn_initstate(NS);
-}
-
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     char data = 0;
     zn_Post *ps = (zn_Post*)malloc(sizeof(zn_Post));
