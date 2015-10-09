@@ -105,6 +105,7 @@ ZN_API void zn_initialize   (void);
 ZN_API void zn_deinitialize (void);
 
 ZN_API const char *zn_strerror (int err);
+ZN_API const char *zn_engine (void);
 
 ZN_API zn_State *zn_newstate (void);
 ZN_API void      zn_close    (zn_State *S);
@@ -242,6 +243,7 @@ ZN_NS_BEGIN
     zn_Udp    *udps;                        \
     zn_Timers  timers;                      \
     zn_Status  status;                      \
+    unsigned   waitings;                    \
 
 # define ZN_GETOBJECT(S, type, name)        \
                          type* name;   do { \

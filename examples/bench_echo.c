@@ -27,6 +27,7 @@ static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
 
 static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     Userdata *data = (Userdata*)ud;
+    /*printf("on_client_send: %p, %p, %u, %u\n", ud, tcp, err, count);*/
     if (err != ZN_OK) {
         ++data->send_err;
         client_error(tcp);
@@ -34,12 +35,14 @@ static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) 
     }
     ++data->send_ok;
     data->send_bytes += count;
+    /*printf("zn_recv: %p\n", on_client_recv);*/
     if (zn_recv(tcp, data->recv, BLOCK_SIZE, on_client_recv, ud) != ZN_OK)
         client_error(tcp);
 }
 
 static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     Userdata *data = (Userdata*)ud;
+    /*printf("on_client_recv: %p, %p, %u, %u\n", ud, tcp, err, count);*/
     if (err != ZN_OK) {
         ++data->recv_err;
         client_error(tcp);
@@ -48,6 +51,7 @@ static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) 
 
     ++data->recv_ok;
     data->recv_bytes += count;
+    /*printf("zn_send: %p\n", on_client_send);*/
     if (zn_send(tcp, data->send, BLOCK_SIZE, on_client_send, ud) != ZN_OK)
         client_error(tcp);
 }
@@ -110,7 +114,7 @@ static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
 
 static void human_readed(size_t sz) {
     if (sz < 1024)
-        printf("%dB", sz);
+        printf("%zuB", sz);
     else if (sz < 1024*1024)
         printf("%.3fKB", sz/1024.0);
     else if (sz < 1024*1024*1024)
@@ -120,9 +124,9 @@ static void human_readed(size_t sz) {
 }
 
 static void print_ud(Userdata *ud, const char *title) {
-    printf("(recv=%d/%d/", ud->recv_ok, ud->recv_err);
+    printf("(recv=%zu/%zu/", ud->recv_ok, ud->recv_err);
     human_readed(ud->recv_bytes);
-    printf(", send=%d/%d/", ud->send_ok, ud->send_err);
+    printf(", send=%zu/%zu/", ud->send_ok, ud->send_err);
     human_readed(ud->send_bytes);
     printf(")");
     ud->recv_ok = ud->recv_err = ud->recv_bytes = 0;
@@ -178,4 +182,5 @@ int main(int argc, const char **argv) {
 
     return zn_run(S, ZN_RUN_LOOP);
 }
-/* cc: flags+='-s -O3' libs+='-lws2_32' */
+/* win32cc: flags+='-s -O3' libs+='-lws2_32' */
+/* unixcc: flags+='-s -O3 -DZN_USE_SELECT' libs+='-pthread' */

@@ -41,7 +41,6 @@ typedef struct zn_Post {
 struct zn_State {
     ZN_STATE_FIELDS
     HANDLE iocp;
-    unsigned waittings;
 };
 
 /* utils */
@@ -133,7 +132,13 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
 
 ZN_API void zn_deltcp(zn_Tcp *tcp) {
     zn_closetcp(tcp);
-    ZN_PUTOBJECT(tcp);
+    /* if a request is on-the-go, then the IOCP will give callback, we
+     * delete object on that callback.
+     * same as zn_delaccept() and zn_deludp() */
+    if (tcp->recv_handler == NULL
+            && tcp->send_handler == NULL
+            && tcp->connect_handler == NULL)
+        ZN_PUTOBJECT(tcp);
 }
 
 ZN_API int zn_closetcp(zn_Tcp *tcp) {
@@ -183,7 +188,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
         return ZN_ECONNECT;
     }
 
-    ++tcp->S->waittings;
+    ++tcp->S->waitings;
     tcp->connect_handler = cb;
     tcp->connect_ud = ud;
     return ZN_OK;
@@ -207,7 +212,7 @@ ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *
         return ZN_ERROR;
     }
 
-    ++tcp->S->waittings;
+    ++tcp->S->waitings;
     tcp->send_handler = cb;
     tcp->send_ud = ud;
     return ZN_OK;
@@ -232,7 +237,7 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
         return ZN_ERROR;
     }
 
-    ++tcp->S->waittings;
+    ++tcp->S->waitings;
     tcp->recv_handler = cb;
     tcp->recv_ud = ud;
     return ZN_OK;
@@ -241,51 +246,46 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
 static void zn_onconnect(zn_Tcp *tcp, BOOL bSuccess) {
     zn_ConnectHandler *cb = tcp->connect_handler;
     assert(tcp->connect_handler);
+    --tcp->S->waitings;
     tcp->connect_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
         /* cb(tcp->connect_ud, tcp, ZN_ECLOSED); */
         ZN_PUTOBJECT(tcp);
+        return;
     }
-    else if (!bSuccess) {
-        zn_closetcp(tcp);
-        cb(tcp->connect_ud, tcp, ZN_ERROR);
-    }
-    else {
-        znU_set_nodelay(tcp->socket);
-        cb(tcp->connect_ud, tcp, ZN_OK);
-    }
+    if (!bSuccess) zn_closetcp(tcp);
+    else znU_set_nodelay(tcp->socket);
+    cb(tcp->connect_ud, tcp, bSuccess ? ZN_OK : ZN_ERROR);
 }
 
 static void zn_onsend(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
     zn_SendHandler *cb = tcp->send_handler;
     assert(tcp->send_handler);
+    --tcp->S->waitings;
     tcp->send_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
         assert(tcp->socket == INVALID_SOCKET);
         /* cb(tcp->send_ud, tcp, ZN_ECLOSED, dwBytes); */
-        if (tcp->recv_handler == NULL) {
+        if (tcp->recv_handler == NULL)
             ZN_PUTOBJECT(tcp);
-        }
+        return;
     }
-    else if (!bSuccess) {
-        zn_closetcp(tcp);
-        cb(tcp->send_ud, tcp, ZN_ERROR, dwBytes);
-    }
-    else
-        cb(tcp->send_ud, tcp, ZN_OK, dwBytes);
+    if (!bSuccess) zn_closetcp(tcp);
+    cb(tcp->send_ud, tcp, bSuccess ? ZN_OK : ZN_ERROR, dwBytes);
 }
 
 static void zn_onrecv(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
     zn_RecvHandler *cb = tcp->recv_handler;
     assert(tcp->recv_handler);
+    --tcp->S->waitings;
     tcp->recv_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
         /* cb(tcp->recv_ud, tcp, ZN_ECLOSED, dwBytes); */
-        if (tcp->send_handler == NULL) {
+        if (tcp->send_handler == NULL)
             ZN_PUTOBJECT(tcp);
-        }
+        return;
     }
-    else if (dwBytes == 0 || tcp->socket == INVALID_SOCKET) {
+    if (dwBytes == 0 || tcp->socket == INVALID_SOCKET) {
         zn_closetcp(tcp);
         cb(tcp->recv_ud, tcp, ZN_ECLOSED, dwBytes);
     }
@@ -319,13 +319,9 @@ ZN_API zn_Accept* zn_newaccept(zn_State *S) {
 }
 
 ZN_API void zn_delaccept(zn_Accept *accept) {
-    if (accept->S == NULL) return;
     zn_closeaccept(accept);
-    if (accept->accept_handler != NULL) {
-        accept->S = NULL; /* mark dead */
-        return;
-    }
-    ZN_PUTOBJECT(accept);
+    if (accept->accept_handler == NULL)
+        ZN_PUTOBJECT(accept);
 }
 
 ZN_API int zn_closeaccept(zn_Accept *accept) {
@@ -405,7 +401,7 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
         return ZN_ERROR;
     }
 
-    ++accept->S->waittings;
+    ++accept->S->waitings;
     accept->accept_handler = cb;
     accept->accept_ud = ud;
     accept->client = socket;
@@ -417,14 +413,12 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
     static GUID gid = WSAID_GETACCEPTEXSOCKADDRS;
     zn_AcceptHandler *cb = accept->accept_handler;
     zn_Tcp *tcp;
-    struct sockaddr *paddr1 = NULL;
-    struct sockaddr *paddr2 = NULL;
-    int tmp1 = 0;
-    int tmp2 = 0;
+    struct sockaddr *paddr1 = NULL, *paddr2 = NULL;
+    int tmp1 = 0, tmp2 = 0;
+    --accept->S->waitings;
     accept->accept_handler = NULL;
 
-    if (accept->S == NULL) {
-        /* cb(accept->ud, accept, ZN_ECLOSED, NULL); */
+    if (accept->socket == INVALID_SOCKET) {
         ZN_PUTOBJECT(accept);
         return;
     }
@@ -519,11 +513,8 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
 
 ZN_API void zn_deludp(zn_Udp *udp) {
     closesocket(udp->socket);
-    if (udp->recv_handler != NULL) {
-        udp->S = NULL; /* mark dead */
-        return;
-    }
-    ZN_PUTOBJECT(udp);
+    if (udp->recv_handler == NULL)
+        ZN_PUTOBJECT(udp);
 }
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
@@ -561,7 +552,7 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
         return ZN_ERROR;
     }
 
-    ++udp->S->waittings;
+    ++udp->S->waitings;
     udp->recv_handler = cb;
     udp->recv_ud = ud;
     return ZN_OK;
@@ -569,12 +560,12 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
 
 static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
     zn_RecvFromHandler *cb = udp->recv_handler;
-    if (udp->S == NULL) {
-        /* cb(udp->recv_ud, udp, ZN_ERROR, dwBytes, "0.0.0.0", 0); */
+    if (!cb) return;
+    --udp->S->waitings;
+    if (udp->socket == INVALID_SOCKET) {
         ZN_PUTOBJECT(udp);
         return;
     }
-    if (!cb) return;
     udp->recv_handler = NULL;
     if (bSuccess && dwBytes > 0)
         cb(udp->recv_ud, udp, ZN_OK, dwBytes,
@@ -589,6 +580,8 @@ static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
 static BOOL zn_initialized = FALSE;
 static LARGE_INTEGER counterFreq;
 static LARGE_INTEGER startTime;
+
+ZN_API const char *zn_engine(void) { return "IOCP"; }
 
 ZN_API void zn_initialize(void) {
     if (!zn_initialized) {
@@ -636,7 +629,9 @@ static int znS_init(zn_State *S) {
 }
 
 static void znS_close(zn_State *S) {
-    while (S->waittings != 0)
+    /* use IOCP to wait all closed but not deleted object,
+     * and delete them. */
+    while (S->waitings != 0)
         zn_run(S, ZN_RUN_ONCE);
     CloseHandle(S->iocp);
 }
@@ -671,7 +666,7 @@ static int znS_poll(zn_State *S, int checkonly) {
     }
 
     req = (zn_Request*)pOverlapped;
-    --S->waittings;
+    --S->waitings;
     switch (req->type) {
         case ZN_TACCEPT:   zn_onaccept((zn_Accept*)upComKey, bRet); break;
         case ZN_TRECV:     zn_onrecv((zn_Tcp*)upComKey, bRet, dwBytes); break;
@@ -689,7 +684,7 @@ out:
         return 0;
     }
     S->status = ZN_STATUS_READY;
-    return znT_hastimers(S) || S->waittings != 0;
+    return znT_hastimers(S) || S->waitings != 0;
 }
 
 

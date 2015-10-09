@@ -6,6 +6,7 @@
 #if defined(__linux__) && defined(ZN_USE_EPOLL) && !defined(znet_epoll_h)
 #define znet_epoll_h 
 
+#include <limits.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -148,10 +149,14 @@ struct zn_Tcp {
     zn_DataBuffer recv_buffer;
 };
 
-static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port) {
-    strcpy(tcp->peer_info.addr, addr);
-    tcp->peer_info.port = port;
-}
+static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port)
+{ strcpy(tcp->peer_info.addr, addr); tcp->peer_info.port = port; }
+
+ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info)
+{ *info = tcp->peer_info; }
+
+ZN_API void zn_deltcp(zn_Tcp *tcp)
+{ zn_closetcp(tcp); ZN_PUTOBJECT(tcp); }
 
 static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr) {
     zn_Tcp *tcp = zn_newtcp(S);
@@ -186,16 +191,14 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
     return tcp;
 }
 
-ZN_API void zn_deltcp(zn_Tcp *tcp) {
-    zn_closetcp(tcp);
-    ZN_PUTOBJECT(tcp);
-}
-
 ZN_API int zn_closetcp(zn_Tcp *tcp) {
     int ret = ZN_OK;
     tcp->event.events = 0;
     epoll_ctl(tcp->S->epoll, EPOLL_CTL_DEL,
             tcp->fd, &tcp->event);
+    if (tcp->connect_handler) --tcp->S->waitings;
+    if (tcp->send_handler) --tcp->S->waitings;
+    if (tcp->recv_handler) --tcp->S->waitings;
     if (tcp->fd != -1) {
         if (close(tcp->fd) != 0)
             ret = ZN_ERROR;
@@ -204,14 +207,9 @@ ZN_API int zn_closetcp(zn_Tcp *tcp) {
     return ret;
 }
 
-ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info) {
-    *info = tcp->peer_info;
-}
-
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
     struct sockaddr_in remoteAddr;
     int fd, ret;
-    if (tcp->S == NULL)               return ZN_ESTATE;
     if (tcp->fd != -1)                return ZN_ESTATE;
     if (tcp->connect_handler != NULL) return ZN_EBUSY;
     if (cb == NULL)                   return ZN_EPARAM;
@@ -240,6 +238,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
         return ZN_EPOLL;
     }
 
+    ++tcp->S->waitings;
     tcp->fd = fd;
     tcp->connect_handler = cb;
     tcp->connect_ud = ud;
@@ -247,10 +246,10 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
 }
 
 ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *cb, void *ud) {
-    if (tcp->S == NULL)            return ZN_ESTATE;
     if (tcp->fd == -1)             return ZN_ESTATE;
     if (tcp->send_handler != NULL) return ZN_EBUSY;
     if (cb == NULL || len == 0)    return ZN_EPARAM;
+    ++tcp->S->waitings;
     tcp->send_buffer.buff = (char*)buff;
     tcp->send_buffer.len = len;
     tcp->send_handler = cb;
@@ -270,7 +269,6 @@ ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *
 }
 
 ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, void *ud) {
-    if (tcp->S == NULL)            return ZN_ESTATE;
     if (tcp->fd == -1)             return ZN_ESTATE;
     if (tcp->recv_handler != NULL) return ZN_EBUSY;
     if (cb == NULL || len == 0)    return ZN_EPARAM;
@@ -278,6 +276,7 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
     tcp->recv_buffer.len = len;
     tcp->recv_handler = cb;
     tcp->recv_ud = ud;
+    ++tcp->S->waitings;
     if ((tcp->status & EPOLLIN) != 0) {
         int bytes = recv(tcp->fd, buff, len, 0);
         if (bytes > 0) {
@@ -298,6 +297,7 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
 static void zn_onconnect(zn_Tcp *tcp, int eventmask) {
     zn_ConnectHandler *cb = tcp->connect_handler;
     assert(tcp->connect_handler);
+    --tcp->S->waitings;
     tcp->connect_handler = NULL;
 
     if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
@@ -322,6 +322,7 @@ static void zn_onconnect(zn_Tcp *tcp, int eventmask) {
 
 static void zn_onresult(zn_Result *result) {
     zn_Tcp *tcp = result->tcp;
+    --tcp->S->waitings;
     if (result == &tcp->send_result) {
         zn_DataBuffer buff = tcp->send_buffer;
         zn_SendHandler *cb = tcp->send_handler;
@@ -363,6 +364,7 @@ static void zn_onevent(zn_Tcp *tcp, int eventmask) {
         tcp->recv_handler = NULL;
         tcp->status |= EPOLLIN;
         if (cb == NULL) return;
+        --tcp->S->waitings;
         zn_recv(tcp, tcp->recv_buffer.buff, tcp->recv_buffer.len,
                 cb, tcp->recv_ud);
     }
@@ -371,6 +373,7 @@ static void zn_onevent(zn_Tcp *tcp, int eventmask) {
         tcp->send_handler = NULL;
         tcp->status |= EPOLLOUT;
         if (cb == NULL) return;
+        --tcp->S->waitings;
         zn_send(tcp, tcp->send_buffer.buff, tcp->send_buffer.len,
                 cb, tcp->send_ud);
     }
@@ -387,6 +390,9 @@ struct zn_Accept {
     zn_SocketInfo info;
 };
 
+ZN_API void zn_delaccept(zn_Accept *accept)
+{ zn_closeaccept(accept); ZN_PUTOBJECT(accept); }
+
 ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     ZN_GETOBJECT(S, zn_Accept, accept);
     accept->event.data.ptr = &accept->info;
@@ -396,16 +402,12 @@ ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     return accept;
 }
 
-ZN_API void zn_delaccept(zn_Accept *accept) {
-    zn_closeaccept(accept);
-    ZN_PUTOBJECT(accept);
-}
-
 ZN_API int zn_closeaccept(zn_Accept *accept) {
     int ret = ZN_OK;
     accept->event.events = 0;
     epoll_ctl(accept->S->epoll, EPOLL_CTL_DEL,
             accept->fd, &accept->event);
+    if (accept->accept_handler) --accept->S->waitings;
     if (accept->fd != -1) {
         if (close(accept->fd) != 0)
             ret = ZN_ERROR;
@@ -454,6 +456,7 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
     if (accept->accept_handler != NULL) return ZN_EBUSY;
     if (accept->fd == -1)               return ZN_ESTATE;
     if (cb == NULL)                     return ZN_EPARAM;
+    ++accept->S->waitings;
     accept->accept_handler = cb;
     accept->accept_ud = ud;
     return ZN_OK;
@@ -461,6 +464,7 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
 
 static void zn_onaccept(zn_Accept *a, int eventmask) {
     zn_AcceptHandler *cb = a->accept_handler;
+    --a->S->waitings;
     a->accept_handler = NULL;
     if (cb == NULL) return;
 
@@ -541,6 +545,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
 ZN_API void zn_deludp(zn_Udp *udp) {
     udp->event.events = 0;
     epoll_ctl(udp->S->epoll, EPOLL_CTL_DEL, udp->fd, &udp->event);
+    if (udp->recv_handler) --udp->S->waitings;
     close(udp->fd);
     ZN_PUTOBJECT(udp);
 }
@@ -562,6 +567,7 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
     if (udp->fd == -1)          return ZN_ESTATE;
     if (udp->recv_handler)      return ZN_EBUSY;
     if (len == 0 || cb == NULL) return ZN_EPARAM;
+    ++udp->S->waitings;
     udp->recv_buffer.buff = buff;
     udp->recv_buffer.len = len;
     udp->recv_handler = cb;
@@ -573,6 +579,7 @@ static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
     zn_DataBuffer buff = udp->recv_buffer;
     zn_RecvFromHandler *cb = udp->recv_handler;
     if (cb == NULL) return;
+    --udp->S->waitings;
     udp->recv_handler = NULL;
     udp->recv_buffer.buff = NULL;
     udp->recv_buffer.len = 0;
@@ -601,6 +608,8 @@ static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
 
 ZN_API void zn_initialize(void) { }
 ZN_API void zn_deinitialize(void) { }
+
+ZN_API const char *zn_engine(void) { return "epoll"; }
 
 static int zn_initstate(zn_State *S, int epoll) {
     struct epoll_event event;
@@ -691,7 +700,7 @@ out:
         return 0;
     }
     S->status = ZN_STATUS_READY;
-    return znT_hastimers(S);
+    return znT_hastimers(S) || S->waitings != 0;
 }
 
 static int znS_init(zn_State *S) {

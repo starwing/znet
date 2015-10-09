@@ -123,6 +123,20 @@ static void znF_register_out(zn_State *S, int fd, zn_SocketInfo *info) {
     FD_SET(fd, &S->exceptfds);
 }
 
+static void znF_unregister_in(zn_State *S, int fd) {
+    if (fd < FD_SETSIZE) {
+        FD_CLR(fd, &S->readfds);
+        FD_CLR(fd, &S->exceptfds);
+    }
+}
+
+static void znF_unregister_out(zn_State *S, int fd) {
+    if (fd < FD_SETSIZE) {
+        FD_CLR(fd, &S->writefds);
+        FD_CLR(fd, &S->exceptfds);
+    }
+}
+
 static void znF_unregister(zn_State *S, int fd) {
     if (fd < FD_SETSIZE) {
         S->infos[fd] = NULL;
@@ -148,16 +162,13 @@ struct zn_Tcp {
     zn_DataBuffer recv_buffer;
 };
 
+static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port)
+{ strcpy(tcp->peer_info.addr, addr); tcp->peer_info.port = port; }
+
 ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info)
 { *info = tcp->peer_info; }
-
 ZN_API void zn_deltcp(zn_Tcp *tcp)
 { zn_closetcp(tcp); ZN_PUTOBJECT(tcp); }
-
-static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port) {
-    strcpy(tcp->peer_info.addr, addr);
-    tcp->peer_info.port = port;
-}
 
 static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr) {
     zn_Tcp *tcp;
@@ -186,6 +197,9 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
 ZN_API int zn_closetcp(zn_Tcp *tcp) {
     int ret = ZN_OK;
     znF_unregister(tcp->S, tcp->fd);
+    if (tcp->connect_handler) --tcp->S->waitings;
+    if (tcp->send_handler) --tcp->S->waitings;
+    if (tcp->recv_handler) --tcp->S->waitings;
     if (tcp->fd != -1) {
         if (close(tcp->fd) != 0)
             ret = ZN_ERROR;
@@ -197,7 +211,6 @@ ZN_API int zn_closetcp(zn_Tcp *tcp) {
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
     struct sockaddr_in remoteAddr;
     int fd, ret;
-    if (tcp->S == NULL)               return ZN_ESTATE;
     if (tcp->fd != -1)                return ZN_ESTATE;
     if (tcp->connect_handler != NULL) return ZN_EBUSY;
     if (cb == NULL)                   return ZN_EPARAM;
@@ -226,6 +239,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
         return ZN_ECONNECT;
     }
 
+    ++tcp->S->waitings;
     tcp->fd = fd;
     tcp->connect_handler = cb;
     tcp->connect_ud = ud;
@@ -234,10 +248,10 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
 }
 
 ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *cb, void *ud) {
-    if (tcp->S == NULL)            return ZN_ESTATE;
     if (tcp->fd == -1)             return ZN_ESTATE;
     if (tcp->send_handler != NULL) return ZN_EBUSY;
     if (cb == NULL || len == 0)    return ZN_EPARAM;
+    ++tcp->S->waitings;
     tcp->send_buffer.buff = (char*)buff;
     tcp->send_buffer.len = len;
     tcp->send_handler = cb;
@@ -247,10 +261,10 @@ ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *
 }
 
 ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, void *ud) {
-    if (tcp->S == NULL)            return ZN_ESTATE;
     if (tcp->fd == -1)             return ZN_ESTATE;
     if (tcp->recv_handler != NULL) return ZN_EBUSY;
     if (cb == NULL || len == 0)    return ZN_EPARAM;
+    ++tcp->S->waitings;
     tcp->recv_buffer.buff = buff;
     tcp->recv_buffer.len = len;
     tcp->recv_handler = cb;
@@ -262,8 +276,9 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
 static void zn_onconnect(zn_Tcp *tcp, int err) {
     zn_ConnectHandler *cb = tcp->connect_handler;
     assert(tcp->connect_handler);
+    --tcp->S->waitings;
     tcp->connect_handler = NULL;
-    znF_unregister(tcp->S, tcp->fd);
+    znF_unregister_out(tcp->S, tcp->fd);
 
     if (err) {
         zn_closetcp(tcp);
@@ -280,12 +295,13 @@ static void zn_onsend(zn_Tcp *tcp, int err) {
     zn_DataBuffer buff = tcp->send_buffer;
     int bytes;
     assert(tcp->send_handler);
+    if (tcp->fd == -1) return;
+    --tcp->S->waitings;
     tcp->send_handler = NULL;
     tcp->send_buffer.buff = NULL;
     tcp->send_buffer.len = 0;
-    znF_unregister(tcp->S, tcp->fd);
+    znF_unregister_out(tcp->S, tcp->fd);
 
-    if (tcp->fd == -1) return;
     if (err) {
         zn_closetcp(tcp);
         cb(tcp->send_ud, tcp, ZN_ERROR, 0);
@@ -304,13 +320,14 @@ static void zn_onrecv(zn_Tcp *tcp, int err) {
     zn_RecvHandler *cb = tcp->recv_handler;
     zn_DataBuffer buff = tcp->recv_buffer;
     int bytes;
+    if (tcp->fd == -1) return;
     assert(tcp->recv_handler);
+    --tcp->S->waitings;
     tcp->recv_handler = NULL;
     tcp->recv_buffer.buff = NULL;
     tcp->recv_buffer.len = 0;
-    znF_unregister(tcp->S, tcp->fd);
+    znF_unregister_in(tcp->S, tcp->fd);
 
-    if (tcp->fd == -1) return;
     if (err) {
         zn_closetcp(tcp);
         cb(tcp->recv_ud, tcp, ZN_ERROR, 0);
@@ -335,6 +352,9 @@ struct zn_Accept {
     zn_SocketInfo info;
 };
 
+ZN_API void zn_delaccept(zn_Accept *accept)
+{ zn_closeaccept(accept); ZN_PUTOBJECT(accept); }
+
 ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     ZN_GETOBJECT(S, zn_Accept, accept);
     accept->fd = -1;
@@ -343,14 +363,10 @@ ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     return accept;
 }
 
-ZN_API void zn_delaccept(zn_Accept *accept) {
-    zn_closeaccept(accept);
-    ZN_PUTOBJECT(accept);
-}
-
 ZN_API int zn_closeaccept(zn_Accept *accept) {
     int ret = ZN_OK;
     znF_unregister(accept->S, accept->fd);
+    if (accept->accept_handler) --accept->S->waitings;
     if (accept->fd != -1) {
         if (close(accept->fd) != 0)
             ret = ZN_ERROR;
@@ -393,6 +409,7 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
     if (accept->accept_handler != NULL) return ZN_EBUSY;
     if (accept->fd == -1)               return ZN_ESTATE;
     if (cb == NULL)                     return ZN_EPARAM;
+    ++accept->S->waitings;
     accept->accept_handler = cb;
     accept->accept_ud = ud;
     znF_register_in(accept->S, accept->fd, &accept->info);
@@ -401,9 +418,10 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
 
 static void zn_onaccept(zn_Accept *a, int err) {
     zn_AcceptHandler *cb = a->accept_handler;
+    --a->S->waitings;
+    assert(a->accept_handler != NULL);
     a->accept_handler = NULL;
-    if (cb == NULL) return;
-    znF_unregister(a->S, a->fd);
+    znF_unregister_in(a->S, a->fd);
 
     if (err) {
         zn_closeaccept(a);
@@ -493,6 +511,7 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
     if (udp->fd == -1)          return ZN_ESTATE;
     if (udp->recv_handler)      return ZN_EBUSY;
     if (len == 0 || cb == NULL) return ZN_EPARAM;
+    ++udp->S->waitings;
     udp->recv_buffer.buff = buff;
     udp->recv_buffer.len = len;
     udp->recv_handler = cb;
@@ -506,11 +525,12 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
 static void zn_onrecvfrom(zn_Udp *udp, int err) {
     zn_DataBuffer buff = udp->recv_buffer;
     zn_RecvFromHandler *cb = udp->recv_handler;
-    if (cb == NULL) return;
+    assert(udp->recv_handler != NULL);
+    --udp->S->waitings;
     udp->recv_handler = NULL;
     udp->recv_buffer.buff = NULL;
     udp->recv_buffer.len = 0;
-    znF_unregister(udp->S, udp->fd);
+    znF_unregister_in(udp->S, udp->fd);
 
     if (err)
         cb(udp->recv_ud, udp, ZN_ERROR, 0, "0.0.0.0", 0);
@@ -538,6 +558,8 @@ static uint64_t start;
 
 ZN_API void zn_initialize(void) { }
 ZN_API void zn_deinitialize(void) { }
+
+ZN_API const char *zn_engine(void) { return "select"; }
 
 static int zn_initstate(zn_State *S) {
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, S->sockpairs) != 0)
@@ -594,9 +616,10 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     return 1;
 }
 
-static void zn_dispatch(zn_State *S, int fd, int err) {
+static void zn_dispatch(zn_State *S, int fd, int setno) {
     zn_SocketInfo *info;
     zn_Tcp *tcp;
+    int err = setno == 2;
     if (fd < 0 || fd > FD_SETSIZE) return;
     if (fd == S->sockpairs[1]) { /* post */
         char buff[8192];
@@ -614,9 +637,9 @@ static void zn_dispatch(zn_State *S, int fd, int err) {
         tcp = (zn_Tcp*)info->head;
         if (tcp->connect_handler)
             zn_onconnect(tcp, err);
-        if (tcp->send_handler)
+        if (tcp->send_handler && setno != 0)
             zn_onsend(tcp, err);
-        if (tcp->recv_handler)
+        if (tcp->recv_handler && setno != 1)
             zn_onrecv(tcp, err);
         break;
     case ZN_SOCK_UDP:
@@ -645,10 +668,12 @@ static int znS_poll(zn_State *S, int checkonly) {
         goto out;
     znT_updatetimers(S, zn_time());
     for (i = 0; i < FD_SETSIZE; ++i) {
-        if (FD_ISSET(i, &readfds) || FD_ISSET(i, &writefds))
+        if (FD_ISSET(i, &readfds))
             zn_dispatch(S, i, 0);
-        else if (FD_ISSET(i, &exceptfds))
+        if (FD_ISSET(i, &writefds))
             zn_dispatch(S, i, 1);
+        if (FD_ISSET(i, &exceptfds))
+            zn_dispatch(S, i, 2);
     }
 
 out:
@@ -658,7 +683,7 @@ out:
         return 0;
     }
     S->status = ZN_STATUS_READY;
-    return znT_hastimers(S);
+    return znT_hastimers(S) || S->waitings != 0;
 }
 
 

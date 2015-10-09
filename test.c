@@ -79,6 +79,7 @@ static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
 #endif
 
 int main(void) {
+    printf("engine: %s\n", zn_engine());
     zn_initialize();
     if ((S = zn_newstate()) == NULL)
         return 255;
@@ -101,4 +102,5 @@ int main(void) {
     return zn_run(S, ZN_RUN_LOOP);
 }
 
-/* cc: libs+='-lws2_32 -lmswsock' */
+/* win32cc: libs+='-lws2_32 -lmswsock' */
+/* unixcc: flags+='-pthread' */
