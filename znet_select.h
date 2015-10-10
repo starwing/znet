@@ -79,6 +79,16 @@ static int znU_set_reuseaddr(int socket) {
             (char*)&reuse_addr, sizeof(reuse_addr)) == 0;
 }
 
+static int znU_set_nosigpipe(int socket) {
+#ifdef SO_NOSIGPIPE
+    int no_sigpipe = 1;
+    return setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE,
+            (char*)&no_sigpipe, sizeof(no_sigpipe)) == 0;
+#else
+    return 0;
+#endif /* SO_NOSIGPIPE */
+}
+
 /* post queue */
 
 static void znP_init(zn_State *S) {
@@ -178,6 +188,7 @@ static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr
     tcp = zn_newtcp(S);
     tcp->fd = fd;
 
+    znU_set_nosigpipe(tcp->fd);
     znU_set_nonblock(tcp->fd);
     znU_set_nodelay(tcp->fd);
     zn_setinfo(tcp, 
@@ -286,6 +297,7 @@ static void zn_onconnect(zn_Tcp *tcp, int err) {
         return;
     }
 
+    znU_set_nosigpipe(tcp->fd);
     znU_set_nodelay(tcp->fd);
     cb(tcp->connect_ud, tcp, ZN_OK);
 }
@@ -308,7 +320,11 @@ static void zn_onsend(zn_Tcp *tcp, int err) {
         return;
     }
 
+#ifdef MSG_NOSIGNAL 
+    if ((bytes = send(tcp->fd, buff.buff, buff.len, MSG_NOSIGNAL)) >= 0)
+#else
     if ((bytes = send(tcp->fd, buff.buff, buff.len, 0)) >= 0)
+#endif /* MSG_NOSIGNAL */
         cb(tcp->send_ud, tcp, ZN_OK, bytes);
     else if (bytes == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
         zn_closetcp(tcp);
@@ -406,8 +422,8 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
 }
 
 ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
-    if (accept->accept_handler != NULL) return ZN_EBUSY;
     if (accept->fd == -1)               return ZN_ESTATE;
+    if (accept->accept_handler != NULL) return ZN_EBUSY;
     if (cb == NULL)                     return ZN_EPARAM;
     ++accept->S->waitings;
     accept->accept_handler = cb;
@@ -429,15 +445,17 @@ static void zn_onaccept(zn_Accept *a, int err) {
     }
     else {
         struct sockaddr_in remote_addr;
-        socklen_t addr_size;
+        socklen_t addr_size = sizeof(struct sockaddr_in);
         int ret = accept(a->fd, (struct sockaddr*)&remote_addr, &addr_size);
-        if (ret >= 0) {
+        if (ret >= FD_SETSIZE)
+            close(ret);
+        else if (ret >= 0) {
             zn_Tcp *tcp = zn_tcpfromfd(a->S, ret, &remote_addr);
             if (a->S->nfds < ret)
                 a->S->nfds = ret;
             if (tcp != NULL) cb(a->accept_ud, a, ZN_OK, tcp);
         }
-        if (ret == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        else if (errno != EAGAIN && errno != EWOULDBLOCK) {
             zn_closeaccept(a);
             cb(a->accept_ud, a, ZN_ERROR, NULL);
         }
@@ -564,7 +582,7 @@ ZN_API const char *zn_engine(void) { return "select"; }
 static int zn_initstate(zn_State *S) {
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, S->sockpairs) != 0)
         return 0;
-    if (S->sockpairs[1] > FD_SETSIZE) {
+    if (S->sockpairs[1] >= FD_SETSIZE) {
         close(S->sockpairs[0]);
         close(S->sockpairs[1]);
         return 0;
@@ -620,7 +638,7 @@ static void zn_dispatch(zn_State *S, int fd, int setno) {
     zn_SocketInfo *info;
     zn_Tcp *tcp;
     int err = setno == 2;
-    if (fd < 0 || fd > FD_SETSIZE) return;
+    if (fd < 0 || fd >= FD_SETSIZE) return;
     if (fd == S->sockpairs[1]) { /* post */
         char buff[8192];
         while (recv(fd, buff, 8192, 0) > 0)
@@ -669,7 +687,7 @@ static int znS_poll(zn_State *S, int checkonly) {
     if (ret == -1 && errno != EINTR) /* error out */
         goto out;
     znT_updatetimers(S, zn_time());
-    for (i = 0; i < FD_SETSIZE; ++i) {
+    for (i = 0; i <= S->nfds; ++i) {
         if (FD_ISSET(i, &readfds))
             zn_dispatch(S, i, 0);
         if (FD_ISSET(i, &writefds))

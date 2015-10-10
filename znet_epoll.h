@@ -476,7 +476,7 @@ static void zn_onaccept(zn_Accept *a, int eventmask) {
 
     if ((eventmask & EPOLLIN) != 0) {
         struct sockaddr_in remote_addr;
-        socklen_t addr_size;
+        socklen_t addr_size = sizeof(struct sockaddr_in);
         int ret = accept(a->fd, (struct sockaddr*)&remote_addr, &addr_size);
         if (ret >= 0) {
             zn_Tcp *tcp = zn_tcpfromfd(a->S, ret, &remote_addr);

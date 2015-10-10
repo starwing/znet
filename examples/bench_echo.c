@@ -10,8 +10,8 @@ unsigned port = 8081;
 
 #define BLOCK_SIZE 1024
 typedef struct Userdata {
-    size_t send_ok, send_err, send_bytes;
-    size_t recv_ok, recv_err, recv_bytes;
+    unsigned send_ok, send_err, send_bytes;
+    unsigned recv_ok, recv_err, recv_bytes;
     char send[BLOCK_SIZE];
     char recv[BLOCK_SIZE];
 } Userdata;
@@ -112,9 +112,9 @@ static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     zn_accept(accept, on_accept, ud);
 }
 
-static void human_readed(size_t sz) {
+static void human_readed(unsigned sz) {
     if (sz < 1024)
-        printf("%zuB", sz);
+        printf("%uB", sz);
     else if (sz < 1024*1024)
         printf("%.3fKB", sz/1024.0);
     else if (sz < 1024*1024*1024)
@@ -124,9 +124,9 @@ static void human_readed(size_t sz) {
 }
 
 static void print_ud(Userdata *ud, const char *title) {
-    printf("(recv=%zu/%zu/", ud->recv_ok, ud->recv_err);
+    printf("(recv=%u/%u/", ud->recv_ok, ud->recv_err);
     human_readed(ud->recv_bytes);
-    printf(", send=%zu/%zu/", ud->send_ok, ud->send_err);
+    printf(", send=%u/%u/", ud->send_ok, ud->send_err);
     human_readed(ud->send_bytes);
     printf(")");
     ud->recv_ok = ud->recv_err = ud->recv_bytes = 0;
@@ -144,13 +144,17 @@ static zn_Time on_summary(void *ud, zn_Timer *timer, zn_Time elapsed) {
 }
 
 int main(int argc, const char **argv) {
+    int i, client_count = 1;
     if (argc == 2 && strcmp(argv[1], "-h") == 0) {
         printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
         exit(0);
     }
     if (argc > 1) {
-        if (strcmp(argv[1], "client") == 0)
+        size_t n = strlen(argv[1]);
+        if (n >= 6 && memcmp(argv[1], "client", 6) == 0) {
             is_client = 1;
+            if (n > 6) client_count = atoi(argv[1] + 6);
+        }
     }
     if (argc > 2) {
         strncpy(addr, argv[2], ZN_MAX_ADDRLEN-1);
@@ -161,13 +165,17 @@ int main(int argc, const char **argv) {
     }
 
     zn_initialize();
+    printf("znet engine: %s\n", zn_engine());
     if ((S = zn_newstate()) == NULL) return 2;
 
     if (is_client) {
-        zn_Tcp *tcp;
-        if ((tcp = zn_newtcp(S)) == NULL) return 2;
-        zn_connect(tcp, addr, port, on_connect, NULL);
+        printf("client count: %d\n", client_count);
         printf("connecting to %s:%d ...\n", addr, port);
+        for (i = 0; i < client_count; ++i) {
+            zn_Tcp *tcp;
+            if ((tcp = zn_newtcp(S)) == NULL) return 2;
+            zn_connect(tcp, addr, port, on_connect, NULL);
+        }
     }
     else {
         zn_Accept *accept;
@@ -183,4 +191,4 @@ int main(int argc, const char **argv) {
     return zn_run(S, ZN_RUN_LOOP);
 }
 /* win32cc: flags+='-s -O3' libs+='-lws2_32' */
-/* unixcc: flags+='-s -O3 -DZN_USE_SELECT' libs+='-pthread' */
+/* unixcc: flags+='-s -O3' libs+='-pthread' */

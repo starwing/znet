@@ -662,6 +662,8 @@ LUALIB_API int luaopen_znet(lua_State *L) {
         lua_setfield(L, -2, "__gc");
         lua_setmetatable(L, -2);
     }
+    lua_pushstring(L, zn_engine());
+    lua_setfield(L, -2, "engine");
     return 1;
 }
 /* cc: flags+='-mdll -s -O3 -DLUA_BUILD_AS_DLL'
