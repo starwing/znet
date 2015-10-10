@@ -635,8 +635,10 @@ static void zn_dispatch(zn_State *S, int fd, int setno) {
         break;
     case ZN_SOCK_TCP:
         tcp = (zn_Tcp*)info->head;
-        if (tcp->connect_handler)
+        if (tcp->connect_handler) {
             zn_onconnect(tcp, err);
+            break;
+        }
         if (tcp->send_handler && setno != 0)
             zn_onsend(tcp, err);
         if (tcp->recv_handler && setno != 1)

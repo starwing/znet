@@ -664,7 +664,7 @@ static void zn_dispatch(zn_State *S, struct epoll_event *evt) {
         tcp = (zn_Tcp*)info->head;
         if (tcp->connect_handler)
             zn_onconnect(tcp, eventmask);
-        if (tcp->send_handler || tcp->recv_handler)
+        else if (tcp->send_handler || tcp->recv_handler)
             zn_onevent(tcp, eventmask);
         break;
     case ZN_SOCK_UDP:
