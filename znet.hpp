@@ -65,8 +65,8 @@ const TimerID InvalidTimerID = nullptr;
 struct EventLoop : public std::enable_shared_from_this<EventLoop>
 {
     EventLoop(zn_State *S = nullptr)
-        : S(S)
-    { }
+        : S(S) { }
+    ~EventLoop() { if (S) zn_close(S); }
 
     zn_State *S = nullptr;
     std::unordered_map<TimerID, OnTimerHandler> timers;
@@ -81,8 +81,8 @@ struct EventLoop : public std::enable_shared_from_this<EventLoop>
 struct TcpAccept : public std::enable_shared_from_this<TcpAccept>
 {
     TcpAccept(zn_Accept *accept = nullptr)
-        : accept(accept)
-    { }
+        : accept(accept) { }
+    ~TcpAccept() { if (accept) zn_delaccept(accept); }
 
     zn_Accept *accept;
     TcpSocketPtr client;
@@ -96,8 +96,8 @@ struct TcpAccept : public std::enable_shared_from_this<TcpAccept>
 struct TcpSocket : public std::enable_shared_from_this<TcpSocket>
 {
     TcpSocket(zn_Tcp *tcp = nullptr)
-        : tcp(tcp)
-    { }
+        : tcp(tcp) { }
+    ~TcpSocket() { if (tcp) zn_deltcp(tcp); }
 
     zn_Tcp *tcp = nullptr;
     OnConnectHandler connectHandler;
@@ -105,26 +105,25 @@ struct TcpSocket : public std::enable_shared_from_this<TcpSocket>
     OnRecvHandler recvHandler;
 
     bool initialize(EventLoopPtr const& summer);
-    bool doClose();
-
     bool getPeerInfo(std::string& remoteIP, unsigned short& remotePort) const;
     bool doConnect(std::string const& remoteIP, unsigned short remotePort, OnConnectHandler&& h);
     bool doSend(char const* buf, unsigned len, OnSendHandler&& h);
     bool doRecv(char* buf, unsigned len, OnRecvHandler&& h);
+    bool doClose();
 };
 
 struct UdpSocket : public std::enable_shared_from_this<UdpSocket>
 {
     UdpSocket(zn_Udp *udp = nullptr)
-        : udp(udp)
-    { }
+        : udp(udp) { }
+    ~UdpSocket() { if (udp) zn_deludp(udp); }
 
     zn_Udp *udp = nullptr;
     OnRecvFromHandler recvFromHandler;
 
     bool initialize(EventLoopPtr const& summer, std::string const& ip, unsigned short port);
     bool doSendTo(char const* buf, unsigned len, std::string const& remoteIP, unsigned short remotePort);;
-    bool doRecv(char* buf, unsigned len, OnRecvFromHandler&& h);
+    bool doRecvFrom(char* buf, unsigned len, OnRecvFromHandler&& h);
 };
 
 
@@ -304,7 +303,7 @@ static inline void recvfrom_cb(void *ud, zn_Udp *udp, unsigned err, unsigned cou
     h(static_cast<NetErrorCode>(err), ip, port, count);
 }
 
-inline bool UdpSocket::doRecv(char* buf, unsigned len, OnRecvFromHandler&& h)
+inline bool UdpSocket::doRecvFrom(char* buf, unsigned len, OnRecvFromHandler&& h)
 {
     if (zn_recvfrom(udp, buf, len, recvfrom_cb, this) == ZN_OK)
     {
