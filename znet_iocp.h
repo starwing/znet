@@ -48,19 +48,19 @@ struct zn_State {
 static int znU_set_nodelay(SOCKET socket) {
     BOOL bEnable = 1;
     return setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
-            (char*)&bEnable, sizeof(bEnable)) == 0;
+            (const char*)&bEnable, sizeof(bEnable)) == 0;
 }
 
 static int znU_update_acceptinfo(SOCKET server, SOCKET client) {
     return setsockopt(client, SOL_SOCKET,
             SO_UPDATE_ACCEPT_CONTEXT,
-            (char*)&server, sizeof(server)) == 0;
+            (const char*)&server, sizeof(server)) == 0;
 }
 
 static int znU_set_reuseaddr(SOCKET socket) {
     BOOL bReuseAddr = TRUE;
     return setsockopt(socket, SOL_SOCKET, SO_REUSEADDR,
-            (char*)&bReuseAddr, sizeof(BOOL)) == 0;
+            (const char*)&bReuseAddr, sizeof(BOOL)) == 0;
 }
 
 /* tcp */

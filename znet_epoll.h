@@ -53,7 +53,7 @@ struct zn_State {
 static int znU_set_nodelay(int socket) {
     int enable = 1;
     return setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
-            (char*)&enable, sizeof(enable)) == 0;
+            (const void*)&enable, sizeof(enable)) == 0;
 }
 
 static int znU_set_nonblock(int socket) {
@@ -64,7 +64,7 @@ static int znU_set_nonblock(int socket) {
 static int znU_set_reuseaddr(int socket) {
     int reuse_addr = 1;
     return setsockopt(socket, SOL_SOCKET, SO_REUSEADDR,
-            (char*)&reuse_addr, sizeof(reuse_addr)) == 0;
+            (const void*)&reuse_addr, sizeof(reuse_addr)) == 0;
 }
 
 /* post queue */
