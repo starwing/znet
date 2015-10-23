@@ -223,7 +223,7 @@ static void lzn_onpacket(void *ud, const char *buff, size_t len) {
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onpacket_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
     lua_pushlstring(L, buff, len);
-    if (lbind_pcall(L, 1, 0) != LUA_OK) {
+    if (lbind_pcall(L, 2, 0) != LUA_OK) {
         fprintf(stderr, "%s\n", lua_tostring(L, -1));
         lua_pop(L, 1);
     }
@@ -378,6 +378,7 @@ static int Ltcp_getpeerinfo(lua_State *L) {
 
 static void open_tcp(lua_State *L) {
     luaL_Reg libs[] = {
+        { "__gc", Ltcp_delete },
 #define ENTRY(name) { #name, Ltcp_##name }
         ENTRY(new),
         ENTRY(delete),
@@ -476,6 +477,7 @@ static int Laccept_close(lua_State *L) {
 
 static void open_accept(lua_State *L) {
     luaL_Reg libs[] = {
+        { "__gc", Laccept_delete },
 #define ENTRY(name) { #name, Laccept_##name }
         ENTRY(new),
         ENTRY(delete),
@@ -583,6 +585,7 @@ static int Ludp_receivefrom(lua_State *L) {
 
 static void open_udp(lua_State *L) {
     luaL_Reg libs[] = {
+        { "__gc", Ludp_delete },
 #define ENTRY(name) { #name, Ludp_##name }
         ENTRY(new),
         ENTRY(delete),

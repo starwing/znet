@@ -246,7 +246,6 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
 static void zn_onconnect(zn_Tcp *tcp, BOOL bSuccess) {
     zn_ConnectHandler *cb = tcp->connect_handler;
     assert(tcp->connect_handler);
-    --tcp->S->waitings;
     tcp->connect_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
         /* cb(tcp->connect_ud, tcp, ZN_ECLOSED); */
@@ -261,7 +260,6 @@ static void zn_onconnect(zn_Tcp *tcp, BOOL bSuccess) {
 static void zn_onsend(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
     zn_SendHandler *cb = tcp->send_handler;
     assert(tcp->send_handler);
-    --tcp->S->waitings;
     tcp->send_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
         assert(tcp->socket == INVALID_SOCKET);
@@ -277,7 +275,6 @@ static void zn_onsend(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
 static void zn_onrecv(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
     zn_RecvHandler *cb = tcp->recv_handler;
     assert(tcp->recv_handler);
-    --tcp->S->waitings;
     tcp->recv_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
         /* cb(tcp->recv_ud, tcp, ZN_ECLOSED, dwBytes); */
@@ -415,7 +412,6 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
     zn_Tcp *tcp;
     struct sockaddr *paddr1 = NULL, *paddr2 = NULL;
     int tmp1 = 0, tmp2 = 0;
-    --accept->S->waitings;
     accept->accept_handler = NULL;
 
     if (accept->socket == INVALID_SOCKET) {
@@ -560,13 +556,12 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
 
 static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
     zn_RecvFromHandler *cb = udp->recv_handler;
-    if (!cb) return;
-    --udp->S->waitings;
+    assert(udp->recv_handler);
+    udp->recv_handler = NULL;
     if (udp->socket == INVALID_SOCKET) {
         ZN_PUTOBJECT(udp);
         return;
     }
-    udp->recv_handler = NULL;
     if (bSuccess && dwBytes > 0)
         cb(udp->recv_ud, udp, ZN_OK, dwBytes,
                 inet_ntoa(((struct sockaddr_in*)&udp->recvFrom)->sin_addr),
@@ -631,8 +626,10 @@ static int znS_init(zn_State *S) {
 static void znS_close(zn_State *S) {
     /* use IOCP to wait all closed but not deleted object,
      * and delete them. */
-    while (S->waitings != 0)
+    while (S->waitings != 0) {
+        assert(S->waitings > 0);
         zn_run(S, ZN_RUN_ONCE);
+    }
     CloseHandle(S->iocp);
 }
 
