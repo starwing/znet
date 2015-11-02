@@ -197,7 +197,7 @@ int main(int argc, const char **argv) {
     }
     if (argc > 3) {
         unsigned p = atoi(argv[3]);
-        if (p != 0) port = port;
+        if (p != 0) port = p;
     }
 
     zn_initialize();

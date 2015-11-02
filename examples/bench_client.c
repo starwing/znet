@@ -120,12 +120,12 @@ int main(int argc, char **argv) {
     strcpy(addr, "127.0.0.1");
     if (argc == 2) {
         unsigned p = atoi(argv[1]);
-        if (p != 0) port = port;
+        if (p != 0) port = p;
     }
     else if (argc == 3) {
         unsigned p = atoi(argv[2]);
         strcpy(addr, argv[1]);
-        if (p != 0) port = port;
+        if (p != 0) port = p;
     }
 
     init_data();
