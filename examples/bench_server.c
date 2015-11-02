@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
     zn_Timer *timer;
     if (argc == 2) {
         unsigned p = atoi(argv[1]);
-        if (p != 0) port = port;
+        if (p != 0) port = p;
     }
 
     zn_initialize();

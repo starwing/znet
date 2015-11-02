@@ -71,11 +71,11 @@ int main(int argc, const char **argv) {
         exit(0);
     }
     if (argc > 1) {
-        strncpy(addr, argv[2], ZN_MAX_ADDRLEN-1);
+        strncpy(addr, argv[1], ZN_MAX_ADDRLEN-1);
     }
     if (argc > 2) {
-        unsigned p = atoi(argv[3]);
-        if (p != 0) port = port;
+        unsigned p = atoi(argv[2]);
+        if (p != 0) port = p;
     }
 
     zn_initialize();
