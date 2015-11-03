@@ -139,17 +139,13 @@ inline bool EventLoop::initialize()
     return true;
 }
 
-inline void post_cb(void *ud, zn_State *) 
-{
-    std::unique_ptr<OnPostHandler> h
-        (reinterpret_cast<OnPostHandler*>(ud));
-    (*h)();
-}
-
 inline void EventLoop::post(OnPostHandler&& h)
 {
-    auto newh = new OnPostHandler(h);
-    zn_post(S, post_cb, newh);
+    zn_post(S, [](void *ud, zn_State *) {
+        std::unique_ptr<OnPostHandler> h
+            (reinterpret_cast<OnPostHandler*>(ud));
+        (*h)();
+    }, new OnPostHandler(std::move(h)));
 }
 
 static inline zn_Time timer_cb(void *ud, zn_Timer *timer, unsigned elapsed)
