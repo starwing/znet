@@ -689,4 +689,4 @@ out:
 /* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
  * win32cc: libs+='-lws2_32' output='znet.dll' */
 /* unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
- * unixcc: libs+='-lpthread' output='znet.so' */
+ * unixcc: libs+='-pthread -lrt' output='znet.so' */
