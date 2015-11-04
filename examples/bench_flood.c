@@ -10,8 +10,8 @@ unsigned port = 8081;
 
 #define BLOCK_SIZE 1024
 typedef struct Userdata {
-    size_t send_ok, send_err, send_bytes;
-    size_t recv_ok, recv_err, recv_bytes;
+    unsigned send_ok, send_err, send_bytes;
+    unsigned recv_ok, recv_err, recv_bytes;
     char send[BLOCK_SIZE];
     char recv[BLOCK_SIZE];
 } Userdata;
@@ -106,9 +106,9 @@ static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     zn_accept(accept, on_accept, ud);
 }
 
-static void human_readed(size_t sz) {
+static void human_readed(unsigned sz) {
     if (sz < 1024)
-        printf("%dB", sz);
+        printf("%uB", sz);
     else if (sz < 1024*1024)
         printf("%.3fKB", sz/1024.0);
     else if (sz < 1024*1024*1024)
@@ -118,9 +118,9 @@ static void human_readed(size_t sz) {
 }
 
 static void print_ud(Userdata *ud, const char *title) {
-    printf("(recv=%d/%d/", ud->recv_ok, ud->recv_err);
+    printf("(recv=%u/%u/", ud->recv_ok, ud->recv_err);
     human_readed(ud->recv_bytes);
-    printf(", send=%d/%d/", ud->send_ok, ud->send_err);
+    printf(", send=%u/%u/", ud->send_ok, ud->send_err);
     human_readed(ud->send_bytes);
     printf(")");
     ud->recv_ok = ud->recv_err = ud->recv_bytes = 0;
