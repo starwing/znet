@@ -214,7 +214,7 @@ again:
     }
 
     if (b->readed.used + count >= b->expected) {
-        size_t remaining = b->expected - (b->readed.used + count);
+        size_t remaining = b->expected - b->readed.used;
         zn_addlstring(&b->readed, buff, remaining);
         if (b->packet_handler)
             b->packet_handler(b->packet_ud, b->readed.buff, b->expected);
