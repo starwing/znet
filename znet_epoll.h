@@ -20,7 +20,8 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 
-#define ZN_MAX_EVENTS 4096
+#define ZN_MAX_RESULT_LOOPS 100
+#define ZN_MAX_EVENTS       4096
 
 typedef struct zn_DataBuffer {
     size_t len;
@@ -107,7 +108,9 @@ static void znR_add(zn_State *S, int err, zn_Result *result) {
 
 static void znR_process(zn_State *S) {
     zn_Result *results;
-    while ((results = S->results.first) != NULL) {
+    int count = 0;
+    while ((results = S->results.first) != NULL
+            && ++count <= ZN_MAX_RESULT_LOOPS) {
         znQ_init(&S->results);
         while (results) {
             zn_Result *next = results->next;
