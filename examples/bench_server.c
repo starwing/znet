@@ -74,7 +74,7 @@ static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     zn_accept(accept, on_accept, ud);
 }
 
-static int on_timer(void *ud, zn_Timer *timer, unsigned elapsed) {
+static zn_Time on_timer(void *ud, zn_Timer *timer, zn_Time elapsed) {
     printf("%d: connect=%d, recv=%d, send=%d\n",
             zn_time(), connect_count, recv_count, send_count);
     connect_count = 0;
@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
     zn_Timer *timer;
     if (argc == 2) {
         unsigned p = atoi(argv[1]);
-        if (p != 0) port = port;
+        if (p != 0) port = p;
     }
 
     zn_initialize();

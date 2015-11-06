@@ -65,7 +65,7 @@ struct zn_State {
 static int znU_set_nodelay(int socket) {
     int enable = 1;
     return setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
-            (char*)&enable, sizeof(enable)) == 0;
+            (const void*)&enable, sizeof(enable)) == 0;
 }
 
 static int znU_set_nonblock(int socket) {
@@ -76,7 +76,7 @@ static int znU_set_nonblock(int socket) {
 static int znU_set_reuseaddr(int socket) {
     int reuse_addr = 1;
     return setsockopt(socket, SOL_SOCKET, SO_REUSEADDR,
-            (char*)&reuse_addr, sizeof(reuse_addr)) == 0;
+            (const void*)&reuse_addr, sizeof(reuse_addr)) == 0;
 }
 
 static int znU_set_nosigpipe(int socket) {
@@ -711,4 +711,4 @@ out:
 /* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
  * win32cc: libs+='-lws2_32' output='znet.dll' */
 /* unixcc: flags+='-s -O3 -shared -fPIC -DZN_USE_SELECT -DZN_IMPLEMENTATION -xc'
- * unixcc: libs+='-lpthread' output='znet.so' */
+ * unixcc: libs+='-pthread -lrt' output='znet.so' */

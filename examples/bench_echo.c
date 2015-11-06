@@ -161,7 +161,7 @@ int main(int argc, const char **argv) {
     }
     if (argc > 3) {
         unsigned p = atoi(argv[3]);
-        if (p != 0) port = port;
+        if (p != 0) port = p;
     }
 
     zn_initialize();
@@ -191,4 +191,4 @@ int main(int argc, const char **argv) {
     return zn_run(S, ZN_RUN_LOOP);
 }
 /* win32cc: flags+='-s -O3' libs+='-lws2_32' */
-/* unixcc: flags+='-s -O3' libs+='-pthread' */
+/* unixcc: flags+='-s -O3' libs+='-pthread -lrt' */

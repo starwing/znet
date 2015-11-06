@@ -20,7 +20,8 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 
-#define ZN_MAX_EVENTS 4096
+#define ZN_MAX_RESULT_LOOPS 100
+#define ZN_MAX_EVENTS       4096
 
 typedef struct zn_DataBuffer {
     size_t len;
@@ -53,7 +54,7 @@ struct zn_State {
 static int znU_set_nodelay(int socket) {
     int enable = 1;
     return setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
-            (char*)&enable, sizeof(enable)) == 0;
+            (const void*)&enable, sizeof(enable)) == 0;
 }
 
 static int znU_set_nonblock(int socket) {
@@ -64,7 +65,7 @@ static int znU_set_nonblock(int socket) {
 static int znU_set_reuseaddr(int socket) {
     int reuse_addr = 1;
     return setsockopt(socket, SOL_SOCKET, SO_REUSEADDR,
-            (char*)&reuse_addr, sizeof(reuse_addr)) == 0;
+            (const void*)&reuse_addr, sizeof(reuse_addr)) == 0;
 }
 
 /* post queue */
@@ -107,7 +108,9 @@ static void znR_add(zn_State *S, int err, zn_Result *result) {
 
 static void znR_process(zn_State *S) {
     zn_Result *results;
-    while ((results = S->results.first) != NULL) {
+    int count = 0;
+    while ((results = S->results.first) != NULL
+            && ++count <= ZN_MAX_RESULT_LOOPS) {
         znQ_init(&S->results);
         while (results) {
             zn_Result *next = results->next;
@@ -722,4 +725,4 @@ static void znS_close(zn_State *S) {
 /* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
  * win32cc: libs+='-lws2_32' output='znet.dll' */
 /* unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
- * unixcc: libs+='-lpthread' output='znet.so' */
+ * unixcc: libs+='-pthread -lrt' output='znet.so' */
