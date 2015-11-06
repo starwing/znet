@@ -618,18 +618,23 @@ static int znS_init(zn_State *S) {
 }
 
 static void znS_close(zn_State *S) {
+    znP_process(S);
     close(S->sockpairs[0]);
     close(S->sockpairs[1]);
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     char data = 0;
-    zn_Post *ps = (zn_Post*)malloc(sizeof(zn_Post));
-    if (ps == NULL) return 0;
+    zn_Post *ps;
+    if (S->status > ZN_STATUS_READY
+            || (ps = (zn_Post*)malloc(sizeof(zn_Post))) == NULL)
+        return 0;
     ps->handler = cb;
     ps->ud = ud;
-    if (send(S->sockpairs[0], &data, 1, 0) != 1)
+    if (send(S->sockpairs[0], &data, 1, 0) != 1) {
+        free(ps);
         return 0;
+    }
     znP_add(S, ps);
     return 1;
 }
