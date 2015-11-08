@@ -28,7 +28,7 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 
 static size_t on_header(void *ud, const char *buff, size_t len) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode*)ud;
-    printf("client(%p) send: %.*s\n", data->tcp, (int)len, buff);
+    printf("client(%p) send: %.*s\n", (void*)data->tcp, (int)len, buff);
     if (zn_sendprepare(&data->send, buff, len)
             && zn_send(data->tcp,
                 zn_sendbuff(&data->send),
@@ -56,7 +56,7 @@ static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     zn_BufferPoolNode *data = zn_getbuffer(&pool);
     if (err != ZN_OK)
         return;
-    printf("client connected: %p\n", tcp);
+    printf("client connected: %p\n", (void*)tcp);
     zn_recvonheader(&data->recv, on_header, data);
     data->tcp = tcp;
     if (zn_recv(tcp, zn_recvbuff(&data->recv), zn_recvsize(&data->recv),
