@@ -4,9 +4,9 @@ examples := $(patsubst %.c,%,$(foreach x,$(call walk,examples/),$(wildcard $x*.c
 LDLIBS := -lrt
 CFLAGS := -O2 -Wall -pthread
 
-.phony : all
+.PHONY : all
 all : ${examples}
 
-.phony : clean
+.PHONY : clean
 clean :
 	-rm ${examples}
