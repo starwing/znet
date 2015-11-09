@@ -686,7 +686,7 @@ static int znS_poll(zn_State *S, int checkonly) {
     zn_Time current;
     int timeout = 0;
     znT_updatetimers(S, current = zn_time());
-    if (!checkonly) {
+    if (!checkonly && S->result.first == NULL) {
         zn_Time ms = znT_gettimeout(S, current);
         timeout = ms > INT_MAX ? -1 : (int)ms;
     }
