@@ -642,7 +642,7 @@ ZN_API zn_Time zn_time(void) {
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     zn_Post *ps;
     if (S->status > ZN_STATUS_READY
-            || (ps = (zn_Post*)malloc(sizeof(zn_Post))) != NULL)
+            || (ps = (zn_Post*)malloc(sizeof(zn_Post))) == NULL)
         return 0;
     ps->handler = cb;
     ps->ud = ud;
@@ -686,7 +686,7 @@ static int znS_poll(zn_State *S, int checkonly) {
     zn_Time current;
     int timeout = 0;
     znT_updatetimers(S, current = zn_time());
-    if (!checkonly) {
+    if (!checkonly && S->result.first == NULL) {
         zn_Time ms = znT_gettimeout(S, current);
         timeout = ms > INT_MAX ? -1 : (int)ms;
     }
