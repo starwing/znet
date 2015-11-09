@@ -21,7 +21,7 @@
 #include <sys/eventfd.h>
 
 #define ZN_MAX_RESULT_LOOPS 100
-#define ZN_MAX_EVENTS       4096
+#define ZN_MAX_EVENTS 4096
 
 typedef struct zn_DataBuffer {
     size_t len;
@@ -640,8 +640,10 @@ ZN_API zn_Time zn_time(void) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
-    zn_Post *ps = (zn_Post*)malloc(sizeof(zn_Post));
-    if (ps == NULL) return 0;
+    zn_Post *ps;
+    if (S->status > ZN_STATUS_READY
+            || (ps = (zn_Post*)malloc(sizeof(zn_Post))) != NULL)
+        return 0;
     ps->handler = cb;
     ps->ud = ud;
     znP_add(S, ps);
@@ -717,6 +719,8 @@ static int znS_init(zn_State *S) {
 }
 
 static void znS_close(zn_State *S) {
+    znP_process(S);
+    close(S->eventfd);
     close(S->epoll);
 }
 

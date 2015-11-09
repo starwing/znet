@@ -248,7 +248,7 @@ static void zn_onconnect(zn_Tcp *tcp, BOOL bSuccess) {
     assert(tcp->connect_handler);
     tcp->connect_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
-        /* cb(tcp->connect_ud, tcp, ZN_ECLOSED); */
+        /* cb(tcp->connect_ud, tcp, ZN_ECLOSE); */
         ZN_PUTOBJECT(tcp);
         return;
     }
@@ -263,7 +263,7 @@ static void zn_onsend(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
     tcp->send_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
         assert(tcp->socket == INVALID_SOCKET);
-        /* cb(tcp->send_ud, tcp, ZN_ECLOSED, dwBytes); */
+        /* cb(tcp->send_ud, tcp, ZN_ECLOSE, dwBytes); */
         if (tcp->recv_handler == NULL)
             ZN_PUTOBJECT(tcp);
         return;
@@ -277,7 +277,7 @@ static void zn_onrecv(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
     assert(tcp->recv_handler);
     tcp->recv_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
-        /* cb(tcp->recv_ud, tcp, ZN_ECLOSED, dwBytes); */
+        /* cb(tcp->recv_ud, tcp, ZN_ECLOSE, dwBytes); */
         if (tcp->send_handler == NULL)
             ZN_PUTOBJECT(tcp);
         return;
@@ -604,8 +604,10 @@ ZN_API zn_Time zn_time(void) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
-    zn_Post *ps = (zn_Post*)malloc(sizeof(zn_Post));
-    if (ps == NULL) return 0;
+    zn_Post *ps;
+    if (S->status > ZN_STATUS_READY
+            || (ps = (zn_Post*)malloc(sizeof(zn_Post))) == NULL)
+        return 0;
     ps->handler = cb;
     ps->ud = ud;
     PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)ps);
