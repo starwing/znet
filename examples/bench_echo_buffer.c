@@ -183,14 +183,57 @@ static zn_Time on_summary(void *ud, zn_Timer *timer, zn_Time elapsed) {
     return 1000;
 }
 
+static void cleanup(void) {
+    printf("exiting ... ");
+    zn_close(S);
+    printf("OK\n");
+    printf("deinitialize ... ");
+    zn_deinitialize();
+    printf("OK\n");
+}
+
+#ifdef _WIN32
+static int deinited = 0;
+static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
+    if (!deinited) {
+        deinited = 1;
+        /* windows ctrl handler is running at another thread */
+        zn_post(S, (zn_PostHandler*)cleanup, NULL);
+    }
+    return TRUE;
+}
+
+static void register_interrupted(void) {
+    SetConsoleCtrlHandler(on_interrupted, TRUE);
+}
+#else
+#include <signal.h>
+
+static void on_interrupted(int signum) {
+    if (signum == SIGINT)
+        cleanup();
+}
+
+static void register_interrupted(void) {
+   struct sigaction act; 
+   act.sa_flags = SA_RESETHAND;
+   act.sa_handler = on_interrupted;
+   sigaction(SIGINT, &act, NULL);
+}
+#endif
+
 int main(int argc, const char **argv) {
+    int i, client_count = 1;
     if (argc == 2 && strcmp(argv[1], "-h") == 0) {
         printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
         exit(0);
     }
     if (argc > 1) {
-        if (strcmp(argv[1], "client") == 0)
+        size_t n = strlen(argv[1]);
+        if (n >= 6 && memcmp(argv[1], "client", 6) == 0) {
             is_client = 1;
+            if (n > 6) client_count = atoi(argv[1] + 6);
+        }
     }
     if (argc > 2) {
         strncpy(addr, argv[2], ZN_MAX_ADDRLEN-1);
@@ -201,6 +244,7 @@ int main(int argc, const char **argv) {
     }
 
     zn_initialize();
+    printf("znet engine: %s\n", zn_engine());
     if ((S = zn_newstate()) == NULL) return 2;
 
     zn_initbuffpool(&pool);
@@ -210,8 +254,13 @@ int main(int argc, const char **argv) {
     }
 
     if (is_client) {
-        zn_post(S, new_connection, NULL);
+        printf("client count: %d\n", client_count);
         printf("connecting to %s:%d ...\n", addr, port);
+        for (i = 0; i < client_count; ++i) {
+            zn_Tcp *tcp;
+            if ((tcp = zn_newtcp(S)) == NULL) return 2;
+            zn_connect(tcp, addr, port, on_connect, NULL);
+        }
     }
     else {
         zn_Accept *accept;
@@ -223,6 +272,7 @@ int main(int argc, const char **argv) {
 
     zn_starttimer(zn_newtimer(S, on_summary, NULL), 1000);
 
+    register_interrupted();
     return zn_run(S, ZN_RUN_LOOP);
 }
 /* cc: flags+='-s -O3' libs+='-lws2_32' */

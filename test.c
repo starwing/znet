@@ -58,23 +58,42 @@ static zn_Time on_timer(void *ud, zn_Timer *t, zn_Time elapsed) {
     return 1000;
 }
 
-int deinited = 0;
 static void cleanup(void) {
-    if (!deinited) {
-        deinited = 1;
-        printf("exiting ... ");
-        zn_close(S);
-        printf("OK\n");
-        printf("deinitialize ... ");
-        zn_deinitialize();
-        printf("OK\n");
-    }
+    printf("exiting ... ");
+    zn_close(S);
+    printf("OK\n");
+    printf("deinitialize ... ");
+    zn_deinitialize();
+    printf("OK\n");
 }
 
 #ifdef _WIN32
+static int deinited = 0;
 static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
-    zn_post(S, (zn_PostHandler*)cleanup, NULL);
+    if (!deinited) {
+        deinited = 1;
+        /* windows ctrl handler is running at another thread */
+        zn_post(S, (zn_PostHandler*)cleanup, NULL);
+    }
     return TRUE;
+}
+
+static void register_interrupted(void) {
+    SetConsoleCtrlHandler(on_interrupted, TRUE);
+}
+#else
+#include <signal.h>
+
+static void on_interrupted(int signum) {
+    if (signum == SIGINT)
+        cleanup();
+}
+
+static void register_interrupted(void) {
+   struct sigaction act; 
+   act.sa_flags = SA_RESETHAND;
+   act.sa_handler = on_interrupted;
+   sigaction(SIGINT, &act, NULL);
 }
 #endif
 
@@ -83,7 +102,6 @@ int main(void) {
     zn_initialize();
     if ((S = zn_newstate()) == NULL)
         return 255;
-    atexit(cleanup);
 
     /* server */
     a = zn_newaccept(S);
@@ -95,10 +113,7 @@ int main(void) {
     zn_Timer *t = zn_newtimer(S, on_timer, NULL);
     zn_starttimer(t, 1000);
 
-#ifdef _WIN32
-    SetConsoleCtrlHandler(on_interrupted, TRUE);
-#endif
-
+    register_interrupted();
     return zn_run(S, ZN_RUN_LOOP);
 }
 
