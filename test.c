@@ -103,4 +103,4 @@ int main(void) {
 }
 
 /* win32cc: libs+='-lws2_32 -lmswsock' */
-/* unixcc: flags+='-pthread' */
+/* unixcc: flags+='-pthread -lrt' */

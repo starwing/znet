@@ -35,9 +35,9 @@ typedef struct zn_Post {
 } zn_Post;
 
 typedef struct zn_Result {
-    struct zn_Result *next; 
-    int err;
+    znQ_entry(struct zn_Result);
     zn_Tcp *tcp;
+    int err;
 } zn_Result;
 
 struct zn_State {
@@ -158,9 +158,6 @@ static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port)
 ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info)
 { *info = tcp->peer_info; }
 
-ZN_API void zn_deltcp(zn_Tcp *tcp)
-{ zn_closetcp(tcp); ZN_PUTOBJECT(tcp); }
-
 static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr) {
     zn_Tcp *tcp = zn_newtcp(S);
     tcp->fd = fd;
@@ -208,6 +205,28 @@ ZN_API int zn_closetcp(zn_Tcp *tcp) {
         tcp->fd = -1;
     }
     return ret;
+}
+
+ZN_API void zn_deltcp(zn_Tcp *tcp) {
+    zn_closetcp(tcp);
+    /* We can not delete object directly since it's result may plug in
+     * result queue. So we wait onresult() delete it, same with the
+     * logic used in IOCP backend.
+     * when recv/send, the recv/send handler have value, but result
+     * queue has value depends whether tcp's status has EPOLLIN/OUT
+     * bit. So if we don't have these bits, that means no result in
+     * queue, so plug it to result list to wait delete */
+    if (tcp->recv_handler != NULL) {
+        if ((tcp->status & EPOLLIN) == 0)
+            znR_add(tcp->S, ZN_ERROR, &tcp->recv_result);
+        return;
+    }
+    else if (tcp->send_handler == NULL) {
+        if ((tcp->status & EPOLLOUT) == 0)
+            znR_add(tcp->S, ZN_ERROR, &tcp->send_result);
+        return;
+    }
+    ZN_PUTOBJECT(tcp);
 }
 
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
@@ -333,8 +352,12 @@ static void zn_onresult(zn_Result *result) {
         tcp->send_handler = NULL;
         tcp->send_buffer.buff = NULL;
         tcp->send_buffer.len = 0;
-        assert(tcp->fd != -1);
-        if (result->err == ZN_OK)
+        if (tcp->fd == -1) {
+            /* cb(tcp->send_ud, tcp, ZN_ECLOSE, 0); */
+            if (tcp->recv_handler == NULL)
+                ZN_PUTOBJECT(tcp);
+        }
+        else if (result->err == ZN_OK)
             cb(tcp->send_ud, tcp, ZN_OK, buff.len);
         else if (tcp->recv_handler == NULL) {
             zn_closetcp(tcp);
@@ -348,8 +371,12 @@ static void zn_onresult(zn_Result *result) {
         tcp->recv_handler = NULL;
         tcp->recv_buffer.buff = NULL;
         tcp->recv_buffer.len = 0;
-        assert(tcp->fd != -1);
-        if (result->err == ZN_OK)
+        if (tcp->fd == -1) {
+            /* cb(tcp->recv_ud, tcp, ZN_ECLOSE, 0); */
+            if (tcp->send_handler == NULL)
+                ZN_PUTOBJECT(tcp);
+        }
+        else if (result->err == ZN_OK)
             cb(tcp->recv_ud, tcp, ZN_OK, buff.len);
         else if (tcp->send_handler == NULL) {
             zn_closetcp(tcp);
@@ -720,6 +747,8 @@ static int znS_init(zn_State *S) {
 
 static void znS_close(zn_State *S) {
     znP_process(S);
+    znR_process(S);
+    assert(S->results.first == NULL);
     close(S->eventfd);
     close(S->epoll);
 }
