@@ -256,11 +256,8 @@ int main(int argc, const char **argv) {
     if (is_client) {
         printf("client count: %d\n", client_count);
         printf("connecting to %s:%d ...\n", addr, port);
-        for (i = 0; i < client_count; ++i) {
-            zn_Tcp *tcp;
-            if ((tcp = zn_newtcp(S)) == NULL) return 2;
-            zn_connect(tcp, addr, port, on_connect, NULL);
-        }
+        for (i = 0; i < client_count; ++i)
+            zn_post(S, new_connection, NULL);
     }
     else {
         zn_Accept *accept;
@@ -275,4 +272,5 @@ int main(int argc, const char **argv) {
     register_interrupted();
     return zn_run(S, ZN_RUN_LOOP);
 }
-/* cc: flags+='-s -O3' libs+='-lws2_32' */
+/* win32cc: flags+='-s -O3' libs+='-lws2_32' */
+/* unixcc: flags+='-ggdb -O0' libs+='-pthread -lrt' */
