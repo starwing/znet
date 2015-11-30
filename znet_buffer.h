@@ -256,7 +256,7 @@ ZN_API int zn_sendprepare(zn_SendBuffer *b, const char *buff, size_t len) {
 }
 
 ZN_API int zn_sendfinish(zn_SendBuffer *b, size_t count) {
-    if (b->sending->used == count) { /* all sent? */
+    if (b->sending->used - b->sent_count == count) { /* all sent? */
         zn_Buffer *tmp;
         b->sending->used = 0;
         b->sent_count = 0;
