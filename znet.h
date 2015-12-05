@@ -36,7 +36,7 @@
 # define ZN_API extern
 #endif
 
-#define ZN_MAX_ADDRLEN   512
+#define ZN_MAX_ADDRLEN   50
 #define ZN_MAX_TIMERPOOL 512
 #define ZN_MAX_TIMERHEAP 512
 

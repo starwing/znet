@@ -21,7 +21,7 @@
 #include <sys/eventfd.h>
 
 #define ZN_MAX_RESULT_LOOPS 100
-#define ZN_MAX_EVENTS 4096
+#define ZN_MAX_EVENTS       1024
 
 typedef struct zn_DataBuffer {
     size_t len;
