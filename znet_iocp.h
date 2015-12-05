@@ -6,18 +6,20 @@
 #if defined(_WIN32) && defined(ZN_USE_IOCP) && !defined(znet_iocp_h)
 #define znet_iocp_h
 
-# ifndef WIN32_LEAN_AND_MEAN
-#   define WIN32_LEAN_AND_MEAN
-# endif
-# include <Windows.h>
-# include <WinSock2.h>
-# include <MSWSock.h>
+#ifndef WIN32_LEAN_AND_MEAN
+# define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#include <WinSock2.h>
+#include <MSWSock.h>
 
-# ifdef _MSC_VER
-#  pragma warning(disable: 4996) /* deprecated stuffs */
-#  pragma warning(disable: 4127) /* for do {} while(0) */
-#  pragma comment(lib, "ws2_32")
-# endif /* _MSC_VER */
+#ifdef _MSC_VER
+# pragma warning(disable: 4996) /* deprecated stuffs */
+# pragma warning(disable: 4127) /* for do {} while(0) */
+# pragma comment(lib, "ws2_32")
+#endif /* _MSC_VER */
+
+#define ZN_MAX_EVENTS 1024
 
 typedef enum zn_RequestType {
     ZN_TACCEPT,
@@ -576,6 +578,17 @@ static BOOL zn_initialized = FALSE;
 static LARGE_INTEGER counterFreq;
 static LARGE_INTEGER startTime;
 
+typedef BOOL WINAPI (*LPGETQUEUEDCOMPLETIONSTATUSEX) (
+  _In_  HANDLE             CompletionPort,
+  _Out_ LPOVERLAPPED_ENTRY lpCompletionPortEntries,
+  _In_  ULONG              ulCount,
+  _Out_ PULONG             ulNumEntriesRemoved,
+  _In_  DWORD              dwMilliseconds,
+  _In_  BOOL               fAlertable
+);
+
+static LPGETQUEUEDCOMPLETIONSTATUSEX pGetQueuedCompletionStatusEx;
+
 ZN_API const char *zn_engine(void) { return "IOCP"; }
 
 ZN_API void zn_initialize(void) {
@@ -585,6 +598,9 @@ ZN_API void zn_initialize(void) {
         if (WSAStartup(version, &d) != 0) {
             abort();
         }
+        pGetQueuedCompletionStatusEx = (LPGETQUEUEDCOMPLETIONSTATUSEX)
+            GetProcAddress(GetModuleHandleA("KERNEL32.DLL"),
+                    "GetQueuedCompletionStatusEx");
         zn_initialized = TRUE;
     }
 }
@@ -635,13 +651,34 @@ static void znS_close(zn_State *S) {
     CloseHandle(S->iocp);
 }
 
+static void znS_dispatch(zn_State *S, BOOL bRet, LPOVERLAPPED_ENTRY pEntry) {
+    zn_Request *req;
+    ULONG_PTR upComKey = pEntry->lpCompletionKey;
+    DWORD dwBytes = pEntry->dwNumberOfBytesTransferred;
+    if (upComKey == 0) {
+        zn_Post *ps = (zn_Post*)pEntry->lpOverlapped;
+        if (ps->handler)
+            ps->handler(ps->ud, S);
+        free(ps);
+        return;
+    }
+
+    req = (zn_Request*)pEntry->lpOverlapped;
+    --S->waitings;
+    switch (req->type) {
+    case ZN_TACCEPT:   zn_onaccept((zn_Accept*)upComKey, bRet); break;
+    case ZN_TRECV:     zn_onrecv((zn_Tcp*)upComKey, bRet, dwBytes); break;
+    case ZN_TSEND:     zn_onsend((zn_Tcp*)upComKey, bRet, dwBytes); break;
+    case ZN_TCONNECT:  zn_onconnect((zn_Tcp*)upComKey, bRet); break;
+    case ZN_TRECVFROM: zn_onrecvfrom((zn_Udp*)upComKey, bRet, dwBytes); break;
+    case ZN_TSENDTO: /* do not have this operation */
+    default: ;
+    }
+}
+
 static int znS_poll(zn_State *S, int checkonly) {
-    DWORD dwBytes = 0;
-    ULONG_PTR upComKey = (ULONG_PTR)0;
-    LPOVERLAPPED pOverlapped = NULL;
     DWORD timeout = 0;
     zn_Time current;
-    zn_Request *req;
     BOOL bRet;
 
     S->status = ZN_STATUS_IN_RUN;
@@ -650,30 +687,27 @@ static int znS_poll(zn_State *S, int checkonly) {
         zn_Time ms = znT_gettimeout(S, current);
         timeout = ms >= INFINITE ? INFINITE : (DWORD)ms;
     }
-    bRet = GetQueuedCompletionStatus(S->iocp,
-            &dwBytes, &upComKey, &pOverlapped, timeout);
-    znT_updatetimers(S, zn_time());
-    if (!bRet && !pOverlapped) /* time out */
-        goto out;
-
-    if (upComKey == 0) {
-        zn_Post *ps = (zn_Post*)pOverlapped;
-        if (ps->handler)
-            ps->handler(ps->ud, S);
-        free(ps);
-        goto out;
+    if (pGetQueuedCompletionStatusEx) {
+        ULONG i, count;
+        OVERLAPPED_ENTRY entries[ZN_MAX_EVENTS];
+        bRet = pGetQueuedCompletionStatusEx(S->iocp,
+                entries, ZN_MAX_EVENTS, &count,
+                timeout, FALSE);
+        if (!bRet) goto out; /* time out */
+        for (i = 0; i < count; ++i)
+            znS_dispatch(S, entries[i].lpOverlapped->Internal >= 0,
+                    &entries[i]);
     }
-
-    req = (zn_Request*)pOverlapped;
-    --S->waitings;
-    switch (req->type) {
-        case ZN_TACCEPT:   zn_onaccept((zn_Accept*)upComKey, bRet); break;
-        case ZN_TRECV:     zn_onrecv((zn_Tcp*)upComKey, bRet, dwBytes); break;
-        case ZN_TSEND:     zn_onsend((zn_Tcp*)upComKey, bRet, dwBytes); break;
-        case ZN_TCONNECT:  zn_onconnect((zn_Tcp*)upComKey, bRet); break;
-        case ZN_TRECVFROM: zn_onrecvfrom((zn_Udp*)upComKey, bRet, dwBytes); break;
-        case ZN_TSENDTO: /* do not have this operation */
-        default: ;
+    else {
+        OVERLAPPED_ENTRY entry;
+        bRet = GetQueuedCompletionStatus(S->iocp,
+                &entry.dwNumberOfBytesTransferred,
+                &entry.lpCompletionKey,
+                &entry.lpOverlapped, timeout);
+        znT_updatetimers(S, zn_time());
+        if (!bRet && !entry.lpOverlapped) /* time out */
+            goto out;
+        znS_dispatch(S, bRet, &entry);
     }
 
 out:
