@@ -207,7 +207,7 @@ ZN_NS_BEGIN
     *(n)->pprev = (n)->next;              } while (0)
 
 #define znL_apply(type, h, func)       do { \
-    type *tmp_ = (h);                       \
+    type *tmp_ = (type*)(h);                \
     (h) = NULL;                             \
     while (tmp_) {                          \
         type *next_ = tmp_->next;           \
@@ -237,10 +237,14 @@ ZN_NS_BEGIN
 
 /* pre-defined platform-independency routines */
 
+#define ZN_OBJECT_TYPES(X)                  \
+    X(accept, zn_Accept)                    \
+    X(tcp,    zn_Tcp)                       \
+    X(udp,    zn_Udp)                       \
+
 #define ZN_STATE_FIELDS                     \
-    zn_Accept *accepts;                     \
-    zn_Tcp    *tcps;                        \
-    zn_Udp    *udps;                        \
+    void *objects[ZN_MAX_TYPES];            \
+    void *cached[ZN_MAX_TYPES];             \
     zn_Timers  timers;                      \
     zn_Status  status;                      \
     unsigned   waitings;                    \
@@ -249,15 +253,26 @@ ZN_NS_BEGIN
                          type* name;   do { \
     if (S->status > ZN_STATUS_READY)        \
         return NULL;                        \
-    name = (type*)malloc(sizeof(type));     \
-    if (name == NULL) return NULL;          \
+    name = S->cached[ZN_T##name];           \
+    if (name)                               \
+        S->cached[ZN_T##name] = name->next; \
+    else {                                  \
+        name = (type*)malloc(sizeof(type)); \
+        if (name == NULL) return NULL;      \
+    }                                       \
     memset(name, 0, sizeof(type));          \
     name->S = S;                            \
-    znL_insert(&S->name##s, name);        } while (0)
+    znL_insert((type**)&S->objects[ZN_T##name], name); } while (0)
 
 # define ZN_PUTOBJECT(name)            do { \
+    zn_State *S = name->S;                  \
     znL_remove(name);                       \
-    free(name);                           } while (0)
+    if (S->status > ZN_STATUS_READY)        \
+        free(name);                         \
+    else {                                  \
+        name->next = S->cached[ZN_T##name]; \
+        S->cached[ZN_T##name] = name;       \
+    }                                     } while (0)
 
 typedef enum zn_Status {
     ZN_STATUS_IN_RUN  = -1,       /* now in zn_run() */
@@ -265,6 +280,13 @@ typedef enum zn_Status {
     ZN_STATUS_CLOSING =  1,       /* prepare close */
     ZN_STATUS_CLOSING_IN_RUN = 2, /* prepare close in run() */
 } zn_Status;
+
+typedef enum zn_Types {
+#define X(name, type) ZN_T##name,
+    ZN_OBJECT_TYPES(X)
+#undef  X
+    ZN_MAX_TYPES
+} zn_Types;
 
 struct zn_Timer {
     union { zn_Timer *next; void *ud; } u;
@@ -352,9 +374,13 @@ ZN_API void zn_close(zn_State *S) {
     S->status = ZN_STATUS_CLOSING;
     /* 1. cancel all operations */
     znT_cleartimers(S);
-    znL_apply(zn_Accept, S->accepts, zn_delaccept);
-    znL_apply(zn_Tcp,    S->tcps,    zn_deltcp);
-    znL_apply(zn_Udp,    S->udps,    zn_deludp);
+    znL_apply(zn_Accept, S->objects[ZN_Taccept], zn_delaccept);
+    znL_apply(zn_Tcp,    S->objects[ZN_Ttcp],    zn_deltcp);
+    znL_apply(zn_Udp,    S->objects[ZN_Tudp],    zn_deludp);
+    /* 2. delete all remaining objects */
+    znL_apply(zn_Accept, S->cached[ZN_Taccept], free);
+    znL_apply(zn_Tcp,    S->cached[ZN_Ttcp],    free);
+    znL_apply(zn_Udp,    S->cached[ZN_Tudp],    free);
     znS_close(S);
     free(S);
 }
