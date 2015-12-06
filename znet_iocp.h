@@ -19,8 +19,6 @@
 # pragma comment(lib, "ws2_32")
 #endif /* _MSC_VER */
 
-#define ZN_MAX_EVENTS 1024
-
 typedef enum zn_RequestType {
     ZN_TACCEPT,
     ZN_TRECV,

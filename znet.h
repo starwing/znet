@@ -36,13 +36,17 @@
 # define ZN_API extern
 #endif
 
-#define ZN_MAX_ADDRLEN   50
+#ifndef ZN_MAX_EVENTS
+# define ZN_MAX_EVENTS   1024
+#endif
+
+#define ZN_MAX_ADDRLEN   46
 #define ZN_MAX_TIMERPOOL 512
 #define ZN_MAX_TIMERHEAP 512
 
-#define ZN_TIMER_NOINDEX  (~(unsigned)0)
-#define ZN_FOREVER        (~(zn_Time)0)
-#define ZN_MAX_SIZET      ((~(size_t)0)-100)
+#define ZN_TIMER_NOINDEX (~(unsigned)0)
+#define ZN_FOREVER       (~(zn_Time)0)
+#define ZN_MAX_SIZET     ((~(size_t)0)-100)
 
 
 ZN_NS_BEGIN
