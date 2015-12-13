@@ -387,6 +387,7 @@ LUALIB_API const char *luaL_tolstring(lua_State *L, int idx, size_t *plen) {
 
 /* LuaJIT has its own luaL_traceback(),
  * so we do not export this, use static instead.  */
+#ifdef LUA_BITSINT /* not LuaJIT */
 #define LEVELS1	12	/* size of the first part of the stack */
 #define LEVELS2	10	/* size of the second part of the stack */
 static void luaL_traceback(lua_State *L, lua_State *L1, const char *msg, int level) {
@@ -428,6 +429,8 @@ static void luaL_traceback(lua_State *L, lua_State *L1, const char *msg, int lev
   }
   lua_concat(L, lua_gettop(L) - top);
 }
+#endif /* LUA_BITSINT */
+
 #endif /* LUA_VERSION_NUM < 502 */
 
 
