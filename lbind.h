@@ -290,7 +290,7 @@ LB_API int lbind_checkmask (lua_State *L, int idx, lbind_Enum *et);
 #endif /* LBIND_NO_ENUM */
 
 
-LB_NS_BEGIN
+LB_NS_END
 
 #endif /* LBIND_H */
 
@@ -351,7 +351,7 @@ LUA_API void lua_rawsetp(lua_State *L, int idx, const void *p) {
   lua_rawset(L, lbind_relindex(idx, 1));
 }
 
-LUALIB_API void luaL_setfuncs(lua_State *L, luaL_Reg *l, int nup) {
+LUALIB_API void luaL_setfuncs(lua_State *L, const luaL_Reg *l, int nup) {
   luaL_checkstack(L, nup, "too many upvalues");
   for (; l->name != NULL; l++) {  /* fill the table with given functions */
     int i;
@@ -573,14 +573,14 @@ LB_API void lbind_requireinto(lua_State *L, const char *prefix, lbind_Reg *libs)
 /* lbind utils functions */
 
 static int lbL_traceback(lua_State *L) {
-    const char *msg = lua_tostring(L, 1);
-    if (msg)
-        luaL_traceback(L, L, msg, 1);
-    else if (!lua_isnoneornil(L, 1)) {  /* is there an error object? */
-        if (!luaL_callmeta(L, 1, "__tostring"))  /* try its 'tostring' metamethod */
-            lua_pushliteral(L, "(no error message)");
-    }
-    return 1;
+  const char *msg = lua_tostring(L, 1);
+  if (msg)
+    luaL_traceback(L, L, msg, 1);
+  else if (!lua_isnoneornil(L, 1)) {  /* is there an error object? */
+    if (!luaL_callmeta(L, 1, "__tostring"))  /* try its 'tostring' metamethod */
+      lua_pushliteral(L, "(no error message)");
+  }
+  return 1;
 }
 
 LB_API int lbind_relindex(int idx, int onstack) {
@@ -1320,10 +1320,8 @@ LB_API void *lbind_check(lua_State *L, int idx, const lbind_Type *t) {
   void *u = NULL;
   if (!check_size(L, idx))
     luaL_argerror(L, idx, "invalid lbind userdata");
-  if (obj == NULL || obj->o.instance == NULL) {
+  if (obj != NULL && obj->o.instance == NULL)
     luaL_argerror(L, idx, "null lbind object");
-    return NULL;
-  }
   u = lbT_testmeta(L, idx, t) ? obj->o.instance : lbT_trycast(L, idx, t);
   if (u == NULL)
     lbind_typeerror(L, idx, t->name);
@@ -1451,10 +1449,11 @@ LB_API lbind_EnumItem *lbind_findenum(lbind_Enum *et, const char *s, size_t len)
   return NULL;
 }
 
-LB_API int lbind_pushmask(lua_State *L, int value, lbind_Enum *et) {
+LB_API int lbind_pushmask(lua_State *L, int evalue, lbind_Enum *et) {
   luaL_Buffer b;
   lbind_EnumItem *items;
   int first = 1;
+  unsigned value = lbind_checkmask(L, 2, et);
   if (et->items == NULL) {
     lua_pushliteral(L, "");
     return 0;
@@ -1475,7 +1474,7 @@ LB_API int lbind_pushmask(lua_State *L, int value, lbind_Enum *et) {
 }
 
 LB_API int lbind_pushenum(lua_State *L, const char *name, lbind_Enum *et) {
-  lbind_EnumItem *item = lbind_findenum(et, name, ~(size_t)0);
+  lbind_EnumItem *item = lbind_findenum(et, name, -1);
   if (item == NULL)
     return -1;
   lua_pushinteger(L, item->value);
