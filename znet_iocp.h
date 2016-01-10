@@ -34,6 +34,8 @@ typedef struct zn_Request {
 } zn_Request;
 
 typedef struct zn_Post {
+    znL_entry(struct zn_Post);
+    zn_State *S;
     zn_PostHandler *handler;
     void *ud;
 } zn_Post;
@@ -618,13 +620,8 @@ ZN_API zn_Time zn_time(void) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
-    zn_Post *ps;
-    if (S->status > ZN_STATUS_READY
-            || (ps = (zn_Post*)malloc(sizeof(zn_Post))) == NULL)
-        return 0;
-    ps->handler = cb;
-    ps->ud = ud;
-    PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)ps);
+    ZN_GETOBJECT(S, zn_Post, post);
+    PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)post);
     return 1;
 }
 
@@ -654,10 +651,10 @@ static void znS_dispatch(zn_State *S, BOOL bRet, LPOVERLAPPED_ENTRY pEntry) {
     ULONG_PTR upComKey = pEntry->lpCompletionKey;
     DWORD dwBytes = pEntry->dwNumberOfBytesTransferred;
     if (upComKey == 0) {
-        zn_Post *ps = (zn_Post*)pEntry->lpOverlapped;
-        if (ps->handler)
-            ps->handler(ps->ud, S);
-        free(ps);
+        zn_Post *post = (zn_Post*)pEntry->lpOverlapped;
+        if (post->handler)
+            post->handler(post->ud, post->S);
+        ZN_PUTOBJECT(post);
         return;
     }
 

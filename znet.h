@@ -125,10 +125,16 @@ ZN_API zn_Time zn_time (void);
 ZN_API zn_Timer *zn_newtimer (zn_State *S, zn_TimerHandler *cb, void *ud);
 ZN_API void      zn_deltimer (zn_Timer *timer);
 
-ZN_API zn_TimerHandler *zn_gettimerf(zn_Timer *timer, void **ud);
-
 ZN_API int  zn_starttimer  (zn_Timer *timer, zn_Time delayms);
 ZN_API void zn_canceltimer (zn_Timer *timer);
+
+
+/* znet work routines */
+
+ZN_API zn_Work *zn_newwork (zn_State *S, zn_WorkHandler *cb, void *ud);
+
+ZN_API void zn_submitwork (zn_Work *w);
+ZN_API int  zn_cancelwork (zn_Work *w);
 
 
 /* znet accept routines */
@@ -242,6 +248,7 @@ ZN_NS_BEGIN
 /* pre-defined platform-independency routines */
 
 #define ZN_OBJECT_TYPES(X)                  \
+    X(post,   zn_Post)                      \
     X(accept, zn_Accept)                    \
     X(tcp,    zn_Tcp)                       \
     X(udp,    zn_Udp)                       \
@@ -256,13 +263,13 @@ ZN_NS_BEGIN
 # define ZN_GETOBJECT(S, type, name)        \
                          type* name;   do { \
     if (S->status > ZN_STATUS_READY)        \
-        return NULL;                        \
+        return 0;                           \
     name = S->cached[ZN_T##name];           \
     if (name)                               \
         S->cached[ZN_T##name] = name->next; \
     else {                                  \
         name = (type*)malloc(sizeof(type)); \
-        if (name == NULL) return NULL;      \
+        if (name == NULL) return 0;         \
     }                                       \
     memset(name, 0, sizeof(type));          \
     name->S = S;                            \
@@ -409,9 +416,6 @@ ZN_API int zn_run(zn_State *S, int mode) {
 
 static int znT_hastimers(zn_State *S)
 { return S->timers.heap_used != 0; }
-
-ZN_API zn_TimerHandler *zn_gettimerf(zn_Timer *timer, void **ud)
-{ if (ud) *ud = timer->u.ud; return timer->handler; }
 
 static int znT_resizeheap(zn_Timers *S, size_t size) {
     zn_Timer **heap;

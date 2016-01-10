@@ -29,6 +29,7 @@ typedef struct zn_DataBuffer {
 
 typedef struct zn_Post {
     znL_entry(struct zn_Post);
+    zn_State *S;
     zn_PostHandler *handler;
     void *ud;
 } zn_Post;
@@ -74,24 +75,24 @@ static void znP_init(zn_State *S) {
     znQ_init(&S->posts);
 }
 
-static void znP_add(zn_State *S, zn_Post *ps) {
+static void znP_add(zn_State *S, zn_Post *post) {
     pthread_spin_lock(&S->post_lock);
-    znQ_enqueue(&S->posts, ps);
+    znQ_enqueue(&S->posts, post);
     pthread_spin_unlock(&S->post_lock);
 }
 
 static void znP_process(zn_State *S) {
-    zn_Post *ps = S->posts.first;
-    if (ps == NULL) return;
+    zn_Post *post = S->posts.first;
+    if (post == NULL) return;
     pthread_spin_lock(&S->post_lock);
     znQ_init(&S->posts);
     pthread_spin_unlock(&S->post_lock);
-    while (ps) {
-        zn_Post *next = ps->next;
-        if (ps->handler)
-            ps->handler(ps->ud, S);
-        free(ps);
-        ps = next;
+    while (post) {
+        zn_Post *next = post->next;
+        if (post->handler)
+            post->handler(post->ud, post->S);
+        ZN_PUTOBJECT(post);
+        post = next;
     }
 }
 
@@ -666,14 +667,14 @@ ZN_API zn_Time zn_time(void) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
-    zn_Post *ps;
-    if (S->status > ZN_STATUS_READY
-            || (ps = (zn_Post*)malloc(sizeof(zn_Post))) == NULL)
+    ZN_GETOBJECT(S, zn_Post, post);
+    post->handler = cb;
+    post->ud = ud;
+    znP_add(S, post);
+    if (eventfd_write(S->eventfd, (eventfd_t)1) != 0) {
+        ZN_PUTOBJECT(post);
         return 0;
-    ps->handler = cb;
-    ps->ud = ud;
-    znP_add(S, ps);
-    eventfd_write(S->eventfd, (eventfd_t)1);
+    }
     return 1;
 }
 
