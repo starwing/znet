@@ -129,14 +129,6 @@ ZN_API int  zn_starttimer  (zn_Timer *timer, zn_Time delayms);
 ZN_API void zn_canceltimer (zn_Timer *timer);
 
 
-/* znet work routines */
-
-ZN_API zn_Work *zn_newwork (zn_State *S, zn_WorkHandler *cb, void *ud);
-
-ZN_API void zn_submitwork (zn_Work *w);
-ZN_API int  zn_cancelwork (zn_Work *w);
-
-
 /* znet accept routines */
 
 ZN_API zn_Accept* zn_newaccept   (zn_State *S);
