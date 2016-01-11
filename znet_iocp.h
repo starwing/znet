@@ -578,7 +578,7 @@ static BOOL zn_initialized = FALSE;
 static LARGE_INTEGER counterFreq;
 static LARGE_INTEGER startTime;
 
-typedef BOOL WINAPI (*LPGETQUEUEDCOMPLETIONSTATUSEX) (
+typedef BOOL (WINAPI *LPGETQUEUEDCOMPLETIONSTATUSEX) (
   _In_  HANDLE             CompletionPort,
   _Out_ LPOVERLAPPED_ENTRY lpCompletionPortEntries,
   _In_  ULONG              ulCount,
