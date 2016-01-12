@@ -230,9 +230,19 @@ ZN_NS_BEGIN
     (n)->next = NULL;                     } while (0)
 
 #define znQ_dequeue(h, pn)             do { \
-    (pn) = (h)->first;                      \
-    if ((pn) != NULL)                       \
-        (h)->first = (h)->first->next;    } while (0)
+    if (((pn) = (h)->first) != NULL)        \
+        (h)->first = (h)->first->next;      \
+    if ((h)->plast == &(pn)->next)          \
+        (h)->plast = &(h)->first;           } while (0)
+
+#define znQ_apply(type, h, func)       do { \
+    type *tmp_ = (h)->first;                \
+    znQ_init(h);                            \
+    while (tmp_) {                          \
+        type *next_ = tmp_->next;           \
+        func(tmp_);                         \
+        tmp_ = next_;                       \
+    }                                     } while (0)
 
 #endif /* zn_list_h */
 
