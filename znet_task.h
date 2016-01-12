@@ -1,5 +1,5 @@
-#ifndef znet_work_h
-#define znet_work_h
+#ifndef znet_task_h
+#define znet_task_h
 
 
 #ifndef ZN_NS_BEGIN
@@ -24,32 +24,32 @@
 # define ZN_API extern
 #endif
 
-#ifndef ZN_MAX_WORKCOUNT
-# define ZN_MAX_WORKCOUNT 4
-#endif /* ZN_MAX_WORKCOUNT */
+#ifndef ZN_MAX_THREAD_COUNT
+# define ZN_MAX_THREAD_COUNT 4
+#endif /* ZN_MAX_THREAD_COUNT */
 
 
 ZN_NS_BEGIN
 
-typedef struct zn_WorkState zn_WorkState;
+typedef struct zn_TaskPool zn_TaskPool;
 
-typedef void zn_WorkHandler (void *ud, zn_WorkState *ws);
+typedef void zn_TaskHandler (void *ud, zn_TaskPool *ws);
 
-ZN_API zn_WorkState *zn_newwork (int nthread);
-ZN_API void          zn_delwork (zn_WorkState *ws);
+ZN_API zn_TaskPool *zn_newtaskpool (int nthread);
+ZN_API void         zn_deltaskpool (zn_TaskPool *ws);
 
-ZN_API int zn_workcount (zn_WorkState *ws);
-ZN_API int zn_addwork   (zn_WorkState *ws, zn_WorkHandler *h, void *ud);
+ZN_API int zn_taskcount (zn_TaskPool *ws);
+ZN_API int zn_addtask   (zn_TaskPool *ws, zn_TaskHandler *h, void *ud);
 
-ZN_API void zn_enablework (zn_WorkState *ws, int enable);
+ZN_API void zn_pausetasks (zn_TaskPool *ws, int pause);
 
 
 ZN_NS_END
 
-#endif /* znet_work_h */
+#endif /* znet_task_h */
 
-#if defined(ZN_IMPLEMENTATION) && !defined(zn_work_implemented)
-#define zn_work_implemented
+#if defined(ZN_IMPLEMENTATION) && !defined(zn_task_implemented)
+#define zn_task_implemented
 
 ZN_NS_BEGIN
 
@@ -134,28 +134,28 @@ ZN_NS_BEGIN
 #include <Windows.h>
 
 
-typedef struct zn_Work {
-    znQ_entry(struct zn_Work);
+typedef struct zn_Task {
+    znQ_entry(struct zn_Task);
     void *ud;
-    zn_WorkHandler *h;
-} zn_Work;
+    zn_TaskHandler *h;
+} zn_Task;
 
-typedef struct zn_WorkState {
-    HANDLE threads[ZN_MAX_WORKCOUNT];
+typedef struct zn_TaskPool {
+    HANDLE threads[ZN_MAX_THREAD_COUNT];
     HANDLE event;
     CRITICAL_SECTION lock;
-    znQ_type(zn_Work) works, freed_works;
+    znQ_type(zn_Task) tasks, freed_tasks;
     int nthread;
-    int nwork;
+    int ntask;
     int status;
-} zn_WorkState;
+} zn_TaskPool;
 
-ZN_API int zn_workcount(zn_WorkState *ws)
-{ return ws->nwork; }
+ZN_API int zn_taskcount(zn_TaskPool *ws)
+{ return ws->ntask; }
 
-static DWORD WINAPI zn_worker(LPVOID lpParameter) {
-    zn_WorkState *ws = (zn_WorkState*)lpParameter;
-    zn_Work *work = NULL;
+static DWORD WINAPI zn_tasker(LPVOID lpParameter) {
+    zn_TaskPool *ws = (zn_TaskPool*)lpParameter;
+    zn_Task *task = NULL;
     int status = ZN_WS_NORMAL;
 
     while (status != ZN_WS_EXIT) {
@@ -167,20 +167,20 @@ static DWORD WINAPI zn_worker(LPVOID lpParameter) {
         if (status != ZN_WS_EXIT)
             ResetEvent(ws->event);
         if (status != ZN_WS_PAUSE)
-            znQ_dequeue(&ws->works, work);
+            znQ_dequeue(&ws->tasks, task);
         LeaveCriticalSection(&ws->lock);
 
         if (status == ZN_WS_PAUSE)
             continue;
 
-        while (work != NULL) {
-            if (work->h)
-                work->h(work->ud, ws);
+        while (task != NULL) {
+            if (task->h)
+                task->h(task->ud, ws);
 
             EnterCriticalSection(&ws->lock);
-            --ws->nwork;
-            znQ_enqueue(&ws->freed_works, work);
-            znQ_dequeue(&ws->works, work);
+            --ws->ntask;
+            znQ_enqueue(&ws->freed_tasks, task);
+            znQ_dequeue(&ws->tasks, task);
             LeaveCriticalSection(&ws->lock);
         }
     }
@@ -188,22 +188,22 @@ static DWORD WINAPI zn_worker(LPVOID lpParameter) {
     return 0;
 }
 
-ZN_API zn_WorkState *zn_newwork(int nthread) {
+ZN_API zn_TaskPool *zn_newtaskpool(int nthread) {
     int i;
-    zn_WorkState *ws = (zn_WorkState*)malloc(sizeof(zn_WorkState));
+    zn_TaskPool *ws = (zn_TaskPool*)malloc(sizeof(zn_TaskPool));
     if (ws == NULL) return NULL;
     memset(ws, 0, sizeof(*ws));
-    if (nthread <= 0 || nthread > ZN_MAX_WORKCOUNT)
-        nthread = ZN_MAX_WORKCOUNT;
+    if (nthread <= 0 || nthread > ZN_MAX_THREAD_COUNT)
+        nthread = ZN_MAX_THREAD_COUNT;
     ws->event = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (ws->event == NULL) goto err;
     InitializeCriticalSection(&ws->lock);
     ws->status = ZN_WS_NORMAL;
     ws->nthread = nthread;
-    znQ_init(&ws->works);
-    znQ_init(&ws->freed_works);
+    znQ_init(&ws->tasks);
+    znQ_init(&ws->freed_tasks);
     for (i = 0; i < nthread; ++i) {
-        ws->threads[i] = CreateThread(NULL, 0, &zn_worker, (LPVOID)ws, 0, NULL);
+        ws->threads[i] = CreateThread(NULL, 0, &zn_tasker, (LPVOID)ws, 0, NULL);
         if (ws->threads[i] == NULL) {
             if (i == 0) goto err;
             ws->nthread = i;
@@ -218,7 +218,7 @@ err:
     return NULL;
 }
 
-ZN_API void zn_delwork(zn_WorkState *ws) {
+ZN_API void zn_deltaskpool(zn_TaskPool *ws) {
     int i;
     DWORD ret;
     EnterCriticalSection(&ws->lock);
@@ -239,39 +239,39 @@ ZN_API void zn_delwork(zn_WorkState *ws) {
     }
     CloseHandle(ws->event);
     DeleteCriticalSection(&ws->lock);
-    znQ_apply(zn_Work, &ws->freed_works, free);
-    znQ_apply(zn_Work, &ws->works, free);
+    znQ_apply(zn_Task, &ws->freed_tasks, free);
+    znQ_apply(zn_Task, &ws->tasks, free);
     free(ws);
 }
 
-ZN_API int zn_addwork(zn_WorkState *ws, zn_WorkHandler *h, void *ud) {
+ZN_API int zn_addtask(zn_TaskPool *ws, zn_TaskHandler *h, void *ud) {
     int status;
-    zn_Work *work = NULL;
+    zn_Task *task = NULL;
 
     EnterCriticalSection(&ws->lock);
     status = ws->status;
     if (ws->status != ZN_WS_EXIT)
-        znQ_dequeue(&ws->freed_works, work);
+        znQ_dequeue(&ws->freed_tasks, task);
     LeaveCriticalSection(&ws->lock);
 
-    if (status == ZN_WS_EXIT || (work == NULL &&
-            (work = (zn_Work*)malloc(sizeof(zn_Work))) == NULL))
+    if (status == ZN_WS_EXIT || (task == NULL &&
+            (task = (zn_Task*)malloc(sizeof(zn_Task))) == NULL))
         return 0;
-    work->h = h;
-    work->ud = ud;
+    task->h = h;
+    task->ud = ud;
 
     EnterCriticalSection(&ws->lock);
-    ++ws->nwork;
-    znQ_enqueue(&ws->works, work);
+    ++ws->ntask;
+    znQ_enqueue(&ws->tasks, task);
     if (ws->status != ZN_WS_PAUSE)
         SetEvent(ws->event);
     LeaveCriticalSection(&ws->lock);
     return 1;
 }
 
-ZN_API void zn_enablework(zn_WorkState *ws, int enable) {
+ZN_API void zn_pausetasks(zn_TaskPool *ws, int pause) {
     EnterCriticalSection(&ws->lock);
-    ws->status = enable ? ZN_WS_NORMAL : ZN_WS_PAUSE;
+    ws->status = pause ? ZN_WS_PAUSE : ZN_WS_NORMAL;
     LeaveCriticalSection(&ws->lock);
 }
 
@@ -281,37 +281,37 @@ ZN_API void zn_enablework(zn_WorkState *ws, int enable) {
 
 #include <pthread.h>
 
-typedef struct zn_Work {
-    znQ_entry(struct zn_Work);
+typedef struct zn_Task {
+    znQ_entry(struct zn_Task);
     void *ud;
-    zn_WorkHandler *h;
-} zn_Work;
+    zn_TaskHandler *h;
+} zn_Task;
 
-typedef struct zn_WorkState {
-    pthread_t threads[ZN_MAX_WORKCOUNT];
+typedef struct zn_TaskPool {
+    pthread_t threads[ZN_MAX_THREAD_COUNT];
     pthread_cond_t event;
     pthread_mutex_t lock;
-    znQ_type(zn_Work) works, freed_works;
+    znQ_type(zn_Task) tasks, freed_tasks;
     int nthread;
-    int nwork;
+    int ntask;
     int idle_threads;
     int status;
-} zn_WorkState;
+} zn_TaskPool;
 
-ZN_API int zn_workcount(zn_WorkState *ws)
-{ return ws->nwork; }
+ZN_API int zn_taskcount(zn_TaskPool *ws)
+{ return ws->ntask; }
 
-static void *zn_worker(void *ud) {
-    zn_WorkState *ws = (zn_WorkState*)ud;
-    zn_Work *work = NULL;
+static void *zn_tasker(void *ud) {
+    zn_TaskPool *ws = (zn_TaskPool*)ud;
+    zn_Task *task = NULL;
     int status = ZN_WS_NORMAL;
 
     while (status != ZN_WS_EXIT) {
         pthread_mutex_lock(&ws->lock);
         for (;;) {
             status = ws->status;
-            znQ_dequeue(&ws->works, work);
-            if (status == ZN_WS_EXIT || work != NULL)
+            znQ_dequeue(&ws->tasks, task);
+            if (status == ZN_WS_EXIT || task != NULL)
                 break;
             ++ws->idle_threads;
             pthread_cond_wait(&ws->event, &ws->lock);
@@ -322,14 +322,14 @@ static void *zn_worker(void *ud) {
         if (status == ZN_WS_PAUSE)
             continue;
 
-        while (work != NULL) {
-            if (work->h)
-                work->h(work->ud, ws);
+        while (task != NULL) {
+            if (task->h)
+                task->h(task->ud, ws);
 
             pthread_mutex_lock(&ws->lock);
-            --ws->nwork;
-            znQ_enqueue(&ws->freed_works, work);
-            znQ_dequeue(&ws->works, work);
+            --ws->ntask;
+            znQ_enqueue(&ws->freed_tasks, task);
+            znQ_dequeue(&ws->tasks, task);
             pthread_mutex_unlock(&ws->lock);
         }
     }
@@ -337,12 +337,12 @@ static void *zn_worker(void *ud) {
     return NULL;
 }
 
-ZN_API zn_WorkState *zn_newwork(int nthread) {
+ZN_API zn_TaskPool *zn_newtaskpool(int nthread) {
     int i = 0;
-    zn_WorkState *ws = (zn_WorkState*)malloc(sizeof(zn_WorkState));
+    zn_TaskPool *ws = (zn_TaskPool*)malloc(sizeof(zn_TaskPool));
     if (ws == NULL) return NULL;
-    if (nthread <= 0 || nthread > ZN_MAX_WORKCOUNT)
-        nthread = ZN_MAX_WORKCOUNT;
+    if (nthread <= 0 || nthread > ZN_MAX_THREAD_COUNT)
+        nthread = ZN_MAX_THREAD_COUNT;
     memset(ws, 0, sizeof(*ws));
     if (pthread_cond_init(&ws->event, NULL) != 0)
         goto err;
@@ -350,10 +350,10 @@ ZN_API zn_WorkState *zn_newwork(int nthread) {
         goto err;
     ws->status = ZN_WS_NORMAL;
     ws->nthread = nthread;
-    znQ_init(&ws->works);
-    znQ_init(&ws->freed_works);
+    znQ_init(&ws->tasks);
+    znQ_init(&ws->freed_tasks);
     for (i = 0; i < nthread; ++i) {
-        if (pthread_create(&ws->threads[i], NULL, &zn_worker, (void*)ws) != 0) {
+        if (pthread_create(&ws->threads[i], NULL, &zn_tasker, (void*)ws) != 0) {
             if (i == 0) goto err; 
             ws->nthread = i;
             break;
@@ -367,7 +367,7 @@ err:
     return NULL;
 }
 
-ZN_API void zn_delwork(zn_WorkState *ws) {
+ZN_API void zn_deltaskpool(zn_TaskPool *ws) {
     int i;
     pthread_mutex_lock(&ws->lock);
     ws->status = ZN_WS_EXIT;
@@ -381,39 +381,39 @@ ZN_API void zn_delwork(zn_WorkState *ws) {
 
     pthread_cond_destroy(&ws->event);
     pthread_mutex_destroy(&ws->lock);
-    znQ_apply(zn_Work, &ws->freed_works, free);
-    znQ_apply(zn_Work, &ws->works, free);
+    znQ_apply(zn_Task, &ws->freed_tasks, free);
+    znQ_apply(zn_Task, &ws->tasks, free);
     free(ws);
 }
 
-ZN_API int zn_addwork(zn_WorkState *ws, zn_WorkHandler *h, void *ud) {
+ZN_API int zn_addtask(zn_TaskPool *ws, zn_TaskHandler *h, void *ud) {
     int status;
-    zn_Work *work = NULL;
+    zn_Task *task = NULL;
 
     pthread_mutex_lock(&ws->lock);
     status = ws->status;
     if (ws->status != ZN_WS_EXIT)
-        znQ_dequeue(&ws->freed_works, work);
+        znQ_dequeue(&ws->freed_tasks, task);
     pthread_mutex_unlock(&ws->lock);
 
-    if (status == ZN_WS_EXIT || (work == NULL &&
-            (work = (zn_Work*)malloc(sizeof(zn_Work))) == NULL))
+    if (status == ZN_WS_EXIT || (task == NULL &&
+            (task = (zn_Task*)malloc(sizeof(zn_Task))) == NULL))
         return 0;
-    work->h = h;
-    work->ud = ud;
+    task->h = h;
+    task->ud = ud;
 
     pthread_mutex_lock(&ws->lock);
-    ++ws->nwork;
-    znQ_enqueue(&ws->works, work);
+    ++ws->ntask;
+    znQ_enqueue(&ws->tasks, task);
     if (ws->idle_threads != 0 && ws->status != ZN_WS_PAUSE)
         pthread_cond_signal(&ws->event);
     pthread_mutex_unlock(&ws->lock);
     return 1;
 }
 
-ZN_API void zn_enablework(zn_WorkState *ws, int enable) {
+ZN_API void zn_pausetasks(zn_TaskPool *ws, int pause) {
     pthread_mutex_lock(&ws->lock);
-    ws->status = enable ? ZN_WS_NORMAL : ZN_WS_PAUSE;
+    ws->status = pause ? ZN_WS_PAUSE : ZN_WS_NORMAL;
     pthread_mutex_unlock(&ws->lock);
 }
 
