@@ -36,6 +36,15 @@
 # define ZN_API extern
 #endif
 
+#ifndef zn_Time
+# ifdef ZN_USE_64BIT_TIMER
+typedef unsigned long long zn_Time;
+# else
+typedef unsigned zn_Time;
+# endif
+# define zn_Time zn_Time
+#endif /* zn_Time */
+
 #ifndef ZN_MAX_EVENTS
 # define ZN_MAX_EVENTS   1024
 #endif
@@ -76,12 +85,6 @@ typedef struct zn_Accept zn_Accept;
 typedef struct zn_Tcp    zn_Tcp;
 typedef struct zn_Udp    zn_Udp;
 typedef struct zn_Timer  zn_Timer;
-
-#ifdef ZN_USE_64BIT_TIMER
-typedef unsigned long long zn_Time;
-#else
-typedef unsigned zn_Time;
-#endif
 
 typedef struct zn_PeerInfo {
     char     addr[ZN_MAX_ADDRLEN];

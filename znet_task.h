@@ -164,8 +164,8 @@ static DWORD WINAPI zn_tasker(LPVOID lpParameter) {
 
         EnterCriticalSection(&ws->lock);
         status = ws->status;
-        if (status != ZN_WS_EXIT)
-            ResetEvent(ws->event);
+        if (status == ZN_WS_EXIT)
+            SetEvent(ws->event);
         if (status != ZN_WS_PAUSE)
             znQ_dequeue(&ws->tasks, task);
         LeaveCriticalSection(&ws->lock);
@@ -195,7 +195,7 @@ ZN_API zn_TaskPool *zn_newtaskpool(int nthread) {
     memset(ws, 0, sizeof(*ws));
     if (nthread <= 0 || nthread > ZN_MAX_THREAD_COUNT)
         nthread = ZN_MAX_THREAD_COUNT;
-    ws->event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    ws->event = CreateEvent(NULL, FALSE, FALSE, NULL);
     if (ws->event == NULL) goto err;
     InitializeCriticalSection(&ws->lock);
     ws->status = ZN_WS_NORMAL;
