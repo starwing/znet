@@ -673,9 +673,9 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     znP_add(S, post);
     if (eventfd_write(S->eventfd, (eventfd_t)1) != 0) {
         ZN_PUTOBJECT(post);
-        return 0;
+        return ZN_ERROR;
     }
-    return 1;
+    return ZN_OK;
 }
 
 static void zn_dispatch(zn_State *S, struct epoll_event *evt) {

@@ -621,8 +621,11 @@ ZN_API zn_Time zn_time(void) {
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     ZN_GETOBJECT(S, zn_Post, post);
-    PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)post);
-    return 1;
+    if (!PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)post)) {
+        ZN_PUTOBJECT(post);
+        return ZN_ERROR;
+    }
+    return ZN_OK;
 }
 
 static int znS_init(zn_State *S) {

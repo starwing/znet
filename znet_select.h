@@ -631,10 +631,10 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     post->ud = ud;
     if (send(S->sockpairs[0], &data, 1, 0) != 1) {
         ZN_PUTOBJECT(post);
-        return 0;
+        return ZN_ERROR;
     }
     znP_add(S, post);
-    return 1;
+    return ZN_OK;
 }
 
 static void zn_dispatch(zn_State *S, int fd, int setno) {

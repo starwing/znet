@@ -300,18 +300,16 @@ static void znD_signal(zn_Deque *d) { pthread_cond_signal(&d->event); }
 /* generated locked routines */
 
 static zn_DequeItem *znD_frontU(zn_Deque *d) {
-    zn_DequeItem *item;
-    item = d->head.next;
+    zn_DequeItem *item = d->head.next;
     if (item == &d->head)
-        item = NULL;
+        return NULL;
     return item;
 }
 
 static zn_DequeItem *znD_backU(zn_Deque *d) {
-    zn_DequeItem *item;
-    item = d->head.prev;
+    zn_DequeItem *item = d->head.prev;
     if (item == &d->head)
-        item = NULL;
+        return NULL;
     return item;
 }
 
