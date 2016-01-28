@@ -43,6 +43,7 @@ typedef struct zn_Post {
 struct zn_State {
     ZN_STATE_FIELDS
     HANDLE iocp;
+    OVERLAPPED_ENTRY entries[ZN_MAX_EVENTS];
 };
 
 /* utils */
@@ -593,14 +594,17 @@ ZN_API const char *zn_engine(void) { return "IOCP"; }
 
 ZN_API void zn_initialize(void) {
     if (!zn_initialized) {
+        HMODULE kernel32;
         WORD version = MAKEWORD(2, 2);
         WSADATA d;
         if (WSAStartup(version, &d) != 0) {
+            assert(!"can not initialize Windows sockets!");
             abort();
         }
-        pGetQueuedCompletionStatusEx = (LPGETQUEUEDCOMPLETIONSTATUSEX)
-            GetProcAddress(GetModuleHandleA("KERNEL32.DLL"),
-                    "GetQueuedCompletionStatusEx");
+        kernel32 = GetModuleHandleA("KERNEL32.DLL");
+        if (kernel32)
+            pGetQueuedCompletionStatusEx = (LPGETQUEUEDCOMPLETIONSTATUSEX)
+                GetProcAddress(kernel32, "GetQueuedCompletionStatusEx");
         zn_initialized = TRUE;
     }
 }
@@ -621,6 +625,8 @@ ZN_API zn_Time zn_time(void) {
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     ZN_GETOBJECT(S, zn_Post, post);
+    post->handler = cb;
+    post->ud = ud;
     if (!PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)post)) {
         ZN_PUTOBJECT(post);
         return ZN_ERROR;
@@ -687,14 +693,12 @@ static int znS_poll(zn_State *S, int checkonly) {
     }
     if (pGetQueuedCompletionStatusEx) {
         ULONG i, count;
-        OVERLAPPED_ENTRY entries[ZN_MAX_EVENTS];
         bRet = pGetQueuedCompletionStatusEx(S->iocp,
-                entries, ZN_MAX_EVENTS, &count,
-                timeout, FALSE);
+                S->entries, ZN_MAX_EVENTS, &count, timeout, FALSE);
         if (!bRet) goto out; /* time out */
         for (i = 0; i < count; ++i)
-            znS_dispatch(S, entries[i].lpOverlapped->Internal >= 0,
-                    &entries[i]);
+            znS_dispatch(S, S->entries[i].lpOverlapped->Internal >= 0,
+                    &S->entries[i]);
     }
     else {
         OVERLAPPED_ENTRY entry;

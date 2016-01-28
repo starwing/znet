@@ -281,13 +281,13 @@ ZN_NS_BEGIN
     znL_insert((type**)&S->objects[ZN_T##name], name); } while (0)
 
 # define ZN_PUTOBJECT(name)            do { \
-    zn_State *S = name->S;                  \
+    zn_State *NS = name->S;                 \
     znL_remove(name);                       \
-    if (S->status > ZN_STATUS_READY)        \
+    if (NS->status > ZN_STATUS_READY)       \
         free(name);                         \
     else {                                  \
-        name->next = S->cached[ZN_T##name]; \
-        S->cached[ZN_T##name] = name;       \
+        name->next = NS->cached[ZN_T##name];\
+        NS->cached[ZN_T##name] = name;      \
     }                                     } while (0)
 
 typedef enum zn_Status {
@@ -373,6 +373,7 @@ ZN_API zn_State *zn_newstate(void) {
     if (S == NULL) return NULL;
     memset(S, 0, sizeof(*S));
     S->timers.nexttime = ZN_FOREVER;
+    S->timers.pool = NULL;
     if (!znS_init(S)) {
         free(S);
         return NULL;
@@ -519,10 +520,11 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
 
 static void znT_cleartimers(zn_State *S) {
     zn_Timers *ts = &S->timers;
-    while (ts->pool != NULL) {
-        zn_TimerPool *next = ts->pool->next;
-        free(ts->pool);
-        ts->pool = next;
+    zn_TimerPool *pool = ts->pool;
+    while (pool != NULL) {
+        zn_TimerPool *next = pool->next;
+        free(pool);
+        pool = next;
     }
     free(ts->heap);
     memset(ts, 0, sizeof(zn_Timers));
