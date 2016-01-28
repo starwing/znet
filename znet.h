@@ -269,7 +269,7 @@ ZN_NS_BEGIN
                          type* name;   do { \
     if (S->status > ZN_STATUS_READY)        \
         return 0;                           \
-    name = S->cached[ZN_T##name];           \
+    name = (type*)S->cached[ZN_T##name];    \
     if (name)                               \
         S->cached[ZN_T##name] = name->next; \
     else {                                  \
@@ -294,7 +294,7 @@ typedef enum zn_Status {
     ZN_STATUS_IN_RUN  = -1,       /* now in zn_run() */
     ZN_STATUS_READY   =  0,       /* not close */
     ZN_STATUS_CLOSING =  1,       /* prepare close */
-    ZN_STATUS_CLOSING_IN_RUN = 2, /* prepare close in run() */
+    ZN_STATUS_CLOSING_IN_RUN = 2  /* prepare close in run() */
 } zn_Status;
 
 typedef enum zn_Types {
