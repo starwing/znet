@@ -29,6 +29,7 @@ typedef struct zn_DataBuffer {
 
 typedef struct zn_Post {
     znL_entry(struct zn_Post);
+    struct zn_Post *next_post;
     zn_State *S;
     zn_PostHandler *handler;
     void *ud;
@@ -42,8 +43,10 @@ typedef struct zn_Result {
 
 struct zn_State {
     ZN_STATE_FIELDS
+    struct epoll_event events[ZN_MAX_EVENTS];
     pthread_spinlock_t post_lock;
-    znQ_type(zn_Post)   posts;
+    zn_Post *first_post;
+    zn_Post **last_post;
     znQ_type(zn_Result) results;
     int epoll;
     int eventfd;
@@ -72,23 +75,19 @@ static int znU_set_reuseaddr(int socket) {
 
 static void znP_init(zn_State *S) {
     pthread_spin_init(&S->post_lock, 0);
-    znQ_init(&S->posts);
-}
-
-static void znP_add(zn_State *S, zn_Post *post) {
-    pthread_spin_lock(&S->post_lock);
-    znQ_enqueue(&S->posts, post);
-    pthread_spin_unlock(&S->post_lock);
+    S->first_post = NULL;
+    S->last_post = &S->first_post;
 }
 
 static void znP_process(zn_State *S) {
-    zn_Post *post = S->posts.first;
-    if (post == NULL) return;
+    zn_Post *post;
     pthread_spin_lock(&S->post_lock);
-    znQ_init(&S->posts);
+    post = S->first_post;
+    S->first_post = NULL;
+    S->last_post = &S->first_post;
     pthread_spin_unlock(&S->post_lock);
     while (post) {
-        zn_Post *next = post->next;
+        zn_Post *next = post->next_post;
         if (post->handler)
             post->handler(post->ud, post->S);
         ZN_PUTOBJECT(post);
@@ -667,15 +666,22 @@ ZN_API zn_Time zn_time(void) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
-    ZN_GETOBJECT(S, zn_Post, post);
-    post->handler = cb;
-    post->ud = ud;
-    znP_add(S, post);
-    if (eventfd_write(S->eventfd, (eventfd_t)1) != 0) {
-        ZN_PUTOBJECT(post);
-        return ZN_ERROR;
+    int ret = ZN_OK;
+    pthread_spin_lock(&S->post_lock);
+    {
+        ZN_GETOBJECT(S, zn_Post, post);
+        post->handler = cb;
+        post->ud = ud;
+        *S->last_post = post;
+        S->last_post = &post->next_post;
+        *S->last_post = NULL;
+        if (eventfd_write(S->eventfd, (eventfd_t)1) != 0) {
+            ZN_PUTOBJECT(post);
+            ret = ZN_ERROR;
+        }
     }
-    return ZN_OK;
+    pthread_spin_unlock(&S->post_lock);
+    return ret;
 }
 
 static void zn_dispatch(zn_State *S, struct epoll_event *evt) {
@@ -708,7 +714,6 @@ static void zn_dispatch(zn_State *S, struct epoll_event *evt) {
 
 static int znS_poll(zn_State *S, int checkonly) {
     int i, ret;
-    struct epoll_event events[ZN_MAX_EVENTS];
     S->status = ZN_STATUS_IN_RUN;
     zn_Time current;
     int timeout = 0;
@@ -717,12 +722,12 @@ static int znS_poll(zn_State *S, int checkonly) {
         zn_Time ms = znT_gettimeout(S, current);
         timeout = ms > INT_MAX ? -1 : (int)ms;
     }
-    ret = epoll_wait(S->epoll, events, ZN_MAX_EVENTS, timeout);
+    ret = epoll_wait(S->epoll, S->events, ZN_MAX_EVENTS, timeout);
     if (ret == -1 && errno != EINTR) /* error out */
         goto out;
     znT_updatetimers(S, zn_time());
     for (i = 0; i < ret; ++i)
-        zn_dispatch(S, &events[i]);
+        zn_dispatch(S, &S->events[i]);
     znR_process(S);
 
 out:

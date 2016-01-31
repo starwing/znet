@@ -46,6 +46,7 @@ typedef struct zn_DataBuffer {
 
 typedef struct zn_Post {
     znL_entry(struct zn_Post);
+    struct zn_Post *next_post;
     zn_State *S;
     zn_PostHandler *handler;
     void *ud;
@@ -54,7 +55,8 @@ typedef struct zn_Post {
 struct zn_State {
     ZN_STATE_FIELDS
     pthread_spinlock_t post_lock;
-    znQ_type(zn_Post)   posts;
+    zn_Post *first_post;
+    zn_Post **last_post;
     int sockpairs[2];
     int nfds;
     fd_set readfds, writefds, exceptfds;
@@ -94,20 +96,16 @@ static int znU_set_nosigpipe(int socket) {
 
 static void znP_init(zn_State *S) {
     pthread_spin_init(&S->post_lock, 0);
-    znQ_init(&S->posts);
-}
-
-static void znP_add(zn_State *S, zn_Post *post) {
-    pthread_spin_lock(&S->post_lock);
-    znQ_enqueue(&S->posts, post);
-    pthread_spin_unlock(&S->post_lock);
+    S->first_post = NULL;
+    S->last_post = &S->first_post;
 }
 
 static void znP_process(zn_State *S) {
-    zn_Post *post = S->posts.first;
-    if (post == NULL) return;
+    zn_Post *post;
     pthread_spin_lock(&S->post_lock);
-    znQ_init(&S->posts);
+    post = S->first_post;
+    S->first_post = NULL;
+    S->last_post = &S->first_post;
     pthread_spin_unlock(&S->post_lock);
     while (post) {
         zn_Post *next = post->next;
@@ -625,16 +623,23 @@ static void znS_close(zn_State *S) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
+    int ret = ZN_OK;
     char data = 0;
-    ZN_GETOBJECT(S, zn_Post, post);
-    post->handler = cb;
-    post->ud = ud;
-    if (send(S->sockpairs[0], &data, 1, 0) != 1) {
-        ZN_PUTOBJECT(post);
-        return ZN_ERROR;
+    pthread_spin_lock(&S->post_lock);
+    {
+        ZN_GETOBJECT(S, zn_Post, post);
+        post->handler = cb;
+        post->ud = ud;
+        *S->last_post = post;
+        S->last_post = &post->next_post;
+        post->next_post = NULL;
+        if (send(S->sockpairs[0], &data, 1, 0) != 1) {
+            ZN_PUTOBJECT(post);
+            ret = ZN_ERROR;
+        }
     }
-    znP_add(S, post);
-    return ZN_OK;
+    pthread_spin_unlock(&S->post_lock);
+    return ret;
 }
 
 static void zn_dispatch(zn_State *S, int fd, int setno) {
