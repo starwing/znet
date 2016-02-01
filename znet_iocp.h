@@ -141,7 +141,7 @@ ZN_API void zn_deltcp(zn_Tcp *tcp) {
     if (tcp->recv_handler == NULL
             && tcp->send_handler == NULL
             && tcp->connect_handler == NULL)
-        ZN_PUTOBJECT(tcp);
+        ZN_PUTOBJECT(tcp, zn_Tcp);
 }
 
 ZN_API int zn_closetcp(zn_Tcp *tcp) {
@@ -252,7 +252,7 @@ static void zn_onconnect(zn_Tcp *tcp, BOOL bSuccess) {
     tcp->connect_handler = NULL;
     if (tcp->socket == INVALID_SOCKET) {
         /* cb(tcp->connect_ud, tcp, ZN_ECLOSE); */
-        ZN_PUTOBJECT(tcp);
+        ZN_PUTOBJECT(tcp, zn_Tcp);
         return;
     }
     if (!bSuccess) zn_closetcp(tcp);
@@ -268,7 +268,7 @@ static void zn_onsend(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
         assert(tcp->socket == INVALID_SOCKET);
         /* cb(tcp->send_ud, tcp, ZN_ECLOSE, dwBytes); */
         if (tcp->recv_handler == NULL)
-            ZN_PUTOBJECT(tcp);
+            ZN_PUTOBJECT(tcp, zn_Tcp);
         return;
     }
     if (!bSuccess) zn_closetcp(tcp);
@@ -282,7 +282,7 @@ static void zn_onrecv(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
     if (tcp->socket == INVALID_SOCKET) {
         /* cb(tcp->recv_ud, tcp, ZN_ECLOSE, dwBytes); */
         if (tcp->send_handler == NULL)
-            ZN_PUTOBJECT(tcp);
+            ZN_PUTOBJECT(tcp, zn_Tcp);
         return;
     }
     if (dwBytes == 0 || tcp->socket == INVALID_SOCKET) {
@@ -321,7 +321,7 @@ ZN_API zn_Accept* zn_newaccept(zn_State *S) {
 ZN_API void zn_delaccept(zn_Accept *accept) {
     zn_closeaccept(accept);
     if (accept->accept_handler == NULL)
-        ZN_PUTOBJECT(accept);
+        ZN_PUTOBJECT(accept, zn_Accept);
 }
 
 ZN_API int zn_closeaccept(zn_Accept *accept) {
@@ -418,7 +418,7 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
     accept->accept_handler = NULL;
 
     if (accept->socket == INVALID_SOCKET) {
-        ZN_PUTOBJECT(accept);
+        ZN_PUTOBJECT(accept, zn_Accept);
         return;
     }
 
@@ -448,7 +448,7 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
                 tcp->S->iocp, (ULONG_PTR)tcp, 1) == NULL)
     {
         closesocket(tcp->socket);
-        ZN_PUTOBJECT(tcp);
+        ZN_PUTOBJECT(tcp, zn_Tcp);
         return;
     }
 
@@ -504,7 +504,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
     udp->socket = INVALID_SOCKET;
     udp->recv_request.type = ZN_TRECVFROM;
     if (!zn_initudp(udp, addr, port)) {
-        ZN_PUTOBJECT(udp);
+        ZN_PUTOBJECT(udp, zn_Udp);
         return NULL;
     }
     return udp;
@@ -513,7 +513,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
 ZN_API void zn_deludp(zn_Udp *udp) {
     closesocket(udp->socket);
     if (udp->recv_handler == NULL)
-        ZN_PUTOBJECT(udp);
+        ZN_PUTOBJECT(udp, zn_Udp);
 }
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
@@ -562,7 +562,7 @@ static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
     assert(udp->recv_handler);
     udp->recv_handler = NULL;
     if (udp->socket == INVALID_SOCKET) {
-        ZN_PUTOBJECT(udp);
+        ZN_PUTOBJECT(udp, zn_Udp);
         return;
     }
     if (bSuccess && dwBytes > 0)
@@ -628,7 +628,7 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     post->handler = cb;
     post->ud = ud;
     if (!PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)post)) {
-        ZN_PUTOBJECT(post);
+        ZN_PUTOBJECT(post, zn_Post);
         return ZN_ERROR;
     }
     return ZN_OK;
@@ -663,7 +663,7 @@ static void znS_dispatch(zn_State *S, BOOL bRet, LPOVERLAPPED_ENTRY pEntry) {
         zn_Post *post = (zn_Post*)pEntry->lpOverlapped;
         if (post->handler)
             post->handler(post->ud, post->S);
-        ZN_PUTOBJECT(post);
+        ZN_PUTOBJECT(post, zn_Post);
         return;
     }
 

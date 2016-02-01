@@ -280,13 +280,13 @@ ZN_NS_BEGIN
     name->S = S;                            \
     znL_insert((type**)&S->objects[ZN_T##name], name); } while (0)
 
-# define ZN_PUTOBJECT(name)            do { \
+# define ZN_PUTOBJECT(name, type)      do { \
     zn_State *NS = name->S;                 \
     znL_remove(name);                       \
     if (NS->status > ZN_STATUS_READY)       \
         free(name);                         \
     else {                                  \
-        name->next = NS->cached[ZN_T##name];\
+        name->next = (type*)NS->cached[ZN_T##name];\
         NS->cached[ZN_T##name] = name;      \
     }                                     } while (0)
 
