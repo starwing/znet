@@ -696,9 +696,11 @@ static int znS_poll(zn_State *S, int checkonly) {
         bRet = pGetQueuedCompletionStatusEx(S->iocp,
                 S->entries, ZN_MAX_EVENTS, &count, timeout, FALSE);
         if (!bRet) goto out; /* time out */
-        for (i = 0; i < count; ++i)
-            znS_dispatch(S, S->entries[i].lpOverlapped->Internal >= 0,
-                    &S->entries[i]);
+        for (i = 0; i < count; ++i) {
+            DWORD transfer;
+            BOOL result = GetOverlappedResult(NULL, S->entries[i].lpOverlapped, &transfer, FALSE);
+            znS_dispatch(S, result, &S->entries[i]);
+        }
     }
     else {
         OVERLAPPED_ENTRY entry;
