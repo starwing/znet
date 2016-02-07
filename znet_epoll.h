@@ -90,7 +90,7 @@ static void znP_process(zn_State *S) {
         zn_Post *next = post->next_post;
         if (post->handler)
             post->handler(post->ud, post->S);
-        ZN_PUTOBJECT(post, zn_Post);
+        ZN_PUTOBJECT(post);
         post = next;
     }
 }
@@ -225,7 +225,7 @@ ZN_API void zn_deltcp(zn_Tcp *tcp) {
             znR_add(tcp->S, ZN_ERROR, &tcp->send_result);
         return;
     }
-    ZN_PUTOBJECT(tcp, zn_Tcp);
+    ZN_PUTOBJECT(tcp);
 }
 
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
@@ -354,7 +354,7 @@ static void zn_onresult(zn_Result *result) {
         if (tcp->fd == -1) {
             /* cb(tcp->send_ud, tcp, ZN_ECLOSE, 0); */
             if (tcp->recv_handler == NULL)
-                ZN_PUTOBJECT(tcp, zn_Tcp);
+                ZN_PUTOBJECT(tcp);
         }
         else if (result->err == ZN_OK)
             cb(tcp->send_ud, tcp, ZN_OK, buff.len);
@@ -373,7 +373,7 @@ static void zn_onresult(zn_Result *result) {
         if (tcp->fd == -1) {
             /* cb(tcp->recv_ud, tcp, ZN_ECLOSE, 0); */
             if (tcp->send_handler == NULL)
-                ZN_PUTOBJECT(tcp, zn_Tcp);
+                ZN_PUTOBJECT(tcp);
         }
         else if (result->err == ZN_OK)
             cb(tcp->recv_ud, tcp, ZN_OK, buff.len);
@@ -420,7 +420,7 @@ struct zn_Accept {
 };
 
 ZN_API void zn_delaccept(zn_Accept *accept)
-{ zn_closeaccept(accept); ZN_PUTOBJECT(accept, zn_Accept); }
+{ zn_closeaccept(accept); ZN_PUTOBJECT(accept); }
 
 ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     ZN_GETOBJECT(S, zn_Accept, accept);
@@ -565,7 +565,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
     udp->info.type = ZN_SOCK_UDP;
     udp->info.head = udp;
     if (!zn_initudp(udp, addr, port)) {
-        ZN_PUTOBJECT(udp, zn_Udp);
+        ZN_PUTOBJECT(udp);
         return NULL;
     }
     return udp;
@@ -576,7 +576,7 @@ ZN_API void zn_deludp(zn_Udp *udp) {
     epoll_ctl(udp->S->epoll, EPOLL_CTL_DEL, udp->fd, &udp->event);
     if (udp->recv_handler) --udp->S->waitings;
     close(udp->fd);
-    ZN_PUTOBJECT(udp, zn_Udp);
+    ZN_PUTOBJECT(udp);
 }
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
@@ -676,7 +676,7 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
         S->last_post = &post->next_post;
         *S->last_post = NULL;
         if (eventfd_write(S->eventfd, (eventfd_t)1) != 0) {
-            ZN_PUTOBJECT(post, zn_Post);
+            ZN_PUTOBJECT(post);
             ret = ZN_ERROR;
         }
     }

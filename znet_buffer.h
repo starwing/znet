@@ -25,7 +25,9 @@
 # define ZN_API extern
 #endif
 
-#define ZN_BUFFERSIZE 2048
+#ifndef ZN_BUFFERSIZE
+# define ZN_BUFFERSIZE 2000
+#endif
 
 
 #include <stddef.h>

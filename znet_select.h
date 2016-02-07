@@ -111,7 +111,7 @@ static void znP_process(zn_State *S) {
         zn_Post *next = post->next;
         if (post->handler)
             post->handler(post->ud, post->S);
-        ZN_PUTOBJECT(post, zn_Post);
+        ZN_PUTOBJECT(post);
         post = next;
     }
 }
@@ -177,7 +177,7 @@ static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port)
 ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info)
 { *info = tcp->peer_info; }
 ZN_API void zn_deltcp(zn_Tcp *tcp)
-{ zn_closetcp(tcp); ZN_PUTOBJECT(tcp, zn_Tcp); }
+{ zn_closetcp(tcp); ZN_PUTOBJECT(tcp); }
 
 static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr) {
     zn_Tcp *tcp;
@@ -368,7 +368,7 @@ struct zn_Accept {
 };
 
 ZN_API void zn_delaccept(zn_Accept *accept)
-{ zn_closeaccept(accept); ZN_PUTOBJECT(accept, zn_Accept); }
+{ zn_closeaccept(accept); ZN_PUTOBJECT(accept); }
 
 ZN_API zn_Accept* zn_newaccept(zn_State *S) {
     ZN_GETOBJECT(S, zn_Accept, accept);
@@ -499,7 +499,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
     udp->info.type = ZN_SOCK_UDP;
     udp->info.head = udp;
     if (!zn_initudp(udp, addr, port)) {
-        ZN_PUTOBJECT(udp, zn_Udp);
+        ZN_PUTOBJECT(udp);
         return NULL;
     }
     return udp;
@@ -508,7 +508,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
 ZN_API void zn_deludp(zn_Udp *udp) {
     znF_unregister(udp->S, udp->fd);
     close(udp->fd);
-    ZN_PUTOBJECT(udp, zn_Udp);
+    ZN_PUTOBJECT(udp);
 }
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
@@ -634,7 +634,7 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
         S->last_post = &post->next_post;
         post->next_post = NULL;
         if (send(S->sockpairs[0], &data, 1, 0) != 1) {
-            ZN_PUTOBJECT(post, zn_Post);
+            ZN_PUTOBJECT(post);
             ret = ZN_ERROR;
         }
     }
