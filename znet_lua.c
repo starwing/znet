@@ -187,16 +187,20 @@ static void lzn_onconnect(void *ud, zn_Tcp *tcp, unsigned err) {
 }
 
 static void lzn_tcperror(lua_State *L, lzn_Tcp *obj, int err) {
-    if (obj->onerror_ref == LUA_NOREF) return;
-    lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onerror_ref);
-    lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
-    lua_pushstring(L, zn_strerror(err));
-    lua_pushinteger(L, err);
-    if (lbind_pcall(L, 3, 0) != LUA_OK) {
-        fprintf(stderr, "%s\n", lua_tostring(L, -1));
-        lua_pop(L, 1);
+    if (obj->onerror_ref != LUA_NOREF) {
+        lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onerror_ref);
+        lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
+        lua_pushstring(L, zn_strerror(err));
+        lua_pushinteger(L, err);
+        if (lbind_pcall(L, 3, 0) != LUA_OK) {
+            fprintf(stderr, "%s\n", lua_tostring(L, -1));
+            lua_pop(L, 1);
+        }
     }
-    lzn_freetcp(L, obj);
+    if (obj->tcp) {
+        zn_deltcp(obj->tcp);
+        lzn_freetcp(L, obj);
+    }
 }
 
 static size_t lzn_onheader(void *ud, const char *buff, size_t len) {
@@ -304,11 +308,13 @@ static int Ltcp_new(lua_State *L) {
 static int Ltcp_delete(lua_State *L) {
     lzn_Tcp *obj = (lzn_Tcp*)lbind_test(L, 1, &lbT_Tcp);
     if (obj && obj->tcp != NULL) {
-        if (obj->tcp) {
+        obj->closing = 1;
+        lzn_unref(L, &obj->onerror_ref);
+        if (zn_sendsize(&obj->send) == 0) {
             zn_deltcp(obj->tcp);
             lzn_freetcp(L, obj);
+            lbind_delete(L, 1);
         }
-        lbind_delete(L, 1);
     }
     return 0;
 }
@@ -357,12 +363,12 @@ static int Ltcp_receive(lua_State *L) {
 static int Ltcp_close(lua_State *L) {
     lzn_Tcp *obj = (lzn_Tcp*)lbind_check(L, 1, &lbT_Tcp);
     if (obj->tcp) {
+        obj->closing = 1;
         if (zn_sendsize(&obj->send) == 0) {
             int ret = zn_closetcp(obj->tcp);
             lzn_freetcp(L, obj);
             return_result(L, ret);
         }
-        obj->closing = 1;
     }
     lbind_returnself(L);
 }
