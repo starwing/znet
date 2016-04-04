@@ -335,6 +335,9 @@ static int  znS_poll  (zn_State *S, int checkonly);
 #elif defined(__linux__) && !defined(ZN_USE_SELECT)
 # define ZN_USE_EPOLL
 # include "znet_epoll.h"
+#elif defined(__APPLE__) && !defined(ZN_USE_SELECT)
+# define ZN_USE_KQUEUE
+# include "znet_kqueue.h"
 #else
 # undef  ZN_USE_SELECT
 # define ZN_USE_SELECT

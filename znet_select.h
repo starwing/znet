@@ -568,17 +568,12 @@ static void zn_onrecvfrom(zn_Udp *udp, int err) {
 
 /* poll */
 
-#ifdef __APPLE__
-static mach_timebase_info_data_t time_info;
-static uint64_t start;
-#endif
-
 ZN_API void zn_initialize(void) { }
 ZN_API void zn_deinitialize(void) { }
 
 ZN_API const char *zn_engine(void) { return "select"; }
 
-static int zn_initstate(zn_State *S) {
+static int znS_init(zn_State *S) {
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, S->sockpairs) != 0)
         return 0;
     if (S->sockpairs[1] >= FD_SETSIZE) {
@@ -596,7 +591,14 @@ static int zn_initstate(zn_State *S) {
 
 ZN_API zn_Time zn_time(void) {
 #ifdef __APPLE__
+    static mach_timebase_info_data_t time_info;
+    static uint64_t start;
     uint64_t now = mach_absolute_time();
+    if (!time_info.numer) {
+        start = now;
+	(void)mach_timebase_info(&time_info);
+        return 0;
+    }
     return (zn_Time)((now - start) * time_info.numer / time_info.denom / 1000000);
 #else
     struct timespec ts;
@@ -604,16 +606,6 @@ ZN_API zn_Time zn_time(void) {
         return 0;
     return (zn_Time)(ts.tv_sec*1000+ts.tv_nsec/1000000);
 #endif
-}
-
-static int znS_init(zn_State *S) {
-#ifdef __APPLE__
-    if (!time_info.numer) {
-        start = mach_absolute_time();
-	(void)mach_timebase_info(&time_info);
-    }
-#endif
-    return zn_initstate(S);
 }
 
 static void znS_close(zn_State *S) {

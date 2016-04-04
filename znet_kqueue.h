@@ -1,10 +1,10 @@
-#if !defined(znet_h) && !defined(ZN_USE_EPOLL)
+#if !defined(znet_h) && !defined(ZN_USE_KQUEUE)
 # include "znet.h"
 #endif
 
 
-#if defined(__linux__) && defined(ZN_USE_EPOLL) && !defined(znet_epoll_h)
-#define znet_epoll_h 
+#if defined(ZN_USE_KQUEUE) && !defined(znet_kqueue_h)
+#define znet_kqueue_h 
 
 #include <limits.h>
 #include <unistd.h>
@@ -17,8 +17,16 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
-#include <sys/epoll.h>
-#include <sys/eventfd.h>
+#include <sys/event.h>
+
+# ifdef __APPLE__ /* apple don't have spinlock :( */
+#   include <mach/mach.h>
+#   include <mach/mach_time.h>
+#   define pthread_spinlock_t  pthread_mutex_t
+#   define pthread_spin_init   pthread_mutex_init
+#   define pthread_spin_lock   pthread_mutex_lock
+#   define pthread_spin_unlock pthread_mutex_unlock
+# endif /* __APPLE__ */
 
 #define ZN_MAX_RESULT_LOOPS 100
 
@@ -47,9 +55,9 @@ struct zn_State {
     zn_Post *first_post;
     zn_Post **last_post;
     znQ_type(zn_Result) results;
-    int epoll;
-    int eventfd;
-    struct epoll_event events[ZN_MAX_EVENTS];
+    int kqueue;
+    int sockpairs[2];
+    struct kevent events[ZN_MAX_EVENTS];
 };
 
 /* utils */
@@ -71,16 +79,18 @@ static int znU_set_reuseaddr(int socket) {
             (const void*)&reuse_addr, sizeof(reuse_addr)) == 0;
 }
 
-static int znU_register(int epoll, int fd, int flags, void *udata) {
-    struct epoll_event event;
-    event.events = flags;
-    event.data.ptr = udata;
-    return epoll_ctl(epoll, EPOLL_CTL_ADD, fd, &event) == 0;
+static int znU_register(int kqueue, int fd, int et, void *data) {
+    struct kevent kev[2];
+    EV_SET(&kev[0], fd, EVFILT_READ, et|EV_ADD|EV_ENABLE, 0, 0, data);
+    EV_SET(&kev[1], fd, EVFILT_WRITE, et|EV_ADD|EV_ENABLE, 0, 0, data);
+    return kevent(kqueue, kev, 2, NULL, 0, NULL) == 0;
 }
 
-static int znU_unregister(int epoll, int fd) {
-    struct epoll_event event;
-    return epoll_ctl(epoll, EPOLL_CTL_DEL, fd, &event) == 0;
+static int znU_unregister(int kqueue, int fd) {
+    struct kevent kev[2];
+    EV_SET(&kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
+    EV_SET(&kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
+    return kevent(kqueue, kev, 2, NULL, 0, NULL) == 0;
 }
 
 /* post queue */
@@ -175,8 +185,7 @@ static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr
 
     znU_set_nonblock(tcp->fd);
     tcp->can_read = tcp->can_write = 1;
-    if (!znU_register(tcp->S->epoll, tcp->fd,
-                EPOLLET|EPOLLIN|EPOLLOUT|EPOLLRDHUP, &tcp->info)) {
+    if (!znU_register(S->kqueue, tcp->fd, EV_CLEAR, &tcp->info)) {
         zn_deltcp(tcp);
         return NULL;
     }
@@ -201,7 +210,7 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
 
 ZN_API int zn_closetcp(zn_Tcp *tcp) {
     int ret = ZN_OK;
-    znU_unregister(tcp->S->epoll, tcp->fd);
+    znU_unregister(tcp->S->kqueue, tcp->fd);
     if (tcp->connect_handler) --tcp->S->waitings;
     if (tcp->send_handler) --tcp->S->waitings;
     if (tcp->recv_handler) --tcp->S->waitings;
@@ -259,8 +268,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
         return ZN_ECONNECT;
     }
 
-    if (!znU_register(tcp->S->epoll, fd,
-                EPOLLET|EPOLLIN|EPOLLOUT|EPOLLRDHUP, &tcp->info)) {
+    if (!znU_register(tcp->S->kqueue, fd, EV_CLEAR, &tcp->info)) {
         close(fd);
         return ZN_EPOLL;
     }
@@ -282,7 +290,7 @@ ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *
     tcp->send_handler = cb;
     tcp->send_ud = ud;
     if (tcp->can_write) {
-        int bytes = send(tcp->fd, buff, len, 0);
+        ssize_t bytes = send(tcp->fd, buff, len, 0);
         if (bytes >= 0) {
             tcp->send_buffer.len = bytes;
             znR_add(tcp->S, ZN_OK, &tcp->send_result);
@@ -305,7 +313,7 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
     tcp->recv_ud = ud;
     ++tcp->S->waitings;
     if (tcp->can_read) {
-        int bytes = recv(tcp->fd, buff, len, 0);
+        ssize_t bytes = recv(tcp->fd, buff, len, 0);
         if (bytes > 0) {
             tcp->recv_buffer.len = bytes;
             znR_add(tcp->S, ZN_OK, &tcp->recv_result);
@@ -321,19 +329,19 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
     return ZN_OK;
 }
 
-static void zn_onconnect(zn_Tcp *tcp, int eventmask) {
+static void zn_onconnect(zn_Tcp *tcp, int filter, int flags) {
     zn_ConnectHandler *cb = tcp->connect_handler;
     assert(tcp->connect_handler);
     --tcp->S->waitings;
     tcp->connect_handler = NULL;
 
-    if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
+    if ((flags & (EV_ERROR|EV_EOF)) != 0) {
         zn_closetcp(tcp);
         cb(tcp->connect_ud, tcp, ZN_ERROR);
         return;
     }
 
-    if ((eventmask & EPOLLOUT) != 0) {
+    if (filter == EVFILT_WRITE) {
         tcp->can_read = tcp->can_write = 1;
         znU_set_nodelay(tcp->fd);
         cb(tcp->connect_ud, tcp, ZN_OK);
@@ -383,12 +391,12 @@ static void zn_onresult(zn_Result *result) {
     }
 }
 
-static void zn_onevent(zn_Tcp *tcp, int eventmask) {
+static void zn_onevent(zn_Tcp *tcp, int filter, int flags) {
     int can_read  = tcp->can_read;
     int can_write = tcp->can_write;
-    if ((eventmask & (EPOLLERR|EPOLLHUP|EPOLLRDHUP)) != 0)
+    if ((flags & (EV_EOF|EV_ERROR)) != 0)
         tcp->can_read = tcp->can_write = 1;
-    if ((eventmask & EPOLLIN) != 0 && !can_read) {
+    if (filter == EVFILT_READ && !can_read) {
         zn_RecvHandler *cb = tcp->recv_handler;
         tcp->recv_handler = NULL;
         tcp->can_read = 1;
@@ -397,7 +405,7 @@ static void zn_onevent(zn_Tcp *tcp, int eventmask) {
         zn_recv(tcp, tcp->recv_buffer.buff, tcp->recv_buffer.len,
                 cb, tcp->recv_ud);
     }
-    if ((eventmask & EPOLLOUT) != 0 && !can_write) {
+    if (filter == EVFILT_WRITE && !can_write) {
         zn_SendHandler *cb = tcp->send_handler;
         tcp->send_handler = NULL;
         tcp->can_write = 1;
@@ -433,7 +441,7 @@ ZN_API int zn_closeaccept(zn_Accept *accept) {
     int ret = ZN_OK;
     if (accept->accept_handler) --accept->S->waitings;
     if (accept->fd != -1) {
-        znU_unregister(accept->S->epoll, accept->fd);
+        znU_unregister(accept->S->kqueue, accept->fd);
         if (close(accept->fd) != 0)
             ret = ZN_ERROR;
         accept->fd = -1;
@@ -450,7 +458,7 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
     if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
         return ZN_ESOCKET;
 
-    if (!znU_register(accept->S->epoll, fd, EPOLLIN, &accept->info)) {
+    if (!znU_register(accept->S->kqueue, fd, 0, &accept->info)) {
         close(fd);
         return ZN_EPOLL;
     }
@@ -484,19 +492,19 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
     return ZN_OK;
 }
 
-static void zn_onaccept(zn_Accept *a, int eventmask) {
+static void zn_onaccept(zn_Accept *a, int filter, int flags) {
     zn_AcceptHandler *cb = a->accept_handler;
     --a->S->waitings;
     a->accept_handler = NULL;
     if (cb == NULL) return;
 
-    if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
+    if ((flags & (EV_EOF|EV_ERROR)) != 0) {
         zn_closeaccept(a);
         cb(a->accept_ud, a, ZN_ERROR, NULL);
         return;
     }
 
-    if ((eventmask & EPOLLIN) != 0) {
+    if (filter == EVFILT_READ) {
         struct sockaddr_in remote_addr;
         socklen_t addr_size = sizeof(struct sockaddr_in);
         int ret = accept(a->fd, (struct sockaddr*)&remote_addr, &addr_size);
@@ -539,7 +547,7 @@ static int zn_initudp(zn_Udp *udp, const char *addr, unsigned port) {
     if (bind(fd, (struct sockaddr*)&sock_addr, sizeof(sock_addr)) != 0)
         return ZN_EBIND;
 
-    if (!znU_register(udp->S->epoll, fd, EPOLLIN, &udp->info)) {
+    if (!znU_register(udp->S->kqueue, fd, 0, &udp->info)) {
         close(fd);
         return ZN_EPOLL;
     }
@@ -561,7 +569,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
 }
 
 ZN_API void zn_deludp(zn_Udp *udp) {
-    znU_unregister(udp->S->epoll, udp->fd);
+    znU_unregister(udp->S->kqueue, udp->fd);
     if (udp->recv_handler) --udp->S->waitings;
     close(udp->fd);
     ZN_PUTOBJECT(udp);
@@ -592,7 +600,7 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
     return ZN_OK;
 }
 
-static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
+static void zn_onrecvfrom(zn_Udp *udp, int filter, int flags) {
     zn_DataBuffer buff = udp->recv_buffer;
     zn_RecvFromHandler *cb = udp->recv_handler;
     if (cb == NULL) return;
@@ -601,12 +609,12 @@ static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
     udp->recv_buffer.buff = NULL;
     udp->recv_buffer.len = 0;
 
-    if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
+    if (flags & (EV_EOF|EV_ERROR)) {
         cb(udp->recv_ud, udp, ZN_ERROR, 0, "0.0.0.0", 0);
         return;
     }
 
-    if ((eventmask & EPOLLIN) != 0) {
+    if (filter == EVFILT_READ) {
         int bytes;
         memset(&udp->recvFrom, 0, sizeof(udp->recvFrom));
         udp->recvFromLen = sizeof(udp->recvFrom);
@@ -626,26 +634,39 @@ static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
 ZN_API void zn_initialize(void) { }
 ZN_API void zn_deinitialize(void) { }
 
-ZN_API const char *zn_engine(void) { return "epoll"; }
+ZN_API const char *zn_engine(void) { return "kqueue"; }
 
 ZN_API zn_Time zn_time(void) {
+#ifdef __APPLE__
+    static mach_timebase_info_data_t time_info;
+    static uint64_t start;
+    uint64_t now = mach_absolute_time();
+    if (!time_info.numer) {
+        start = now;
+	(void)mach_timebase_info(&time_info);
+        return 0;
+    }
+    return (zn_Time)((now - start) * time_info.numer / time_info.denom / 1000000);
+#else
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
         return 0;
-    return (zn_Time)((zn_Time)ts.tv_sec*1000+ts.tv_nsec/1000000);
+    return (zn_Time)(ts.tv_sec*1000+ts.tv_nsec/1000000);
+#endif
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     int ret = ZN_OK;
     pthread_spin_lock(&S->post_lock);
     {
+        char data = 0;
         ZN_GETOBJECT(S, zn_Post, post);
         post->handler = cb;
         post->ud = ud;
         *S->last_post = post;
         S->last_post = &post->next_post;
         *S->last_post = NULL;
-        if (eventfd_write(S->eventfd, (eventfd_t)1) != 0) {
+        if (send(S->sockpairs[0], &data, 1, 0) != 1) {
             ZN_PUTOBJECT(post);
             ret = ZN_ERROR;
         }
@@ -654,29 +675,29 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     return ret;
 }
 
-static void zn_dispatch(zn_State *S, struct epoll_event *evt) {
-    zn_SocketInfo *info = (zn_SocketInfo*)evt->data.ptr;
+static void zn_dispatch(zn_State *S, struct kevent *evt) {
+    zn_SocketInfo *info = (zn_SocketInfo*)evt->udata;
     zn_Tcp *tcp;
-    int eventmask = evt->events;
-    if (info == NULL) { /* post */
-        eventfd_t value;
-        eventfd_read(S->eventfd, &value);
+    if (evt->ident == S->sockpairs[1]) { /* post */
+        char buff[8192];
+        while (recv(evt->ident, buff, 8192, 0) > 0)
+            ;
         znP_process(S);
         return;
     }
     switch (info->type) {
     case ZN_SOCK_ACCEPT:
-        zn_onaccept((zn_Accept*)info->head, eventmask);
+        zn_onaccept((zn_Accept*)info->head, evt->filter, evt->flags);
         break;
     case ZN_SOCK_TCP:
         tcp = (zn_Tcp*)info->head;
         if (tcp->connect_handler)
-            zn_onconnect(tcp, eventmask);
+            zn_onconnect(tcp, evt->filter, evt->flags);
         else if (tcp->send_handler || tcp->recv_handler)
-            zn_onevent(tcp, eventmask);
+            zn_onevent(tcp, evt->filter, evt->flags);
         break;
     case ZN_SOCK_UDP:
-        zn_onrecvfrom((zn_Udp*)info->head, eventmask);
+        zn_onrecvfrom((zn_Udp*)info->head, evt->filter, evt->flags);
         break;
     default: ;
     }
@@ -686,14 +707,15 @@ static int znS_poll(zn_State *S, int checkonly) {
     int i, ret;
     S->status = ZN_STATUS_IN_RUN;
     zn_Time current;
-    int timeout = 0;
+    struct timespec timeout = { 0, 0 };
     znT_updatetimers(S, current = zn_time());
     if (!checkonly && S->results.first == NULL) {
         zn_Time ms = znT_gettimeout(S, current);
-        timeout = ms > INT_MAX ? -1 : (int)ms;
+        timeout.tv_sec = ms / 1000;
+        timeout.tv_nsec = (ms % 1000) * 1000000;
     }
-    ret = epoll_wait(S->epoll, S->events, ZN_MAX_EVENTS, timeout);
-    if (ret < 0 && errno != EINTR) /* error out */
+    ret = kevent(S->kqueue, NULL, 0, S->events, ZN_MAX_EVENTS, &timeout);
+    if (ret < 0) /* error out */
         goto out;
     znT_updatetimers(S, zn_time());
     for (i = 0; i < ret; ++i)
@@ -711,13 +733,16 @@ out:
 }
 
 static int znS_init(zn_State *S) {
-    if ((S->eventfd = eventfd(0, EFD_CLOEXEC|EFD_NONBLOCK)) < 0)
+    struct kevent kev;
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, S->sockpairs) != 0)
         return 0;
-    S->epoll = epoll_create(ZN_MAX_EVENTS);
-    if (S->epoll < 0 ||
-            !znU_register(S->epoll, S->eventfd, EPOLLIN, NULL)) {
-        if (S->epoll >= 0) close(S->epoll);
-        close(S->eventfd);
+    S->kqueue = kqueue();
+    EV_SET(&kev, S->sockpairs[1], EVFILT_READ, EV_ADD|EV_ENABLE, 0, 0, NULL);
+    if (S->kqueue < 0 ||
+            kevent(S->kqueue, &kev, 1, NULL, 0, NULL) < 0) {
+        if (S->kqueue >= 0) close(S->kqueue);
+        close(S->sockpairs[0]);
+        close(S->sockpairs[1]);
         return 0;
     }
     znP_init(S);
@@ -729,13 +754,14 @@ static void znS_close(zn_State *S) {
     znP_process(S);
     znR_process(S);
     assert(S->results.first == NULL);
-    close(S->eventfd);
-    close(S->epoll);
+    close(S->sockpairs[0]);
+    close(S->sockpairs[1]);
+    close(S->kqueue);
 }
 
 
-#endif /* ZN_USE_EPOLL */
+#endif /* ZN_USE_KQUEUE */
 /* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
  * win32cc: libs+='-lws2_32' output='znet.dll' */
-/* unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
- * unixcc: libs+='-pthread -lrt' output='znet.so' */
+/* unixcc: flags+='-O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
+ * unixcc: libs+='-pthread' output='znet.so' */

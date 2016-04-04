@@ -12,7 +12,8 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 }
 
 static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
-    printf("%p: received: %s (%d) %s\n", tcp, (char*)ud, count, zn_strerror(err));
+    printf("%p: received: %s (%d) %s\n",
+           tcp, (char*)ud, count, zn_strerror(err));
     if (err == ZN_OK)
         zn_send(tcp, ud, count, on_send, ud);
     else
