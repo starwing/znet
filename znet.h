@@ -405,6 +405,7 @@ static void *znP_getobject(zn_MemPool *mpool) {
         mpool->pages = newpage;
         znP_dividepage(mpool, newpage);
         obj = mpool->freed;
+        assert(obj != NULL);
     }
     mpool->freed = znP_next(obj);
     znP_next(obj) = mpool->objects;

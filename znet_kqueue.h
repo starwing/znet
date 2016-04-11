@@ -678,7 +678,7 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
 static void zn_dispatch(zn_State *S, struct kevent *evt) {
     zn_SocketInfo *info = (zn_SocketInfo*)evt->udata;
     zn_Tcp *tcp;
-    if (evt->ident == S->sockpairs[1]) { /* post */
+    if ((int)evt->ident == S->sockpairs[1]) { /* post */
         char buff[8192];
         while (recv(evt->ident, buff, 8192, 0) > 0)
             ;
