@@ -61,18 +61,18 @@ typedef unsigned zn_Time;
 
 ZN_NS_BEGIN
 
-#define ZN_ERRORS(X)                           \
-    X(OK,       "No error")                    \
-    X(ERROR,    "Operation failed")            \
-    X(ECLOSED,  "Remote socket closed")        \
-    X(EHANGUP,  "Remote socket hang up")       \
-    X(ESOCKET,  "Socket creation error")       \
-    X(ECONNECT, "Connect error")               \
-    X(EBIND,    "Local address bind error")    \
-    X(EPARAM,   "Parameter error")             \
-    X(EPOLL,    "Register to poll error")      \
-    X(ESTATE,   "State error")                 \
-    X(EBUSY,    "Another operation performed") \
+#define ZN_ERRORS(X)                                           \
+    X(OK,       "No error")                                    \
+    X(ERROR,    "Operation failed")                            \
+    X(ECLOSED,  "Remote socket closed")                        \
+    X(EHANGUP,  "Remote socket hang up")                       \
+    X(ESOCKET,  "Socket creation error")                       \
+    X(ECONNECT, "Connect error")                               \
+    X(EBIND,    "Local address bind error")                    \
+    X(EPARAM,   "Parameter error")                             \
+    X(EPOLL,    "Register to poll error")                      \
+    X(ESTATE,   "State error")                                 \
+    X(EBUSY,    "Another operation performed")                 \
 
 typedef enum zn_Error {
 #define X(name, msg) ZN_##name,
@@ -197,85 +197,88 @@ ZN_NS_BEGIN
 #define znL_entry(T) T *next; T **pprev
 #define znL_head(T)  struct T##_hlist { znL_entry(T); }
 
-#define znL_init(n)                    do { \
-    (n)->pprev = &(n)->next;                \
-    (n)->next = NULL;                     } while (0)
+#define znL_init(n)                                       do { \
+    (n)->pprev = &(n)->next;                                   \
+    (n)->next = NULL;                                        } while (0)
 
-#define znL_insert(h, n)               do { \
-    (n)->pprev = (h);                       \
-    (n)->next = *(h);                       \
-    if (*(h) != NULL)                       \
-        (*(h))->pprev = &(n)->next;         \
-    *(h) = (n);                           } while (0)
+#define znL_insert(h, n)                                  do { \
+    (n)->pprev = (h);                                          \
+    (n)->next = *(h);                                          \
+    if (*(h) != NULL)                                          \
+        (*(h))->pprev = &(n)->next;                            \
+    *(h) = (n);                                              } while (0)
 
-#define znL_remove(n)                  do { \
-    if ((n)->next != NULL)                  \
-        (n)->next->pprev = (n)->pprev;      \
-    *(n)->pprev = (n)->next;              } while (0)
+#define znL_remove(n)                                     do { \
+    if ((n)->next != NULL)                                     \
+        (n)->next->pprev = (n)->pprev;                         \
+    *(n)->pprev = (n)->next;                                 } while (0)
 
-#define znL_apply(type, h, func)       do { \
-    type *tmp_ = (type*)(h);                \
-    (h) = NULL;                             \
-    while (tmp_) {                          \
-        type *next_ = tmp_->next;           \
-        func(tmp_);                         \
-        tmp_ = next_;                       \
-    }                                     } while (0)
+#define znL_apply(type, h, func)                          do { \
+    type *tmp_ = (type*)*(h);                                  \
+    *(h) = NULL;                                               \
+    while (tmp_) {                                             \
+        type *next_ = tmp_->next;                              \
+        func(tmp_);                                            \
+        tmp_ = next_;                                          \
+    }                                                        } while (0)
 
 #define znQ_entry(T) T* next
 #define znQ_type(T)  struct T##_queue { T *first; T **plast; }
 
-#define znQ_init(h)                    do { \
-    (h)->first = NULL;                      \
-    (h)->plast = &(h)->first;             } while (0)
+#define znQ_init(h)                                       do { \
+    (h)->first = NULL;                                         \
+    (h)->plast = &(h)->first;                                } while (0)
 
-#define znQ_enqueue(h, n)              do { \
-    *(h)->plast = (n);                      \
-    (h)->plast = &(n)->next;                \
-    (n)->next = NULL;                     } while (0)
+#define znQ_enqueue(h, n)                                 do { \
+    *(h)->plast = (n);                                         \
+    (h)->plast = &(n)->next;                                   \
+    (n)->next = NULL;                                        } while (0)
 
-#define znQ_dequeue(h, pn)             do { \
-    if (((pn) = (h)->first) != NULL) {      \
-        (h)->first = (h)->first->next;      \
-        if ((h)->plast == &(pn)->next)      \
-            (h)->plast = &(h)->first; }     } while (0)
+#define znQ_dequeue(h, pn)                                do { \
+    if (((pn) = (h)->first) != NULL) {                         \
+        (h)->first = (h)->first->next;                         \
+        if ((h)->plast == &(pn)->next)                         \
+            (h)->plast = &(h)->first; }                      } while (0)
 
-#define znQ_apply(type, h, func)       do { \
-    type *tmp_ = (h)->first;                \
-    znQ_init(h);                            \
-    while (tmp_) {                          \
-        type *next_ = tmp_->next;           \
-        func(tmp_);                         \
-        tmp_ = next_;                       \
-    }                                     } while (0)
+#define znQ_apply(type, h, func)                          do { \
+    type *tmp_ = (h)->first;                                   \
+    znQ_init(h);                                               \
+    while (tmp_) {                                             \
+        type *next_ = tmp_->next;                              \
+        func(tmp_);                                            \
+        tmp_ = next_;                                          \
+    }                                                        } while (0)
 
 #endif /* zn_list_h */
 
 
 /* pre-defined platform-independency routines */
 
-#define ZN_STATE_FIELDS                     \
-    zn_MemPool posts;                       \
-    zn_MemPool accepts;                     \
-    zn_MemPool tcps;                        \
-    zn_MemPool udps;                        \
-    zn_MemPool timers;                      \
-    zn_TimerState ts;                       \
-    zn_Status  status;                      \
-    unsigned   waitings;                    \
+#define ZN_STATE_FIELDS                                        \
+    zn_MemPool posts;                                          \
+    zn_MemPool accepts;                                        \
+    zn_MemPool tcps;                                           \
+    zn_MemPool udps;                                           \
+    zn_Accept *active_accepts;                                 \
+    zn_Tcp    *active_tcps;                                    \
+    zn_Udp    *active_udps;                                    \
+    zn_TimerState ts;                                          \
+    zn_Status  status;                                         \
+    unsigned   waitings;                                       \
 
-# define ZN_GETOBJECT(S, type, name)        \
-                         type* name;   do { \
-    if (S->status > ZN_STATUS_READY)        \
-        return 0;                           \
-    name = (type*)znP_getobject(&S->name##s); \
-    if (name == NULL) return 0;             \
-    memset(name, 0, sizeof(type));          \
-    name->S = S;                          } while (0)
+# define ZN_GETOBJECT(S, type, name)          type* name; do { \
+    if (S->status > ZN_STATUS_READY)                           \
+        return 0;                                              \
+    name = (type*)znP_getobject(&S->name##s);                  \
+    if (name == NULL) return 0;                                \
+    memset(name, 0, sizeof(type));                             \
+    znL_insert(&S->active_##name##s, name);                    \
+    name->S = S;                                             } while (0)
 
-# define ZN_PUTOBJECT(name)            do { \
-    zn_State *NS = name->S;                 \
-    znP_putobject(&NS->name##s, name);    } while (0)
+# define ZN_PUTOBJECT(name)                               do { \
+    zn_State *NS = name->S;                                    \
+    znL_remove(name);                                          \
+    znP_putobject(&NS->name##s, name);                       } while (0)
 
 typedef enum zn_Status {
     ZN_STATUS_IN_RUN  = -1,       /* now in zn_run() */
@@ -283,6 +286,12 @@ typedef enum zn_Status {
     ZN_STATUS_CLOSING =  1,       /* prepare close */
     ZN_STATUS_CLOSING_IN_RUN = 2  /* prepare close in run() */
 } zn_Status;
+
+typedef struct zn_MemPool {
+    void  *pages;
+    void  *freed;
+    size_t size;
+} zn_MemPool;
 
 struct zn_Timer {
     union { zn_Timer *next; void *ud; } u;
@@ -294,20 +303,13 @@ struct zn_Timer {
 };
 
 typedef struct zn_TimerState {
+    zn_MemPool timers;                                         \
     zn_Timer **heap;
     zn_Time nexttime;
     unsigned pool_free;
     unsigned heap_used;
     unsigned heap_size;
 } zn_TimerState;
-
-typedef struct zn_MemPool {
-    void  *pages;
-    void  *freed;
-    void  *objects;
-    size_t size;
-    size_t align;
-} zn_MemPool;
 
 /* routines implemented in this header and can be used
  * in platform-specified headers */
@@ -316,8 +318,8 @@ static void    znT_updatetimers (zn_State *S, zn_Time current);
 static int     znT_hastimers    (zn_State *S);
 static zn_Time znT_gettimeout   (zn_State *S, zn_Time current);
 
-static void  znP_initpool      (zn_MemPool *mpool, size_t size, size_t align);
-static void  znP_freepool      (zn_MemPool *mpool);
+static void  znP_initpool  (zn_MemPool *mpool, size_t size);
+static void  znP_freepool  (zn_MemPool *mpool);
 static void *znP_getobject (zn_MemPool *mpool);
 static void  znP_putobject (zn_MemPool *mpool, void *obj);
 
@@ -347,77 +349,48 @@ static int  znS_poll  (zn_State *S, int checkonly);
 
 /* memory pool routines */
 
-#define znP_next(obj) (((void**)obj)[-1])
-
-#define znP_apply(pool,type,stmt)      do { \
-    type *cur = (pool)->objects;              \
-    while (cur != NULL) {                   \
-        type *next_ = znP_next(cur);        \
-        stmt;                               \
-        cur = next_;    }                 } while (0)
-
-static void znP_dividepage (zn_MemPool *mpool, void *page) {
-    ptrdiff_t pageaddr = (ptrdiff_t)page;
-    ptrdiff_t pageend  = pageaddr + ZN_MAX_PAGESIZE;
-    const size_t align = mpool->align;
-    const size_t size  = mpool->size;
-    pageaddr += sizeof(void*);
-    for (;;) {
-        ptrdiff_t obj = pageaddr;
-        obj = (obj + sizeof(void*) - 1) & ~(sizeof(void*)-1);
-        obj += sizeof(void*);
-        if (align > sizeof(void*))
-            obj = (obj + align - 1) & ~(align - 1);
-        if (obj + (ptrdiff_t)size > pageend)
-            return;
-        znP_next(obj) = mpool->freed;
-        mpool->freed = (void*)obj;
-        pageaddr = obj + size;
-    }
-}
-
-static void znP_initpool(zn_MemPool *mpool, size_t size, size_t align) {
-    if (align == 0) align = sizeof(void*);
+static void znP_initpool(zn_MemPool *mpool, size_t size) {
+    size_t sp = sizeof(void*);
     mpool->pages = NULL;
     mpool->freed = NULL;
-    mpool->size = size;
-    mpool->align = align;
-    assert(ZN_MAX_PAGESIZE / size > 1);
-    assert(((align - 1) & align) == 0);
-    assert(((sizeof(void*)-1) & sizeof(void*)) == 0);
+    mpool->size = size + sizeof(void*);
+    assert(((sp - 1) & sp) == 0);
+    assert(size >= sp && size % sp == 0);
+    assert(ZN_MAX_PAGESIZE / size > 2);
 }
 
 static void znP_freepool(zn_MemPool *mpool) {
+    const size_t offset = ZN_MAX_PAGESIZE - sizeof(void*);
     while (mpool->pages != NULL) {
-        void *next = *(void**)mpool->pages;
+        void *next = *(void**)((char*)mpool->pages + offset);
         free(mpool->pages);
         mpool->pages = next;
     }
-    znP_initpool(mpool, mpool->size, mpool->align);
+    znP_initpool(mpool, mpool->size);
 }
 
 static void *znP_getobject(zn_MemPool *mpool) {
     void *obj = mpool->freed;
     if (obj == NULL) {
-        void *newpage = malloc(ZN_MAX_PAGESIZE);
+        const size_t offset = ZN_MAX_PAGESIZE - sizeof(void*);
+        void *end, *newpage = malloc(ZN_MAX_PAGESIZE);
         if (newpage == NULL) return NULL;
-        *(void**)newpage = mpool->pages;
+        *(void**)((char*)newpage + offset) = mpool->pages;
         mpool->pages = newpage;
-        znP_dividepage(mpool, newpage);
-        obj = mpool->freed;
-        assert(obj != NULL);
+        end = (char*)newpage + (offset/mpool->size-1)*mpool->size;
+        while (end != newpage) {
+            *(void**)end = mpool->freed;
+            mpool->freed = (void**)end;
+            end = (char*)end - mpool->size;
+        }
+        return end;
     }
-    mpool->freed = znP_next(obj);
-    znP_next(obj) = mpool->objects;
-    mpool->objects = obj;
+    mpool->freed = *(void**)obj;
     return obj;
 }
 
-static void znP_putobject(zn_MemPool *mpool, void *obj) {
-    mpool->objects = znP_next(obj);
-    znP_next(obj) = mpool->freed;
-    mpool->freed = obj;
-}
+static void znP_putobject(zn_MemPool *mpool, void *obj)
+{ *(void**)obj = mpool->freed; mpool->freed = obj; }
 
 
 /* timer routines */
@@ -439,7 +412,7 @@ static int znT_resizeheap(zn_TimerState *S, size_t size) {
 }
 
 ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *cb, void *ud) {
-    zn_Timer *timer = (zn_Timer*)znP_getobject(&S->timers);
+    zn_Timer *timer = (zn_Timer*)znP_getobject(&S->ts.timers);
     if (timer == NULL) return NULL;
     timer->u.ud = ud;
     timer->handler = cb;
@@ -451,7 +424,7 @@ ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *cb, void *ud) {
 ZN_API void zn_deltimer(zn_Timer *timer) {
     zn_canceltimer(timer);
     timer->handler = NULL;
-    znP_putobject(&timer->S->timers, timer);
+    znP_putobject(&timer->S->ts.timers, timer);
 }
 
 ZN_API int zn_starttimer(zn_Timer *timer, zn_Time delayms) {
@@ -509,6 +482,7 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
 
 static void znT_cleartimers(zn_State *S) {
     zn_TimerState *ts = &S->ts;
+    znP_freepool(&S->ts.timers);
     free(ts->heap);
     memset(ts, 0, sizeof(zn_TimerState));
     ts->nexttime = ZN_FOREVER;
@@ -553,11 +527,11 @@ ZN_API zn_State *zn_newstate(void) {
     if (S == NULL) return NULL;
     memset(S, 0, sizeof(*S));
     S->ts.nexttime = ZN_FOREVER;
-    znP_initpool(&S->posts,   sizeof(zn_Post), 0);
-    znP_initpool(&S->accepts, sizeof(zn_Accept), 0);
-    znP_initpool(&S->tcps,    sizeof(zn_Tcp), 0);
-    znP_initpool(&S->udps,    sizeof(zn_Udp), 0);
-    znP_initpool(&S->timers,  sizeof(zn_Timer), 0);
+    znP_initpool(&S->ts.timers,  sizeof(zn_Timer));
+    znP_initpool(&S->posts,   sizeof(zn_Post));
+    znP_initpool(&S->accepts, sizeof(zn_Accept));
+    znP_initpool(&S->tcps,    sizeof(zn_Tcp));
+    znP_initpool(&S->udps,    sizeof(zn_Udp));
     if (!znS_init(S)) {
         free(S);
         return NULL;
@@ -575,16 +549,15 @@ ZN_API void zn_close(zn_State *S) {
     S->status = ZN_STATUS_CLOSING;
     /* 1. cancel all operations */
     znT_cleartimers(S);
-    znP_apply(&S->accepts, zn_Accept, zn_delaccept(cur));
-    znP_apply(&S->tcps,    zn_Tcp,    zn_deltcp(cur));
-    znP_apply(&S->udps,    zn_Udp,    zn_deludp(cur));
+    znL_apply(zn_Accept, &S->active_accepts, zn_delaccept);
+    znL_apply(zn_Tcp,    &S->active_tcps,    zn_deltcp);
+    znL_apply(zn_Udp,    &S->active_udps,    zn_deludp);
+    znS_close(S);
     /* 2. delete all remaining objects */
     znP_freepool(&S->posts);
     znP_freepool(&S->accepts);
     znP_freepool(&S->tcps);
     znP_freepool(&S->udps);
-    znP_freepool(&S->timers);
-    znS_close(S);
     free(S);
 }
 

@@ -111,7 +111,7 @@ static void znP_process(zn_State *S) {
         zn_Post *next = post->next;
         if (post->handler)
             post->handler(post->ud, post->S);
-        ZN_PUTOBJECT(post);
+        znP_putobject(&S->posts, post);
         post = next;
     }
 }
@@ -615,20 +615,20 @@ static void znS_close(zn_State *S) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
+    zn_Post *post;
     int ret = ZN_OK;
     char data = 0;
     pthread_spin_lock(&S->post_lock);
-    {
-        ZN_GETOBJECT(S, zn_Post, post);
-        post->handler = cb;
-        post->ud = ud;
-        *S->last_post = post;
-        S->last_post = &post->next_post;
-        post->next_post = NULL;
-        if (send(S->sockpairs[0], &data, 1, 0) != 1) {
-            ZN_PUTOBJECT(post);
-            ret = ZN_ERROR;
-        }
+    post = (zn_Post*)znP_getobject(&S->posts);
+    post->S = S;
+    post->handler = cb;
+    post->ud = ud;
+    *S->last_post = post;
+    S->last_post = &post->next_post;
+    post->next_post = NULL;
+    if (send(S->sockpairs[0], &data, 1, 0) != 1) {
+        znP_putobject(&S->posts, post);
+        ret = ZN_ERROR;
     }
     pthread_spin_unlock(&S->post_lock);
     return ret;

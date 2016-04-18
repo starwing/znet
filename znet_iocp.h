@@ -34,7 +34,6 @@ typedef struct zn_Request {
 } zn_Request;
 
 typedef struct zn_Post {
-    znL_entry(struct zn_Post);
     zn_State *S;
     zn_PostHandler *handler;
     void *ud;
@@ -43,6 +42,7 @@ typedef struct zn_Post {
 struct zn_State {
     ZN_STATE_FIELDS
     HANDLE iocp;
+    CRITICAL_SECTION lock;
     OVERLAPPED_ENTRY entries[ZN_MAX_EVENTS];
 };
 
@@ -624,11 +624,17 @@ ZN_API zn_Time zn_time(void) {
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
-    ZN_GETOBJECT(S, zn_Post, post);
+    zn_Post *post;
+    EnterCriticalSection(&S->lock);
+    post = (zn_Post*)znP_getobject(&S->posts);
+    LeaveCriticalSection(&S->lock);
+    post->S = S;
     post->handler = cb;
     post->ud = ud;
     if (!PostQueuedCompletionStatus(S->iocp, 0, 0, (LPOVERLAPPED)post)) {
-        ZN_PUTOBJECT(post);
+        EnterCriticalSection(&S->lock);
+        znP_putobject(&S->posts, post);
+        LeaveCriticalSection(&S->lock);
         return ZN_ERROR;
     }
     return ZN_OK;
@@ -642,6 +648,7 @@ static int znS_init(zn_State *S) {
     }
     S->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE,
             NULL, (ULONG_PTR)0, 1);
+    InitializeCriticalSection(&S->lock);
     return S->iocp != NULL;
 }
 
@@ -653,21 +660,13 @@ static void znS_close(zn_State *S) {
         zn_run(S, ZN_RUN_ONCE);
     }
     CloseHandle(S->iocp);
+    DeleteCriticalSection(&S->lock);
 }
 
 static void znS_dispatch(zn_State *S, BOOL bRet, LPOVERLAPPED_ENTRY pEntry) {
-    zn_Request *req;
+    zn_Request *req = (zn_Request*)pEntry->lpOverlapped;
     ULONG_PTR upComKey = pEntry->lpCompletionKey;
     DWORD dwBytes = pEntry->dwNumberOfBytesTransferred;
-    if (upComKey == 0) {
-        zn_Post *post = (zn_Post*)pEntry->lpOverlapped;
-        if (post->handler)
-            post->handler(post->ud, post->S);
-        ZN_PUTOBJECT(post);
-        return;
-    }
-
-    req = (zn_Request*)pEntry->lpOverlapped;
     --S->waitings;
     switch (req->type) {
     case ZN_TACCEPT:   zn_onaccept((zn_Accept*)upComKey, bRet); break;
@@ -698,7 +697,16 @@ static int znS_poll(zn_State *S, int checkonly) {
         if (!bRet) goto out; /* time out */
         for (i = 0; i < count; ++i) {
             DWORD transfer;
-            BOOL result = GetOverlappedResult(NULL, S->entries[i].lpOverlapped, &transfer, FALSE);
+            BOOL result;
+            if (S->entries[i].lpCompletionKey == 0) {
+                zn_Post *post = (zn_Post*)S->entries[i].lpOverlapped;
+                if (post->handler)
+                    post->handler(post->ud, post->S);
+                znP_putobject(&S->posts, post);
+                continue;
+            }
+            result = GetOverlappedResult(S->iocp,
+                    S->entries[i].lpOverlapped, &transfer, FALSE);
             znS_dispatch(S, result, &S->entries[i]);
         }
     }
