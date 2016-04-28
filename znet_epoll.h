@@ -28,8 +28,7 @@ typedef struct zn_DataBuffer {
 } zn_DataBuffer;
 
 typedef struct zn_Post {
-    znL_entry(struct zn_Post);
-    struct zn_Post *next_post;
+    znQ_entry(struct zn_Post);
     zn_State *S;
     zn_PostHandler *handler;
     void *ud;
@@ -44,8 +43,7 @@ typedef struct zn_Result {
 struct zn_State {
     ZN_STATE_FIELDS
     pthread_spinlock_t post_lock;
-    zn_Post *first_post;
-    zn_Post **last_post;
+    znQ_type(zn_Post) post_queue;
     znQ_type(zn_Result) results;
     int epoll;
     int eventfd;
@@ -87,24 +85,18 @@ static int znU_unregister(int epoll, int fd) {
 
 static void znP_init(zn_State *S) {
     pthread_spin_init(&S->post_lock, 0);
-    S->first_post = NULL;
-    S->last_post = &S->first_post;
+    znQ_init(&S->post_queue);
 }
 
 static void znP_process(zn_State *S) {
     zn_Post *post;
     pthread_spin_lock(&S->post_lock);
-    post = S->first_post;
-    S->first_post = NULL;
-    S->last_post = &S->first_post;
+    post = S->post_queue.first;
+    znQ_init(&S->post_queue);
     pthread_spin_unlock(&S->post_lock);
-    while (post) {
-        zn_Post *next = post->next_post;
-        if (post->handler)
-            post->handler(post->ud, post->S);
-        znP_putobject(&S->posts, post);
-        post = next;
-    }
+    znQ_apply(zn_Post, post,
+        if (cur->handler) cur->handler(cur->ud, cur->S);
+        znP_putobject(&S->posts, cur));
 }
 
 /* result queue */
@@ -643,9 +635,7 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     post->S = S;
     post->handler = cb;
     post->ud = ud;
-    *S->last_post = post;
-    S->last_post = &post->next_post;
-    *S->last_post = NULL;
+    znQ_enqueue(&S->post_queue, post);
     if (eventfd_write(S->eventfd, (eventfd_t)1) != 0) {
         znP_putobject(&S->posts, post);
         ret = ZN_ERROR;

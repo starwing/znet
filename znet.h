@@ -213,14 +213,11 @@ ZN_NS_BEGIN
         (n)->next->pprev = (n)->pprev;                         \
     *(n)->pprev = (n)->next;                                 } while (0)
 
-#define znL_apply(type, h, func)                          do { \
-    type *tmp_ = (type*)*(h);                                  \
+#define znL_apply(type, h, stmt)                          do { \
+    type *cur = (type*)*(h);                                   \
     *(h) = NULL;                                               \
-    while (tmp_) {                                             \
-        type *next_ = tmp_->next;                              \
-        func(tmp_);                                            \
-        tmp_ = next_;                                          \
-    }                                                        } while (0)
+    while (cur)                                                \
+    { type *next_ = cur->next; stmt; cur = next_; }          } while (0)
 
 #define znQ_entry(T) T* next
 #define znQ_type(T)  struct T##_queue { T *first; T **plast; }
@@ -240,14 +237,10 @@ ZN_NS_BEGIN
         if ((h)->plast == &(pn)->next)                         \
             (h)->plast = &(h)->first; }                      } while (0)
 
-#define znQ_apply(type, h, func)                          do { \
-    type *tmp_ = (h)->first;                                   \
-    znQ_init(h);                                               \
-    while (tmp_) {                                             \
-        type *next_ = tmp_->next;                              \
-        func(tmp_);                                            \
-        tmp_ = next_;                                          \
-    }                                                        } while (0)
+#define znQ_apply(type, h, stmt)                          do { \
+    type *cur = (zn_Post*)(h);                                 \
+    while (cur)                                                \
+    { type *next_ = cur->next; stmt; cur = next_; }          } while (0)
 
 #endif /* zn_list_h */
 
@@ -549,9 +542,9 @@ ZN_API void zn_close(zn_State *S) {
     S->status = ZN_STATUS_CLOSING;
     /* 1. cancel all operations */
     znT_cleartimers(S);
-    znL_apply(zn_Accept, &S->active_accepts, zn_delaccept);
-    znL_apply(zn_Tcp,    &S->active_tcps,    zn_deltcp);
-    znL_apply(zn_Udp,    &S->active_udps,    zn_deludp);
+    znL_apply(zn_Accept, &S->active_accepts, zn_delaccept(cur));
+    znL_apply(zn_Tcp,    &S->active_tcps,    zn_deltcp(cur));
+    znL_apply(zn_Udp,    &S->active_udps,    zn_deludp(cur));
     znS_close(S);
     /* 2. delete all remaining objects */
     znP_freepool(&S->posts);

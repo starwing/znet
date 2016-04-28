@@ -36,8 +36,7 @@ typedef struct zn_DataBuffer {
 } zn_DataBuffer;
 
 typedef struct zn_Post {
-    znL_entry(struct zn_Post);
-    struct zn_Post *next_post;
+    znQ_entry(struct zn_Post);
     zn_State *S;
     zn_PostHandler *handler;
     void *ud;
@@ -52,8 +51,7 @@ typedef struct zn_Result {
 struct zn_State {
     ZN_STATE_FIELDS
     pthread_spinlock_t post_lock;
-    zn_Post *first_post;
-    zn_Post **last_post;
+    znQ_type(zn_Post) post_queue;
     znQ_type(zn_Result) results;
     int kqueue;
     int sockpairs[2];
@@ -97,24 +95,18 @@ static int znU_unregister(int kqueue, int fd) {
 
 static void znP_init(zn_State *S) {
     pthread_spin_init(&S->post_lock, 0);
-    S->first_post = NULL;
-    S->last_post = &S->first_post;
+    znQ_init(&S->post_queue);
 }
 
 static void znP_process(zn_State *S) {
     zn_Post *post;
     pthread_spin_lock(&S->post_lock);
-    post = S->first_post;
-    S->first_post = NULL;
-    S->last_post = &S->first_post;
+    post = S->post_queue.first;
+    znQ_init(&S->post_queue);
     pthread_spin_unlock(&S->post_lock);
-    while (post) {
-        zn_Post *next = post->next_post;
-        if (post->handler)
-            post->handler(post->ud, post->S);
-        znP_putobject(&S->posts, post);
-        post = next;
-    }
+    znQ_apply(zn_Post, post,
+        if (cur->handler) cur->handler(cur->ud, cur->S);
+        znP_putobject(&S->posts, cur));
 }
 
 /* result queue */
@@ -179,6 +171,9 @@ static void zn_setinfo(zn_Tcp *tcp, const char *addr, unsigned port)
 ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info)
 { *info = tcp->peer_info; }
 
+ZN_API void zn_deltcp(zn_Tcp *tcp)
+{ zn_closetcp(tcp); ZN_PUTOBJECT(tcp); }
+
 static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr) {
     zn_Tcp *tcp = zn_newtcp(S);
     tcp->fd = fd;
@@ -210,38 +205,16 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
 
 ZN_API int zn_closetcp(zn_Tcp *tcp) {
     int ret = ZN_OK;
-    znU_unregister(tcp->S->kqueue, tcp->fd);
     if (tcp->connect_handler) --tcp->S->waitings;
     if (tcp->send_handler) --tcp->S->waitings;
     if (tcp->recv_handler) --tcp->S->waitings;
     if (tcp->fd != -1) {
+        znU_unregister(tcp->S->kqueue, tcp->fd);
         if (close(tcp->fd) != 0)
             ret = ZN_ERROR;
         tcp->fd = -1;
     }
     return ret;
-}
-
-ZN_API void zn_deltcp(zn_Tcp *tcp) {
-    zn_closetcp(tcp);
-    /* We can not delete object directly since it's result may plug in
-     * result queue. So we wait onresult() delete it, same with the
-     * logic used in IOCP backend.
-     * when recv/send, the recv/send handler have value, but result
-     * queue has value depends whether tcp's status has EPOLLIN/OUT
-     * bit. So if we don't have these bits, that means no result in
-     * queue, so plug it to result list to wait delete */
-    if (tcp->recv_handler != NULL) {
-        if (!tcp->can_read)
-            znR_add(tcp->S, ZN_ERROR, &tcp->recv_result);
-        return;
-    }
-    else if (tcp->send_handler == NULL) {
-        if (!tcp->can_write)
-            znR_add(tcp->S, ZN_ERROR, &tcp->send_result);
-        return;
-    }
-    ZN_PUTOBJECT(tcp);
 }
 
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
@@ -463,6 +436,7 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
         return ZN_EPOLL;
     }
 
+    znU_set_nonblock(fd);
     znU_set_reuseaddr(fd);
     memset(&sock_addr, 0, sizeof(sock_addr));
     sock_addr.sin_family = AF_INET;
@@ -664,9 +638,7 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     post->S = S;
     post->handler = cb;
     post->ud = ud;
-    *S->last_post = post;
-    S->last_post = &post->next_post;
-    *S->last_post = NULL;
+    znQ_enqueue(&S->post_queue, post);
     if (send(S->sockpairs[0], &data, 1, 0) != 1) {
         znP_putobject(&S->posts, post);
         ret = ZN_ERROR;
@@ -747,6 +719,7 @@ static int znS_init(zn_State *S) {
     }
     znP_init(S);
     znR_init(S);
+    znU_set_nonblock(S->sockpairs[1]);
     return 1;
 }
 
