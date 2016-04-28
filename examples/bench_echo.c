@@ -65,7 +65,7 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
 
 static void on_error(void *ud, zn_State *S) {
     zn_Tcp *tcp = zn_newtcp(S);
-    if (zn_connect(tcp, addr, port, on_connect, &client) != ZN_OK)
+    if (tcp && zn_connect(tcp, addr, port, on_connect, &client) != ZN_OK)
         zn_post(S, on_error, NULL);
 }
 
