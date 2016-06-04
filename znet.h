@@ -346,7 +346,7 @@ static void znP_initpool(zn_MemPool *mpool, size_t size) {
     size_t sp = sizeof(void*);
     mpool->pages = NULL;
     mpool->freed = NULL;
-    mpool->size = size + sizeof(void*);
+    mpool->size = size;
     assert(((sp - 1) & sp) == 0);
     assert(size >= sp && size % sp == 0);
     assert(ZN_MAX_PAGESIZE / size > 2);

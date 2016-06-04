@@ -232,3 +232,4 @@ int main(int argc, const char **argv) {
 }
 /* win32cc: flags+='-s -O3' libs+='-lws2_32' */
 /* unixcc: flags+='-s -O3' libs+='-pthread -lrt' */
+/* maccc: flags+='-s -O3' libs+='-pthread' */
