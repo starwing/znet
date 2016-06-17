@@ -1,11 +1,10 @@
 #define ZN_IMPLEMENTATION
 #include "../znet.h"
-#include "../znet_buffer.h"
+#include "../zn_buffer.h"
+#include "zn_bufferpool.h"
+
 #include <stdio.h>
 #include <string.h>
-
-
-#include "znet_bufferpool.h"
 
 
 #define BLOCK_SIZE 1024
