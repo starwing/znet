@@ -5,7 +5,7 @@
 
 #define ZN_STATIC_API
 #include "znet.h"
-#include "znet_buffer.h"
+#include "zn_buffer.h"
 
 #define LZN_UDP_RECVSIZE 2048
 
