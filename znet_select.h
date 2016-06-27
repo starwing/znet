@@ -6,6 +6,7 @@
 #if defined(ZN_USE_SELECT) && !defined(znet_select_h)
 #define znet_select_h 
 
+#include <limits.h>
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -62,6 +63,40 @@ struct zn_State {
 };
 
 /* utils */
+
+static size_t znU_sz(sa_family_t f)
+{ return f == AF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6); }
+
+typedef union zn_sockaddr {
+    struct sockaddr_in  ipv4;
+    struct sockaddr_in6 ipv6;
+} ZN_SOCKADDR;
+
+static sa_family_t znU_parseaddr(ZN_SOCKADDR *ret, const char *addr, unsigned port) {
+    memset(ret, 0, sizeof(*ret));
+    if (strchr(addr, ':') != 0) {
+        ret->ipv6.sin6_family = AF_INET6;
+        ret->ipv6.sin6_port = htons(port);
+        if (inet_pton(AF_INET6, addr, ret->ipv6.sin6_addr.s6_addr) != 1)
+            return 0;
+        return AF_INET6;
+    }
+    ret->ipv4.sin_family = AF_INET;
+    ret->ipv4.sin_port = htons(port);
+    if (inet_pton(AF_INET, addr, &ret->ipv4.sin_addr.s_addr) != 1)
+        return 0;
+    return AF_INET;
+}
+
+static void znU_setinfo(const ZN_SOCKADDR *src, zn_PeerInfo *peer_info) {
+    sa_family_t family = src->ipv4.sin_family;
+    memset(peer_info, 0, sizeof(*peer_info));
+    inet_ntop(family, src, peer_info->addr, sizeof(peer_info->addr));
+    if (family == AF_INET)
+        peer_info->port = ntohs(src->ipv4.sin_port);
+    else
+        peer_info->port = ntohs(src->ipv6.sin6_port);
+}
 
 static int znU_set_nodelay(int socket) {
     int enable = 1;
@@ -171,7 +206,7 @@ ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info)
 ZN_API void zn_deltcp(zn_Tcp *tcp)
 { zn_closetcp(tcp); ZN_PUTOBJECT(tcp); }
 
-static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr) {
+static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, ZN_SOCKADDR *remote_addr) {
     zn_Tcp *tcp;
     if (fd >= FD_SETSIZE)
         return NULL;
@@ -182,9 +217,7 @@ static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, struct sockaddr_in *remote_addr
     znU_set_nosigpipe(tcp->fd);
     znU_set_nonblock(tcp->fd);
     znU_set_nodelay(tcp->fd);
-    zn_setinfo(tcp, 
-            inet_ntoa(remote_addr->sin_addr),
-            ntohs(remote_addr->sin_port));
+    znU_setinfo(remote_addr, &tcp->peer_info);
     return tcp;
 }
 
@@ -211,13 +244,16 @@ ZN_API int zn_closetcp(zn_Tcp *tcp) {
 }
 
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
-    struct sockaddr_in remoteAddr;
+    ZN_SOCKADDR remote_addr;
+    sa_family_t family;
     int fd, ret;
     if (tcp->fd != -1)                return ZN_ESTATE;
     if (tcp->connect_handler != NULL) return ZN_EBUSY;
     if (cb == NULL)                   return ZN_EPARAM;
 
-    if ((fd = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    family = znU_parseaddr(&remote_addr, addr, port);
+    if (family == 0) return ZN_EPARAM;
+    if ((fd = socket(family, SOCK_STREAM, 0)) < 0)
         return ZN_ESOCKET;
 
     if (fd >= FD_SETSIZE) {
@@ -228,14 +264,9 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
     if (tcp->S->nfds < fd)
         tcp->S->nfds = fd;
     znU_set_nonblock(fd);
-    memset(&remoteAddr, 0, sizeof(remoteAddr));
-    remoteAddr.sin_family = AF_INET;
-    remoteAddr.sin_addr.s_addr = inet_addr(addr);
-    remoteAddr.sin_port = htons(port);
     zn_setinfo(tcp, addr, port);
 
-    ret = connect(fd, (struct sockaddr *)&remoteAddr,
-            sizeof(remoteAddr));
+    ret = connect(fd, (struct sockaddr *)&remote_addr, znU_sz(family));
     if (ret != 0 && errno != EINPROGRESS) {
         close(fd);
         return ZN_ECONNECT;
@@ -383,23 +414,22 @@ ZN_API int zn_closeaccept(zn_Accept *accept) {
 }
 
 ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
-    struct sockaddr_in sock_addr;
+    ZN_SOCKADDR local_addr;
+    sa_family_t family;
     int fd;
     if (accept->fd != -1)               return ZN_ESTATE;
     if (accept->accept_handler != NULL) return ZN_EBUSY;
 
-    if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
+    family = znU_parseaddr(&local_addr, addr, port);
+    if (family == 0) return ZN_EPARAM;
+    if ((fd = socket(family, SOCK_STREAM, IPPROTO_TCP)) < 0)
         return ZN_ESOCKET;
     if (accept->S->nfds < fd)
         accept->S->nfds = fd;
 
     znU_set_nonblock(fd);
     znU_set_reuseaddr(fd);
-    memset(&sock_addr, 0, sizeof(sock_addr));
-    sock_addr.sin_family = AF_INET;
-    sock_addr.sin_addr.s_addr = inet_addr(addr);
-    sock_addr.sin_port = htons(port);
-    if (bind(fd, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) != 0) {
+    if (bind(fd, (struct sockaddr *)&local_addr, znU_sz(family)) != 0) {
         close(fd);
         return ZN_EBIND;
     }
@@ -436,8 +466,8 @@ static void zn_onaccept(zn_Accept *a, int err) {
         cb(a->accept_ud, a, ZN_ERROR, NULL);
     }
     else {
-        struct sockaddr_in remote_addr;
-        socklen_t addr_size = sizeof(struct sockaddr_in);
+        ZN_SOCKADDR remote_addr;
+        socklen_t addr_size = sizeof(remote_addr);
         int ret = accept(a->fd, (struct sockaddr*)&remote_addr, &addr_size);
         if (ret >= FD_SETSIZE)
             close(ret);
@@ -463,23 +493,19 @@ struct zn_Udp {
     int fd;
     zn_SocketInfo info;
     zn_DataBuffer recv_buffer;
-    struct sockaddr_in recvFrom;
-    socklen_t recvFromLen;
 };
 
 static int zn_initudp(zn_Udp *udp, const char *addr, unsigned port) {
+    ZN_SOCKADDR local_addr;
+    sa_family_t family;
     int fd;
-    struct sockaddr_in sock_addr;
 
-    memset(&sock_addr, 0, sizeof(sock_addr));
-    sock_addr.sin_family = AF_INET;
-    sock_addr.sin_addr.s_addr = inet_addr(addr);
-    sock_addr.sin_port = htons(port);
-
-    if ((fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0)
+    family = znU_parseaddr(&local_addr, addr, port);
+    if (family == 0) return ZN_EPARAM;
+    if ((fd = socket(family, SOCK_DGRAM, IPPROTO_UDP)) < 0)
         return ZN_ESOCKET;
 
-    if (bind(fd, (struct sockaddr*)&sock_addr, sizeof(sock_addr)) != 0)
+    if (bind(fd, (struct sockaddr*)&local_addr, znU_sz(family)) != 0)
         return ZN_EBIND;
 
     udp->fd = fd;
@@ -505,15 +531,14 @@ ZN_API void zn_deludp(zn_Udp *udp) {
 }
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
-    struct sockaddr_in dst;
+    ZN_SOCKADDR remote_addr;
+    sa_family_t family;
     if (udp->fd == -1)         return ZN_ESTATE;
     if (len == 0 || len >1200) return ZN_EPARAM;
 
-    memset(&dst, 0, sizeof(dst));
-    dst.sin_family = AF_INET;
-    dst.sin_addr.s_addr = inet_addr(addr);
-    dst.sin_port = htons(port);
-    sendto(udp->fd, buff, len, 0, (struct sockaddr*)&dst, sizeof(dst));
+    family = znU_parseaddr(&remote_addr, addr, port);
+    if (family == 0) return ZN_EPARAM;
+    sendto(udp->fd, buff, len, 0, (struct sockaddr*)&remote_addr, znU_sz(family));
     return ZN_OK;
 }
 
@@ -543,19 +568,21 @@ static void zn_onrecvfrom(zn_Udp *udp, int err) {
     znF_unregister_in(udp->S, udp->fd);
 
     if (err)
-        cb(udp->recv_ud, udp, ZN_ERROR, 0, "0.0.0.0", 0);
+        cb(udp->recv_ud, udp, ZN_ERROR, 0, NULL, 0);
     else {
+        ZN_SOCKADDR remote_addr;
+        socklen_t addr_size;
         int bytes;
-        memset(&udp->recvFrom, 0, sizeof(udp->recvFrom));
-        udp->recvFromLen = sizeof(udp->recvFrom);
+        memset(&remote_addr, 0, addr_size = sizeof(remote_addr));
         bytes = recvfrom(udp->fd, buff.buff, buff.len, 0,
-                (struct sockaddr*)&udp->recvFrom, &udp->recvFromLen);
-        if (bytes >= 0)
-            cb(udp->recv_ud, udp, ZN_OK, bytes,
-                    inet_ntoa(((struct sockaddr_in*)&udp->recvFrom)->sin_addr),
-                    ntohs(udp->recvFrom.sin_port));
+                (struct sockaddr*)&remote_addr, &addr_size);
+        if (bytes >= 0) {
+            zn_PeerInfo info;
+            znU_setinfo(&remote_addr, &info);
+            cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
+        }
         else if (errno != EAGAIN && errno != EWOULDBLOCK)
-            cb(udp->recv_ud, udp, ZN_ERROR, 0, "0.0.0.0", 0);
+            cb(udp->recv_ud, udp, ZN_ERROR, 0, NULL, 0);
     }
 }
 
@@ -701,6 +728,7 @@ static void znS_close(zn_State *S) {
 
 #endif /* ZN_USE_SELECT */
 /* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
- * win32cc: libs+='-lws2_32' output='znet.dll' */
-/* unixcc: flags+='-s -O3 -shared -fPIC -DZN_USE_SELECT -DZN_IMPLEMENTATION -xc'
- * unixcc: libs+='-pthread -lrt' output='znet.so' */
+ * win32cc: libs+='-lws2_32' output='znet.dll'
+ * unixcc: flags+='-s -O3 -shared -fPIC -DZN_USE_SELECT -DZN_IMPLEMENTATION -xc'
+ * linuxcc: libs+='-pthread -lrt' output='znet.so'
+ * maccc: libs+='-pthread' output='znet.so' */

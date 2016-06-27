@@ -11,6 +11,7 @@
 #endif
 #include <Windows.h>
 #include <WinSock2.h>
+#include <WS2Tcpip.h>
 #include <MSWSock.h>
 
 #ifdef _MSC_VER
@@ -47,6 +48,79 @@ struct zn_State {
 };
 
 /* utils */
+
+static size_t znU_sz(int f)
+{ return f == AF_INET ? sizeof(SOCKADDR_IN) : sizeof(SOCKADDR_IN6); }
+
+typedef union zn_sockaddr {
+    struct sockaddr_in  ipv4;
+    struct sockaddr_in6 ipv6;
+} ZN_SOCKADDR;
+
+static int znU_pton(int af, const char *src, void *dst) {
+    struct sockaddr_storage ss;
+    int size = sizeof(ss);
+    char src_copy[INET6_ADDRSTRLEN+1];
+    ZeroMemory(&ss, sizeof(ss));
+    strncpy(src_copy, src, INET6_ADDRSTRLEN+1);
+    src_copy[INET6_ADDRSTRLEN] = 0;
+    if (WSAStringToAddress(src_copy, af, NULL, (struct sockaddr*)&ss, &size) == 0) {
+        switch(af) {
+        case AF_INET:
+            *(struct in_addr *)dst = ((struct sockaddr_in *)&ss)->sin_addr;
+            return 1;
+        case AF_INET6:
+            *(struct in6_addr *)dst = ((struct sockaddr_in6 *)&ss)->sin6_addr;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const char *znU_ntop(int af, const void *src, char *dst, socklen_t size) {
+    struct sockaddr_storage ss;
+    unsigned long s = size;
+    ZeroMemory(&ss, sizeof(ss));
+    ss.ss_family = af;
+    switch(af) {
+    case AF_INET:
+        ((struct sockaddr_in *)&ss)->sin_addr = *(struct in_addr *)src;
+        break;
+    case AF_INET6:
+        ((struct sockaddr_in6 *)&ss)->sin6_addr = *(struct in6_addr *)src;
+        break;
+    default:
+        return NULL;
+    }
+    return WSAAddressToString(
+            (struct sockaddr*)&ss, sizeof(ss), NULL, dst, &s) == 0 ? dst : NULL;
+}
+
+static int znU_parseaddr(ZN_SOCKADDR *ret, const char *addr, unsigned port) {
+    memset(ret, 0, sizeof(*ret));
+    if (strchr(addr, ':') != 0) {
+        ret->ipv6.sin6_family = AF_INET6;
+        ret->ipv6.sin6_port = htons(port);
+        if (znU_pton(AF_INET6, addr, ret->ipv6.sin6_addr.s6_addr) != 1)
+            return 0;
+        return AF_INET6;
+    }
+    ret->ipv4.sin_family = AF_INET;
+    ret->ipv4.sin_port = htons(port);
+    if (znU_pton(AF_INET, addr, &ret->ipv4.sin_addr.s_addr) != 1)
+        return 0;
+    return AF_INET;
+}
+
+static void znU_setinfo(const ZN_SOCKADDR *src, zn_PeerInfo *peer_info) {
+    int family = src->ipv4.sin_family;
+    memset(peer_info, 0, sizeof(*peer_info));
+    znU_ntop(family, (void*)src, peer_info->addr, sizeof(peer_info->addr));
+    if (family == AF_INET)
+        peer_info->port = ntohs(src->ipv4.sin_port);
+    else
+        peer_info->port = ntohs(src->ipv6.sin6_port);
+}
 
 static int znU_set_nodelay(SOCKET socket) {
     BOOL bEnable = 1;
@@ -92,18 +166,17 @@ static int zn_getextension(SOCKET socket, GUID* gid, void *fn) {
             &dwSize, NULL, NULL) == 0;
 }
 
-static int zn_inittcp(zn_Tcp *tcp) {
+static int zn_inittcp(zn_Tcp *tcp, int family) {
     SOCKET socket;
-    SOCKADDR_IN localAddr;
+    ZN_SOCKADDR localAddr;
 
-    if ((socket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP,
+    if ((socket = WSASocket(family, SOCK_STREAM, IPPROTO_TCP,
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
-    memset(&localAddr, 0, sizeof(localAddr));
-    localAddr.sin_family = AF_INET;
-    if (bind(socket, (struct sockaddr *)&localAddr,
-                sizeof(localAddr)) != 0) {
+    memset(&localAddr, 0, znU_sz(family));
+    localAddr.ipv4.sin_family = family;
+    if (bind(socket, (struct sockaddr*)&localAddr, znU_sz(family)) != 0) {
         closesocket(socket);
         return ZN_EBIND;
     }
@@ -161,28 +234,25 @@ ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info) {
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
     static LPFN_CONNECTEX lpConnectEx = NULL;
     static GUID gid = WSAID_CONNECTEX;
+    ZN_SOCKADDR remoteAddr;
     DWORD dwLength = 0;
-    SOCKADDR_IN remoteAddr;
     char buf[1];
-    int err;
+    int err, family;
     if (tcp->socket != INVALID_SOCKET) return ZN_ESTATE;
     if (tcp->connect_handler != NULL)  return ZN_EBUSY;
     if (cb == NULL)                    return ZN_EPARAM;
 
-    if ((err = zn_inittcp(tcp)) != ZN_OK)
+    family = znU_parseaddr(&remoteAddr, addr, port);
+    if (family == 0) return ZN_EPARAM;
+    if ((err = zn_inittcp(tcp, family)) != ZN_OK)
         return err;
 
     if (!lpConnectEx && !zn_getextension(tcp->socket, &gid, &lpConnectEx))
         return ZN_ECONNECT;
 
-    memset(&remoteAddr, 0, sizeof(remoteAddr));
-    remoteAddr.sin_family = AF_INET;
-    remoteAddr.sin_addr.s_addr = inet_addr(addr);
-    remoteAddr.sin_port = htons((unsigned short)port);
     zn_setinfo(tcp, addr, port);
-
     if (!lpConnectEx(tcp->socket,
-                (struct sockaddr *)&remoteAddr, sizeof(remoteAddr),
+                (struct sockaddr *)&remoteAddr, znU_sz(family),
                 buf, 0, &dwLength, &tcp->connect_request.overlapped)
             && WSAGetLastError() != ERROR_IO_PENDING)
     {
@@ -306,8 +376,9 @@ struct zn_Accept {
     zn_Request accept_request;
     SOCKET socket;
     SOCKET client;
+    int   family;
     DWORD recv_length;
-    char recv_buffer[(sizeof(SOCKADDR_IN)+16)*2];
+    char recv_buffer[(sizeof(ZN_SOCKADDR)+16)*2];
 };
 
 ZN_API zn_Accept* zn_newaccept(zn_State *S) {
@@ -340,23 +411,19 @@ ZN_API int zn_closeaccept(zn_Accept *accept) {
 }
 
 ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
-    SOCKADDR_IN sockAddr;
     SOCKET socket;
+    ZN_SOCKADDR localAddr;
     if (accept->socket != INVALID_SOCKET) return ZN_ESTATE;
     if (accept->accept_handler != NULL)   return ZN_EBUSY;
 
-    if ((socket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP,
+    accept->family = znU_parseaddr(&localAddr, addr, port);
+    if (accept->family == 0) return ZN_EPARAM;
+    if ((socket = WSASocket(accept->family, SOCK_STREAM, IPPROTO_TCP,
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
     znU_set_reuseaddr(accept->socket);
-    memset(&sockAddr, 0, sizeof(sockAddr));
-    sockAddr.sin_family = AF_INET;
-    sockAddr.sin_addr.s_addr = inet_addr(addr);
-    sockAddr.sin_port = htons((unsigned short)port);
-    if (bind(socket, (struct sockaddr *)&sockAddr,
-                sizeof(sockAddr)) != 0)
-    {
+    if (bind(socket, (struct sockaddr *)&localAddr, znU_sz(accept->family)) != 0) {
         closesocket(socket);
         return ZN_EBIND;
     }
@@ -387,13 +454,13 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
     if (!lpAcceptEx && !zn_getextension(accept->socket, &gid, &lpAcceptEx))
         return ZN_ERROR;
 
-    if ((socket = WSASocket(AF_INET, SOCK_STREAM, IPPROTO_TCP,
+    if ((socket = WSASocket(accept->family, SOCK_STREAM, IPPROTO_TCP,
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
     if (!lpAcceptEx(accept->socket, socket,
                 accept->recv_buffer, 0,
-                sizeof(SOCKADDR_IN)+16, sizeof(SOCKADDR_IN)+16,
+                sizeof(ZN_SOCKADDR)+16, sizeof(ZN_SOCKADDR)+16,
                 &accept->recv_length, &accept->accept_request.overlapped)
             && WSAGetLastError() != ERROR_IO_PENDING)
     {
@@ -411,12 +478,12 @@ ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
 static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
     static LPFN_GETACCEPTEXSOCKADDRS lpGetAcceptExSockaddrs = NULL;
     static GUID gid = WSAID_GETACCEPTEXSOCKADDRS;
-    zn_AcceptHandler *cb = accept->accept_handler;
-    zn_Tcp *tcp;
     struct sockaddr *paddr1 = NULL, *paddr2 = NULL;
+    zn_AcceptHandler *cb = accept->accept_handler;
     int tmp1 = 0, tmp2 = 0;
-    accept->accept_handler = NULL;
+    zn_Tcp *tcp;
 
+    accept->accept_handler = NULL;
     if (accept->socket == INVALID_SOCKET) {
         ZN_PUTOBJECT(accept);
         return;
@@ -437,8 +504,8 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
 
     lpGetAcceptExSockaddrs(accept->recv_buffer,
             accept->recv_length,
-            sizeof(SOCKADDR_IN)+16,
-            sizeof(SOCKADDR_IN)+16,
+            sizeof(ZN_SOCKADDR)+16,
+            sizeof(ZN_SOCKADDR)+16,
             &paddr1, &tmp1, &paddr2, &tmp2);
 
     tcp = zn_newtcp(accept->S);
@@ -452,9 +519,7 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
         return;
     }
 
-    zn_setinfo(tcp, 
-            inet_ntoa(((struct sockaddr_in*)paddr2)->sin_addr),
-            ntohs(((struct sockaddr_in*)paddr2)->sin_port));
+    znU_setinfo((ZN_SOCKADDR*)&paddr2, &tcp->info);
     cb(accept->accept_ud, accept, ZN_OK, tcp);
 }
 
@@ -467,25 +532,22 @@ struct zn_Udp {
     zn_Request recv_request;
     SOCKET socket;
     WSABUF recvBuffer;
-    SOCKADDR_IN recvFrom;
+    ZN_SOCKADDR recvFrom;
     INT recvFromLen;
 };
 
 static int zn_initudp(zn_Udp *udp, const char *addr, unsigned port) {
     SOCKET socket;
-    SOCKADDR_IN sockAddr;
+    ZN_SOCKADDR localAddr;
+    int family = znU_parseaddr(&localAddr, addr, port);
+    if (family == 0) return ZN_EPARAM;
 
-    memset(&sockAddr, 0, sizeof(sockAddr));
-    sockAddr.sin_family = AF_INET;
-    sockAddr.sin_addr.s_addr = inet_addr(addr);
-    sockAddr.sin_port = htons((unsigned short)port);
-
-    socket = WSASocket(AF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, 0,
+    socket = WSASocket(family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0,
             WSA_FLAG_OVERLAPPED);
     if (socket == INVALID_SOCKET)
         return ZN_ESOCKET;
 
-    if (bind(socket, (struct sockaddr*)&sockAddr, sizeof(SOCKADDR_IN)) != 0)
+    if (bind(socket, (struct sockaddr*)&localAddr, znU_sz(family)) != 0)
         return ZN_EBIND;
 
     if (CreateIoCompletionPort((HANDLE)socket, udp->S->iocp,
@@ -517,15 +579,14 @@ ZN_API void zn_deludp(zn_Udp *udp) {
 }
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
-    SOCKADDR_IN dst;
+    ZN_SOCKADDR remoteAddr;
+    int family;
     if (udp->socket == INVALID_SOCKET) return ZN_ESTATE;
     if (len == 0 || len >1200)         return ZN_EPARAM;
+    family = znU_parseaddr(&remoteAddr, addr, port);
+    if (family == 0) return ZN_EPARAM;
 
-    memset(&dst, 0, sizeof(SOCKADDR_IN));
-    dst.sin_family = AF_INET;
-    dst.sin_addr.s_addr = inet_addr(addr);
-    dst.sin_port = htons((unsigned short)port);
-    sendto(udp->socket, buff, len, 0, (struct sockaddr*)&dst, sizeof(dst));
+    sendto(udp->socket, buff, len, 0, (struct sockaddr*)&remoteAddr, znU_sz(family));
     return ZN_OK;
 }
 
@@ -565,12 +626,12 @@ static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
         ZN_PUTOBJECT(udp);
         return;
     }
-    if (bSuccess && dwBytes > 0)
-        cb(udp->recv_ud, udp, ZN_OK, dwBytes,
-                inet_ntoa(((struct sockaddr_in*)&udp->recvFrom)->sin_addr),
-                ntohs(udp->recvFrom.sin_port));
-    else cb(udp->recv_ud, udp, ZN_ERROR, dwBytes,
-            "0.0.0.0", 0);
+    if (bSuccess && dwBytes > 0) {
+        zn_PeerInfo info;
+        znU_setinfo(&udp->recvFrom, &info);
+        cb(udp->recv_ud, udp, ZN_OK, dwBytes, info.addr, info.port);
+    }
+    else cb(udp->recv_ud, udp, ZN_ERROR, dwBytes, NULL, 0);
 }
 
 /* poll */
@@ -735,6 +796,6 @@ out:
 
 #endif /* ZN_USE_IOCP */
 /* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
- * win32cc: libs+='-lws2_32' output='znet.dll' */
-/* unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
+ * win32cc: libs+='-lws2_32' output='znet.dll'
+ * unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
  * unixcc: libs+='-pthread -lrt' output='znet.so' */

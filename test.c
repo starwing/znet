@@ -5,6 +5,13 @@
 zn_State *S;
 zn_Accept *a;
 
+#if TEST_IPV6
+#define IP   "fe80::747d:41c6:9a96:56dd"
+#else
+#define IP   "127.0.0.1"
+#endif
+#define PORT 12345
+
 static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     printf("%p: sent: %s (%u): %s\n", tcp, (char*)ud, count, zn_strerror(err));
     free(ud);
@@ -48,7 +55,7 @@ static zn_Time on_timer(void *ud, zn_Timer *t, zn_Time elapsed) {
     printf("%d>> %u\n", i, (unsigned)elapsed);
     zn_Tcp *tcp = zn_newtcp(S);
     printf("%p: connecting ...", tcp);
-    int ret = zn_connect(tcp, "127.0.0.1", 12345, on_connect, NULL);
+    int ret = zn_connect(tcp, IP, PORT, on_connect, NULL);
     printf("%s\n", zn_strerror(ret));
 
     if (i++ == 5) {
@@ -106,7 +113,7 @@ int main(void) {
 
     /* server */
     a = zn_newaccept(S);
-    zn_listen(a, "127.0.0.1", 12345);
+    zn_listen(a, IP, PORT);
     zn_accept(a, on_accept, NULL);
     printf("%p: listening ...\n", a);
 

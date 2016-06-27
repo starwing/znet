@@ -49,7 +49,7 @@ typedef unsigned zn_Time;
 # define ZN_MAX_EVENTS   1024
 #endif
 
-#define ZN_MAX_ADDRLEN   46
+#define ZN_MAX_ADDRLEN   50
 #define ZN_MAX_TIMERPOOL 512
 #define ZN_MAX_TIMERHEAP 512
 #define ZN_MAX_PAGESIZE  4096   
