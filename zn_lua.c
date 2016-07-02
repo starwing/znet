@@ -5,7 +5,7 @@
 
 #define ZN_STATIC_API
 #include "znet.h"
-#include "znet_buffer.h"
+#include "zn_buffer.h"
 
 #define LZN_UDP_RECVSIZE 2048
 
@@ -675,5 +675,9 @@ LUALIB_API int luaopen_znet(lua_State *L) {
     lua_setfield(L, -2, "engine");
     return 1;
 }
-/* cc: flags+='-mdll -s -O3 -DLUA_BUILD_AS_DLL'
- * cc: libs+='-lws2_32 -llua53' output='znet.dll' */
+
+/* win32cc: flags+='-mdll -s -O3 -DLUA_BUILD_AS_DLL'
+ * win32cc: libs+='-lws2_32 -llua53' output='znet.dll'
+ * maccc: flags+='-bundle -O3 -undefined dynamic_lookup -pthread'
+ * maccc: output='znet.so' */
+
