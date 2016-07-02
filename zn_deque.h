@@ -299,6 +299,12 @@ static void znD_signal(zn_Deque *d) { pthread_cond_signal(&d->event); }
 
 /* generated locked routines */
 
+ZN_API zn_DequeItem *zn_popfront(zn_Deque *d, int waitms)
+{ return zn_pop(d, waitms, znD_frontU); }
+
+ZN_API zn_DequeItem *zn_popback(zn_Deque *d, int waitms)
+{ return zn_pop(d, waitms, znD_backU); }
+
 static zn_DequeItem *znD_frontU(zn_Deque *d) {
     zn_DequeItem *item = d->head.next;
     if (item == &d->head)
@@ -365,15 +371,11 @@ ZN_API zn_DequeItem *zn_back(zn_Deque *d) {
     return item;
 }
 
-ZN_API zn_DequeItem *zn_popfront(zn_Deque *d, int waitms)
-{ return zn_pop(d, waitms, znD_frontU); }
-
-ZN_API zn_DequeItem *zn_popback(zn_Deque *d, int waitms)
-{ return zn_pop(d, waitms, znD_backU); }
-
 
 ZN_NS_END
 
 #endif /* ZN_IMPLEMENTATION */
-/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
-   unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc' */
+
+/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc' output='zn_deque.dll'
+   unixcc: flags+='-O3 -shared -fPIC -DZN_IMPLEMENTATION -xc' output='zn_deque.so' */
+

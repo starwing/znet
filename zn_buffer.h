@@ -288,4 +288,7 @@ ZN_API int zn_sendfinish(zn_SendBuffer *b, size_t count) {
 ZN_NS_END
 
 #endif /* ZN_IMPLEMENTATION */
-/* cc: flags+='-mdll -s -O3 -DZN_IMPLEMENTATION -xc' output='znet_buffer.dll' */
+
+/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc' output='zn_buffer.dll'
+   unixcc: flags+='-O3 -shared -fPIC -DZN_IMPLEMENTATION -xc' output='zn_buffer.so' */
+

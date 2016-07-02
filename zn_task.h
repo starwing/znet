@@ -57,7 +57,6 @@ ZN_NS_BEGIN
 #include <stdlib.h>
 #include <string.h>
 
-
 /* linked list routines */
 
 #ifndef zn_list_h
@@ -125,14 +124,12 @@ ZN_NS_BEGIN
 #define ZN_WS_PAUSE  1
 #define ZN_WS_EXIT   2
 
-
 #ifdef _WIN32
 
 #ifndef WIN32_LEAN_AND_MEAN
 # define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
-
 
 typedef struct zn_Task {
     znQ_entry(struct zn_Task);
@@ -149,9 +146,6 @@ typedef struct zn_TaskPool {
     int ntask;
     int status;
 } zn_TaskPool;
-
-ZN_API int zn_taskcount(zn_TaskPool *ws)
-{ return ws->ntask; }
 
 static DWORD WINAPI zn_tasker(LPVOID lpParameter) {
     zn_TaskPool *ws = (zn_TaskPool*)lpParameter;
@@ -275,9 +269,7 @@ ZN_API void zn_pausetasks(zn_TaskPool *ws, int pause) {
     LeaveCriticalSection(&ws->lock);
 }
 
-
 #else /* POSIX systems */
-
 
 #include <pthread.h>
 
@@ -297,9 +289,6 @@ typedef struct zn_TaskPool {
     int idle_threads;
     int status;
 } zn_TaskPool;
-
-ZN_API int zn_taskcount(zn_TaskPool *ws)
-{ return ws->ntask; }
 
 static void *zn_tasker(void *ud) {
     zn_TaskPool *ws = (zn_TaskPool*)ud;
@@ -417,12 +406,15 @@ ZN_API void zn_pausetasks(zn_TaskPool *ws, int pause) {
     pthread_mutex_unlock(&ws->lock);
 }
 
-
 #endif
+
+ZN_API int zn_taskcount(zn_TaskPool *ws) { return ws->ntask; }
 
 
 ZN_NS_END
 
 #endif /* ZN_IMPLEMENTATION */
-/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc'
- * unixcc: flags+='-s -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc' */
+
+/* win32cc: flags+='-s -O3 -mdll -DZN_IMPLEMENTATION -xc' output='zn_task.dll'
+   unixcc: flags+='-O3 -shared -fPIC -DZN_IMPLEMENTATION -xc' output='zn_task.so' */
+
