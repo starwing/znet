@@ -6,7 +6,7 @@ zn_State *S;
 zn_Accept *a;
 
 #if TEST_IPV6
-#define IP   "fe80::747d:41c6:9a96:56dd"
+#define IP   "::1"
 #else
 #define IP   "127.0.0.1"
 #endif

@@ -588,12 +588,10 @@ ZN_API void zn_delaccept(zn_Accept *accept) {
 
 ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
     zn_SockAddr local_addr;
-    zn_Family   family;
     if (accept->socket != ZN_INVALID_SOCKET) return ZN_ESTATE;
     if (accept->accept_handler != NULL)      return ZN_EBUSY;
-    family = znU_parseaddr(&local_addr, addr, port);
-    if (family == 0) return ZN_EPARAM;
-    return znP_listen(accept, family, &local_addr);
+    if (!znU_parseaddr(&local_addr, addr, port)) return ZN_EPARAM;
+    return znP_listen(accept, &local_addr);
 }
 
 ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
@@ -632,15 +630,13 @@ ZN_API void zn_deltcp(zn_Tcp *tcp) {
 
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
     zn_SockAddr remote_addr;
-    zn_Family   family;
     int         ret;
     if (tcp->socket != ZN_INVALID_SOCKET) return ZN_ESTATE;
     if (tcp->connect_handler != NULL)     return ZN_EBUSY;
     if (cb == NULL)                       return ZN_EPARAM;
+    if (znU_parseaddr(&remote_addr, addr, port) == 0) return ZN_EPARAM;
 
-    family = znU_parseaddr(&remote_addr, addr, port);
-    if (family == 0) return ZN_EPARAM;
-    if ((ret = znP_connect(tcp, family, &remote_addr)) != ZN_OK)
+    if ((ret = znP_connect(tcp, &remote_addr)) != ZN_OK)
         return ret;
     assert(strlen(addr) < ZN_MAX_ADDRLEN);
     strcpy(tcp->peer_info.addr, addr);
@@ -690,16 +686,14 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, vo
 }
 
 ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
-    zn_Family family;
     zn_SockAddr local_addr;
     ZN_GETOBJECT(S, zn_Udp, udp);
-    family = znU_parseaddr(&local_addr, addr, port);
-    if (family == 0) {
+    if (znU_parseaddr(&local_addr, addr, port) == 0) {
         ZN_PUTOBJECT(udp);
         return NULL;
     }
     udp->socket = ZN_INVALID_SOCKET;
-    if (!znP_initudp(udp, family, &local_addr)) {
+    if (!znP_initudp(udp, &local_addr)) {
         ZN_PUTOBJECT(udp);
         return NULL;
     }
@@ -718,13 +712,10 @@ ZN_API void zn_deludp(zn_Udp *udp) {
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
     zn_SockAddr remote_addr;
-    zn_Family   family;
     if (udp->socket == ZN_INVALID_SOCKET) return ZN_ESTATE;
     if (len == 0 || len >1200)            return ZN_EPARAM;
-
-    family = znU_parseaddr(&remote_addr, addr, port);
-    if (family == 0) return ZN_EPARAM;
-    return znP_sendto(udp, buff, len, family, &remote_addr);
+    if (znU_parseaddr(&remote_addr, addr, port) == 0) return ZN_EPARAM;
+    return znP_sendto(udp, buff, len, &remote_addr);
 }
 
 ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler *cb, void *ud) {
@@ -768,7 +759,6 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
 #endif /* _MSC_VER */
 
 #define ZN_INVALID_SOCKET INVALID_SOCKET
-#define zn_Family         int
 
 static int znU_pton(int af, const char *src, void *dst) {
     struct sockaddr_storage ss;
@@ -879,7 +869,6 @@ ZN_API zn_Time zn_time(void) {
 #endif /* __MACH__ */
 
 #define ZN_INVALID_SOCKET (-1)
-#define zn_Family         sa_family_t
 
 #define znU_pton inet_pton
 #define znU_ntop inet_ntop
@@ -953,13 +942,12 @@ ZN_API zn_Time zn_time(void) {
 #ifdef zn_use_addr /* need: platform */
 #undef zn_use_addr
 
-static size_t znU_sz(int f) {
-    return f == AF_INET ?
-        sizeof(struct sockaddr_in) :
-        sizeof(struct sockaddr_in6);
-}
+#define znU_family(sa) ((sa)->addr.sa_family)
+#define znU_isv4(sa)   (znU_family(sa) == AF_INET)
+#define znU_size(sa)   (znU_isv4(sa)? sizeof((sa)->ipv4) : sizeof((sa)->ipv6))
 
 typedef union zn_SockAddr {
+    struct sockaddr     addr;
     struct sockaddr_in  ipv4;
     struct sockaddr_in6 ipv6;
 } zn_SockAddr;
@@ -971,20 +959,21 @@ static int znU_parseaddr(zn_SockAddr *ret, const char *addr, unsigned port) {
         ret->ipv6.sin6_port = htons(port);
         if (znU_pton(AF_INET6, addr, ret->ipv6.sin6_addr.s6_addr) != 1)
             return 0;
-        return AF_INET6;
     }
-    ret->ipv4.sin_family = AF_INET;
-    ret->ipv4.sin_port = htons(port);
-    if (znU_pton(AF_INET, addr, &ret->ipv4.sin_addr.s_addr) != 1)
-        return 0;
-    return AF_INET;
+    else {
+        ret->ipv4.sin_family = AF_INET;
+        ret->ipv4.sin_port = htons(port);
+        if (znU_pton(AF_INET, addr, &ret->ipv4.sin_addr.s_addr) != 1)
+            return 0;
+    }
+    return znU_family(ret);
 }
 
 static void znU_setinfo(const zn_SockAddr *src, zn_PeerInfo *peer_info) {
-    int family = src->ipv4.sin_family;
     memset(peer_info, 0, sizeof(*peer_info));
-    znU_ntop(family, (void*)src, peer_info->addr, sizeof(peer_info->addr));
-    if (family == AF_INET)
+    znU_ntop(znU_family(src),
+            (void*)src, peer_info->addr, sizeof(peer_info->addr));
+    if (znU_isv4(src))
         peer_info->port = ntohs(src->ipv4.sin_port);
     else
         peer_info->port = ntohs(src->ipv6.sin6_port);
@@ -1263,9 +1252,9 @@ static int zn_tcpfromfamily(zn_Tcp *tcp, int family) {
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
-    memset(&local_addr, 0, znU_sz(family));
-    local_addr.ipv4.sin_family = family;
-    if (bind(socket, (struct sockaddr*)&local_addr, znU_sz(family)) != 0) {
+    memset(&local_addr, 0, sizeof(local_addr));
+    znU_family(&local_addr) = family;
+    if (bind(socket, &local_addr.addr, znU_size(&local_addr)) != 0) {
         closesocket(socket);
         return ZN_EBIND;
     }
@@ -1297,19 +1286,18 @@ static int znP_closetcp(zn_Tcp *tcp) {
     return ret;
 }
 
-static int znP_connect(zn_Tcp *tcp, zn_Family family, zn_SockAddr *addr) {
+static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
     static LPFN_CONNECTEX lpConnectEx = NULL;
     static GUID gid = WSAID_CONNECTEX;
     DWORD dwLength = 0;
     char buf[1];
-    int err = zn_tcpfromfamily(tcp, family);
+    int err = zn_tcpfromfamily(tcp, znU_family(addr));
     if (err != ZN_OK) return err;
 
     if (!lpConnectEx && !zn_getextension(tcp->socket, &gid, &lpConnectEx))
         return ZN_ECONNECT;
 
-    if (!lpConnectEx(tcp->socket,
-                (struct sockaddr *)addr, znU_sz(family),
+    if (!lpConnectEx(tcp->socket, &addr->addr, znU_size(addr),
                 buf, 0, &dwLength, &tcp->connect_request.overlapped)
             && WSAGetLastError() != ERROR_IO_PENDING)
     {
@@ -1415,15 +1403,15 @@ static int znP_closeaccept(zn_Accept *accept) {
     return ret;
 }
 
-static int znP_listen(zn_Accept *accept, zn_Family family, zn_SockAddr *addr) {
+static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
     SOCKET socket;
-    accept->family = family;
+    accept->family = znU_family(addr);
     if ((socket = WSASocket(accept->family, SOCK_STREAM, IPPROTO_TCP,
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
     znU_set_reuseaddr(accept->socket);
-    if (bind(socket, (struct sockaddr *)addr, znU_sz(family)) != 0) {
+    if (bind(socket, &addr->addr, znU_size(addr)) != 0) {
         closesocket(socket);
         return ZN_EBIND;
     }
@@ -1523,15 +1511,15 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
 static int znP_closeudp(zn_Udp *udp)
 { return closesocket(udp->socket) == 0 ? ZN_OK : ZN_ERROR; }
 
-static int znP_initudp(zn_Udp *udp, zn_Family family, zn_SockAddr *addr) {
+static int znP_initudp(zn_Udp *udp, zn_SockAddr *addr) {
     SOCKET socket;
     udp->recv_request.type = ZN_TRECVFROM;
-    socket = WSASocket(family, SOCK_DGRAM, IPPROTO_UDP, NULL, 0,
+    socket = WSASocket(znU_family(addr), SOCK_DGRAM, IPPROTO_UDP, NULL, 0,
             WSA_FLAG_OVERLAPPED);
     if (socket == INVALID_SOCKET)
         return ZN_ESOCKET;
 
-    if (bind(socket, (struct sockaddr*)addr, znU_sz(family)) != 0) {
+    if (bind(socket, &addr->addr, znU_size(addr)) != 0) {
         closesocket(socket);
         return ZN_EBIND;
     }
@@ -1547,8 +1535,8 @@ static int znP_initudp(zn_Udp *udp, zn_Family family, zn_SockAddr *addr) {
     return ZN_OK;
 }
 
-static int znP_sendto(zn_Udp *udp, const char *buff, unsigned len, zn_Family family, zn_SockAddr *addr) {
-    sendto(udp->socket, buff, len, 0, (struct sockaddr*)addr, znU_sz(family));
+static int znP_sendto(zn_Udp *udp, const char *buff, unsigned len, zn_SockAddr *addr) {
+    sendto(udp->socket, buff, len, 0, &addr->addr, znU_size(addr));
     return ZN_OK;
 }
 
@@ -1558,7 +1546,7 @@ static int znP_recvfrom(zn_Udp *udp) {
     memset(&udp->recv_from, 0, sizeof(udp->recv_from));
     udp->recv_from_len = sizeof(udp->recv_from);
     if ((WSARecvFrom(udp->socket, &udp->recv_buffer, 1, &dwRecv, &dwFlag,
-                (struct sockaddr*)&udp->recv_from, &udp->recv_from_len,
+                &udp->recv_from.addr, &udp->recv_from_len,
                 &udp->recv_request.overlapped, NULL) == 0)
             || WSAGetLastError() == WSA_IO_PENDING)
         return ZN_OK;
@@ -1790,8 +1778,8 @@ static int znP_closetcp(zn_Tcp *tcp) {
     return ret;
 }
 
-static int znP_connect(zn_Tcp *tcp, zn_Family family, zn_SockAddr *addr) {
-    int ret, fd = socket(family, SOCK_STREAM, 0);
+static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
+    int ret, fd = socket(znU_family(addr), SOCK_STREAM, 0);
     if (fd < 0) return ZN_ESOCKET;
 
     if (fd >= FD_SETSIZE) {
@@ -1803,7 +1791,7 @@ static int znP_connect(zn_Tcp *tcp, zn_Family family, zn_SockAddr *addr) {
         tcp->S->nfds = fd;
     znU_set_nonblock(fd);
 
-    ret = connect(fd, (struct sockaddr *)addr, znU_sz(family));
+    ret = connect(fd, &addr->addr, znU_size(addr));
     if (ret != 0 && errno != EINPROGRESS) {
         close(fd);
         return ZN_ECONNECT;
@@ -1906,14 +1894,14 @@ static int znP_closeaccept(zn_Accept *accept) {
     return ret;
 }
 
-static int znP_listen(zn_Accept *accept, zn_Family family, zn_SockAddr *addr) {
-    int fd = socket(family, SOCK_STREAM, IPPROTO_TCP);
+static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
+    int fd = socket(znU_family(addr), SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) return ZN_ESOCKET;
     if (accept->S->nfds < fd) accept->S->nfds = fd;
 
     znU_set_nonblock(fd);
     znU_set_reuseaddr(fd);
-    if (bind(fd, (struct sockaddr *)addr, znU_sz(family)) != 0) {
+    if (bind(fd, &addr->addr, znU_size(addr)) != 0) {
         close(fd);
         return ZN_EBIND;
     }
@@ -1937,7 +1925,7 @@ static void zn_onaccept(zn_Accept *a, int err) {
     while (!err) {
         zn_SockAddr remote_addr;
         socklen_t addr_size = sizeof(remote_addr);
-        int ret = accept(a->socket, (struct sockaddr*)&remote_addr, &addr_size);
+        int ret = accept(a->socket, &remote_addr.addr, &addr_size);
         if (ret >= FD_SETSIZE)
             close(ret);
         else if (ret >= 0) {
@@ -1956,11 +1944,11 @@ static void zn_onaccept(zn_Accept *a, int err) {
 
 /* udp */
 
-static int znP_initudp(zn_Udp *udp, zn_Family family, zn_SockAddr *addr) {
-    int fd = socket(family, SOCK_DGRAM, IPPROTO_UDP);
+static int znP_initudp(zn_Udp *udp, zn_SockAddr *addr) {
+    int fd = socket(znU_family(addr), SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) return ZN_ESOCKET;
 
-    if (bind(fd, (struct sockaddr*)addr, znU_sz(family)) != 0) {
+    if (bind(fd, &addr->addr, znU_size(addr)) != 0) {
         close(fd);
         return ZN_EBIND;
     }
@@ -1976,8 +1964,8 @@ static int znP_closeudp(zn_Udp *udp) {
     return close(udp->socket) == 0;
 }
 
-static int znP_sendto(zn_Udp *udp, const char *buff, unsigned len, zn_Family family, zn_SockAddr *addr) {
-    sendto(udp->socket, buff, len, 0, (struct sockaddr*)addr, znU_sz(family));
+static int znP_sendto(zn_Udp *udp, const char *buff, unsigned len, zn_SockAddr *addr) {
+    sendto(udp->socket, buff, len, 0, &addr->addr, znU_size(addr));
     return ZN_OK;
 }
 
@@ -2005,7 +1993,7 @@ static void zn_onrecvfrom(zn_Udp *udp, int err) {
         int bytes;
         memset(&remote_addr, 0, addr_size = sizeof(remote_addr));
         bytes = recvfrom(udp->socket, buff.buf, buff.len, 0,
-                (struct sockaddr*)&remote_addr, &addr_size);
+                &remote_addr.addr, &addr_size);
         if (bytes >= 0) {
             zn_PeerInfo info;
             znU_setinfo(&remote_addr, &info);
@@ -2199,11 +2187,11 @@ static int znP_closetcp(zn_Tcp *tcp) {
     return ret;
 }
 
-static int znP_connect(zn_Tcp *tcp, zn_Family family, zn_SockAddr *addr) {
-    int ret, fd = socket(family, SOCK_STREAM, 0);
+static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
+    int ret, fd = socket(znU_family(addr), SOCK_STREAM, 0);
     if (fd < 0) return ZN_ESOCKET;
     znU_set_nonblock(fd);
-    ret = connect(fd, (struct sockaddr *)addr, znU_sz(family));
+    ret = connect(fd, &addr->addr, znU_size(addr));
     if (ret != 0 && errno != EINPROGRESS) {
         close(fd);
         return ZN_ECONNECT;
@@ -2306,15 +2294,15 @@ static int znP_closeaccept(zn_Accept *accept) {
     return ret;
 }
 
-static int znP_listen(zn_Accept *accept, zn_Family family, zn_SockAddr *addr) {
-    int fd = socket(family, SOCK_STREAM, IPPROTO_TCP);
+static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
+    int fd = socket(znU_family(addr), SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) return ZN_ESOCKET;
     if (!znF_register_in(accept->S, fd, &accept->info)) {
         close(fd);
         return ZN_EPOLL;
     }
     znU_set_reuseaddr(fd);
-    if (bind(fd, (struct sockaddr *)addr, znU_sz(family)) != 0) {
+    if (bind(fd, &addr->addr, znU_size(addr)) != 0) {
         close(fd);
         return ZN_EBIND;
     }
@@ -2328,10 +2316,10 @@ static int znP_listen(zn_Accept *accept, zn_Family family, zn_SockAddr *addr) {
 
 /* udp */
 
-static int znP_initudp(zn_Udp *udp, zn_Family family, zn_SockAddr *addr) {
-    int fd = socket(family, SOCK_DGRAM, IPPROTO_UDP);
+static int znP_initudp(zn_Udp *udp, zn_SockAddr *addr) {
+    int fd = socket(znU_family(addr), SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) return ZN_ESOCKET;
-    if (bind(fd, (struct sockaddr*)addr, znU_sz(family)) != 0) {
+    if (bind(fd, &addr->addr, znU_size(addr)) != 0) {
         close(fd);
         return ZN_EBIND;
     }
@@ -2350,8 +2338,8 @@ static int znP_closeudp(zn_Udp *udp) {
     return close(udp->socket) == 0;
 }
 
-static int znP_sendto(zn_Udp *udp, const char *buff, size_t len, zn_Family family, zn_SockAddr *addr) {
-    sendto(udp->socket, buff, len, 0, (struct sockaddr*)addr, znU_sz(family));
+static int znP_sendto(zn_Udp *udp, const char *buff, size_t len, zn_SockAddr *addr) {
+    sendto(udp->socket, buff, len, 0, &addr->addr, znU_size(addr));
     return ZN_OK;
 }
 
@@ -2444,7 +2432,7 @@ static void zn_onaccept(zn_Accept *a, int eventmask) {
     if ((eventmask & EPOLLIN) != 0) {
         zn_SockAddr remote_addr;
         socklen_t addr_size = sizeof(zn_SockAddr);
-        int ret = accept(a->socket, (struct sockaddr*)&remote_addr, &addr_size);
+        int ret = accept(a->socket, &remote_addr.addr, &addr_size);
         if (ret >= 0) {
             zn_Tcp *tcp = zn_tcpfromfd(a->S, ret, &remote_addr);
             if (tcp != NULL) cb(a->accept_ud, a, ZN_OK, tcp);
@@ -2476,7 +2464,7 @@ static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
         int bytes;
         memset(&remote_addr, 0, addr_size = sizeof(remote_addr));
         bytes = recvfrom(udp->socket, buff.buf, buff.len, 0,
-                (struct sockaddr*)&remote_addr, &addr_size);
+                &remote_addr.addr, &addr_size);
         if (bytes >= 0) {
             zn_PeerInfo info;
             znU_setinfo(&remote_addr, &info);
@@ -2638,7 +2626,7 @@ static void zn_onaccept(zn_Accept *a, int filter, int flags) {
     if (filter == EVFILT_READ) {
         zn_SockAddr remote_addr;
         socklen_t addr_size = sizeof(zn_SockAddr);
-        int ret = accept(a->socket, (struct sockaddr*)&remote_addr, &addr_size);
+        int ret = accept(a->socket, &remote_addr.addr, &addr_size);
         if (ret >= 0) {
             zn_Tcp *tcp = zn_tcpfromfd(a->S, ret, &remote_addr);
             if (tcp != NULL) cb(a->accept_ud, a, ZN_OK, tcp);
@@ -2670,7 +2658,7 @@ static void zn_onrecvfrom(zn_Udp *udp, int flags, int filter) {
         int bytes;
         memset(&remote_addr, 0, addr_size = sizeof(&remote_addr));
         bytes = recvfrom(udp->socket, buff.buf, buff.len, 0,
-                (struct sockaddr*)&remote_addr, &addr_size);
+                &remote_addr.addr, &addr_size);
         if (bytes >= 0) {
             zn_PeerInfo info;
             znU_setinfo(&remote_addr, &info);

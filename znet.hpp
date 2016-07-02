@@ -187,7 +187,8 @@ inline bool EventLoop::cancelTimer(TimerID timerID)
 inline bool TcpAccept::openAccept(std::string const& ip, unsigned short port)
 { return zn_listen(accept, ip.c_str(), port) == ZN_OK; }
 
-inline bool TcpAccept::initialize(EventLoopPtr const& summer) {
+inline bool TcpAccept::initialize(EventLoopPtr const& summer)
+{
     if (accept == nullptr)
         return (accept = zn_newaccept(summer->S)) != nullptr;
     return true;
@@ -216,7 +217,8 @@ inline bool TcpAccept::doAccept(TcpSocketPtr const& s, OnAcceptHandler&& h)
 inline bool TcpSocket::doClose()
 { return zn_closetcp(tcp) == ZN_OK; }
 
-inline bool TcpSocket::initialize(EventLoopPtr const& summer) {
+inline bool TcpSocket::initialize(EventLoopPtr const& summer)
+{
     if (tcp == nullptr)
         return (tcp = zn_newtcp(summer->S)) != nullptr;
     return true;
@@ -286,7 +288,8 @@ inline bool TcpSocket::doRecv(char* buf, unsigned len, OnRecvHandler&& h)
 inline bool UdpSocket::doSendTo(char const* buf, unsigned len, std::string const& remoteIP, unsigned short remotePort)
 { return zn_sendto(udp, buf, len, remoteIP.c_str(), remotePort) == ZN_OK; }
 
-inline bool UdpSocket::initialize(EventLoopPtr const& summer, std::string const& ip, unsigned short port) {
+inline bool UdpSocket::initialize(EventLoopPtr const& summer, std::string const& ip, unsigned short port)
+{
     if (udp == nullptr)
         return (udp = zn_newudp(summer->S, ip.c_str(), port)) != nullptr;
     return true;
