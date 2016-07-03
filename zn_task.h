@@ -48,6 +48,61 @@ ZN_NS_END
 
 #endif /* znet_task_h */
 
+
+#ifndef zn_list_h
+#define zn_list_h
+
+#define znL_entry(T) T *next; T **pprev
+#define znL_head(T)  struct T##_hlist { znL_entry(T); }
+
+#define znL_init(n)                                       do { \
+    (n)->pprev = &(n)->next;                                   \
+    (n)->next = NULL;                                        } while (0)
+
+#define znL_insert(h, n)                                  do { \
+    (n)->pprev = (h);                                          \
+    (n)->next = *(h);                                          \
+    if (*(h) != NULL)                                          \
+        (*(h))->pprev = &(n)->next;                            \
+    *(h) = (n);                                              } while (0)
+
+#define znL_remove(n)                                     do { \
+    if ((n)->next != NULL)                                     \
+        (n)->next->pprev = (n)->pprev;                         \
+    *(n)->pprev = (n)->next;                                 } while (0)
+
+#define znL_apply(type, h, stmt)                          do { \
+    type *cur = (type*)*(h);                                   \
+    *(h) = NULL;                                               \
+    while (cur)                                                \
+    { type *next_ = cur->next; stmt; cur = next_; }          } while (0)
+
+#define znQ_entry(T) T* next
+#define znQ_type(T)  struct { T *first; T **plast; }
+
+#define znQ_init(h)                                       do { \
+    (h)->first = NULL;                                         \
+    (h)->plast = &(h)->first;                                } while (0)
+
+#define znQ_enqueue(h, n)                                 do { \
+    *(h)->plast = (n);                                         \
+    (h)->plast = &(n)->next;                                   \
+    (n)->next = NULL;                                        } while (0)
+
+#define znQ_dequeue(h, pn)                                do { \
+    if (((pn) = (h)->first) != NULL) {                         \
+        (h)->first = (h)->first->next;                         \
+        if ((h)->plast == &(pn)->next)                         \
+            (h)->plast = &(h)->first; }                      } while (0)
+
+#define znQ_apply(type, h, stmt)                          do { \
+    type *cur = (type*)(h);                                    \
+    while (cur)                                                \
+    { type *next_ = cur->next; stmt; cur = next_; }          } while (0)
+
+#endif /* zn_list_h */
+
+
 #if defined(ZN_IMPLEMENTATION) && !defined(zn_task_implemented)
 #define zn_task_implemented
 
@@ -56,69 +111,6 @@ ZN_NS_BEGIN
 
 #include <stdlib.h>
 #include <string.h>
-
-/* linked list routines */
-
-#ifndef zn_list_h
-#define zn_list_h
-
-#define znL_entry(T) T *next; T **pprev
-#define znL_head(T)  struct T##_hlist { znL_entry(T); }
-
-#define znL_init(n)                    do { \
-    (n)->pprev = &(n)->next;                \
-    (n)->next = NULL;                     } while (0)
-
-#define znL_insert(h, n)               do { \
-    (n)->pprev = (h);                       \
-    (n)->next = *(h);                       \
-    if (*(h) != NULL)                       \
-        (*(h))->pprev = &(n)->next;         \
-    *(h) = (n);                           } while (0)
-
-#define znL_remove(n)                  do { \
-    if ((n)->next != NULL)                  \
-        (n)->next->pprev = (n)->pprev;      \
-    *(n)->pprev = (n)->next;              } while (0)
-
-#define znL_apply(type, h, func)       do { \
-    type *tmp_ = (type*)(h);                \
-    (h) = NULL;                             \
-    while (tmp_) {                          \
-        type *next_ = tmp_->next;           \
-        func(tmp_);                         \
-        tmp_ = next_;                       \
-    }                                     } while (0)
-
-#define znQ_entry(T) T* next
-#define znQ_type(T)  struct T##_queue { T *first; T **plast; }
-
-#define znQ_init(h)                    do { \
-    (h)->first = NULL;                      \
-    (h)->plast = &(h)->first;             } while (0)
-
-#define znQ_enqueue(h, n)              do { \
-    *(h)->plast = (n);                      \
-    (h)->plast = &(n)->next;                \
-    (n)->next = NULL;                     } while (0)
-
-#define znQ_dequeue(h, pn)             do { \
-    if (((pn) = (h)->first) != NULL) {      \
-        (h)->first = (h)->first->next;      \
-        if ((h)->plast == &(pn)->next)      \
-            (h)->plast = &(h)->first; }     } while (0)
-
-#define znQ_apply(type, h, func)       do { \
-    type *tmp_ = (h)->first;                \
-    znQ_init(h);                            \
-    while (tmp_) {                          \
-        type *next_ = tmp_->next;           \
-        func(tmp_);                         \
-        tmp_ = next_;                       \
-    }                                     } while (0)
-
-#endif /* zn_list_h */
-
 
 #define ZN_WS_NORMAL 0
 #define ZN_WS_PAUSE  1
@@ -370,8 +362,8 @@ ZN_API void zn_deltaskpool(zn_TaskPool *ws) {
 
     pthread_cond_destroy(&ws->event);
     pthread_mutex_destroy(&ws->lock);
-    znQ_apply(zn_Task, &ws->freed_tasks, free);
-    znQ_apply(zn_Task, &ws->tasks, free);
+    znQ_apply(zn_Task, &ws->freed_tasks, free(cur));
+    znQ_apply(zn_Task, &ws->tasks, free(cur));
     free(ws);
 }
 

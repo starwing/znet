@@ -6,6 +6,7 @@
 #define ZN_STATIC_API
 #include "znet.h"
 #include "zn_buffer.h"
+#include "zn_addrinfo.h"
 
 #define LZN_UDP_RECVSIZE 2048
 
@@ -177,7 +178,8 @@ static void lzn_onconnect(void *ud, zn_Tcp *tcp, unsigned err) {
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
     lzn_unref(L, &obj->ref);
     if (err != ZN_OK) {
-        lua_pushstring(L, zn_strerror(err));
+        lua_pushstring(L, err >= ZN_ERROR_COUNT ?
+                zn_aierror(err - ZN_ERROR_COUNT) : zn_strerror(err));
         lua_pushinteger(L, err);
     }
     if (lbind_pcall(L, err == ZN_OK ? 1 : 3, 0) != LUA_OK) {
@@ -278,16 +280,24 @@ static lzn_Tcp *lzn_newtcp(lua_State *L, zn_Tcp *tcp) {
     return obj;
 }
 
+static void lzn_ongetaddr(void *ud, unsigned err, unsigned count, zn_PeerInfo *peers) {
+    lzn_Tcp *obj = (lzn_Tcp*)ud;
+    if (err == ZN_OK)
+        err = zn_connect(obj->tcp, peers[0].addr, peers[0].port, lzn_onconnect, obj);
+    else err += ZN_ERROR_COUNT;
+    if (err != ZN_OK) lzn_onconnect(ud, obj->tcp, err);
+}
+
 static int Ltcp_connect(lua_State *L) {
     lzn_Tcp *obj = (lzn_Tcp*)lbind_check(L, 1, &lbT_Tcp);
     const char *addr = luaL_optstring(L, 2, "127.0.0.1");
-    lua_Integer port = luaL_checkinteger(L, 3);
+    const char *port = luaL_optstring(L, 3, "http");
     int ret;
     luaL_checktype(L, 4, LUA_TFUNCTION);
     luaL_argcheck(L, port > 0, 3, "port out of range");
     lzn_ref(L, 4, &obj->onconnect_ref);
     lzn_ref(L, 1, &obj->ref);
-    ret = zn_connect(obj->tcp, addr, (unsigned)port, lzn_onconnect, obj);
+    ret = zn_getaddrinfo(obj->tcp->S, addr, port, ZN_TCP, lzn_ongetaddr, obj);
     return_result(L, ret);
 }
 
@@ -607,6 +617,80 @@ static void open_udp(lua_State *L) {
 
 /* znet state */
 
+typedef struct lzn_AddrInfo {
+    lua_State *L;
+    int ref;
+    int ref_func;
+} lzn_AddrInfo;
+
+static void lzn_onaddrinfo(void *ud, unsigned err, unsigned count, zn_PeerInfo *peers) {
+    lzn_AddrInfo *info = (lzn_AddrInfo*)ud;
+    lua_State *L       = info->L;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, info->ref_func);
+    if (err != ZN_OK) {
+        lua_pushnil(L);
+        if (err == ZN_ERROR)
+            lua_pushliteral(L, "Operation canceled");
+        else
+            lua_pushstring(L, zn_aierror(err));
+    }
+    else {
+        unsigned i;
+        lua_createtable(L, count, 0);
+        for (i = 1; i <= count; ++i) {
+            lua_pushstring(L, peers[i-1].addr);
+            lua_rawseti(L, -2, i);
+        }
+        if (count != 0)
+            lua_pushinteger(L, peers[0].port);
+    }
+    if (lbind_pcall(L, 2, 0) != LUA_OK) {
+        fprintf(stderr, "%s\n", lua_tostring(L, -1));
+        lua_pop(L, 1);
+    }
+    lzn_unref(L, &info->ref_func);
+    lzn_unref(L, &info->ref);
+}
+
+static int lzn_checkgaiflags(lua_State *L, int idx) {
+    const char *s = luaL_optstring(L, idx, "");
+    int flags = 0;
+    for (; *s != '\0'; ++s) {
+        switch (*s) {
+        case '4': flags |= ZN_IPV4; break;
+        case '6': flags |= ZN_IPV6; break;
+        case 't': if ((flags&0xFF)==0) flags = ZN_TCP;    break;
+        case 'u': if ((flags&0xFF)==0) flags = ZN_UDP;    break;
+        case 'a': if ((flags&0xFF)==0) flags = ZN_ACCEPT; break;
+        }
+    }
+    return flags;
+}
+
+static int Lstate_getaddrinfo(lua_State *L) {
+    zn_State *S = (zn_State*)lbind_check(L, 1, &lbT_State);
+    lzn_AddrInfo *data;
+    const char *node = luaL_optstring(L, 2, NULL);
+    const char *svr  = luaL_optstring(L, 3, NULL);
+    int flags = 0;
+    if (!lua_isfunction(L, 4))
+        flags = lzn_checkgaiflags(L, 4);
+    else {
+        lua_pushnil(L);
+        lua_insert(L, 4);
+    }
+    luaL_checktype(L, 5, LUA_TFUNCTION);
+    if (node == NULL && svr == NULL)
+        luaL_error(L, "node or service required");
+    data = lua_newuserdata(L, sizeof(lzn_AddrInfo));
+    data->L = L;
+    data->ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_pushvalue(L, 5);
+    data->ref_func = luaL_ref(L, LUA_REGISTRYINDEX);
+    zn_getaddrinfo(S, node, svr, flags, lzn_onaddrinfo, data);
+    lbind_returnself(L);
+}
+
 static int Lstate_new(lua_State *L) {
     zn_State *S = zn_newstate();
     if (S == NULL)
@@ -619,6 +703,7 @@ static int Lstate_delete(lua_State *L) {
     zn_State *S = (zn_State*)lbind_test(L, 1, &lbT_State);
     if (S != NULL) {
         lbind_delete(L, 1);
+        zn_closeaddrinfo(S);
         zn_close(S);
     }
     return 0;
@@ -653,6 +738,7 @@ LUALIB_API int luaopen_znet(lua_State *L) {
         ENTRY(new),
         ENTRY(delete),
         ENTRY(run),
+        ENTRY(getaddrinfo),
 #undef  ENTRY
         { NULL, NULL }
     };
