@@ -102,7 +102,6 @@ typedef struct znA_AddrRequest {
     char        *service;
 } znA_AddrRequest;
 
-static int                       znA_initalize = 0;
 static znA_AddrRequest          *znA_current;
 static znQ_type(znA_AddrRequest) znA_queue;
 
@@ -170,8 +169,9 @@ static znA_AddrRequest *znA_fetchreq(void) {
 #include <Windows.h>
 #include <WinSock2.h>
 
-#define zn_AddrInfo struct addrinfo
+#define zn_AddrInfo ADDRINFOW
 
+static LONG             znA_initalize = 0;
 static CRITICAL_SECTION znA_lock;
 static HANDLE           znA_event;
 static HANDLE           znA_thread;
@@ -195,14 +195,29 @@ static const char *znA_ntop(int af, const void *src, char *dst, socklen_t size) 
             (struct sockaddr*)&ss, sizeof(ss), NULL, dst, &s) == 0 ? dst : NULL;
 }
 
-static void znA_processreq(znA_AddrRequest *req) {
-    zn_AddrInfo hints, *info; /* XXX use GetAddrInfoW on Windows */
+static WCHAR *znA_getwstring(const char *s) {
+    WCHAR *out;
+    int chars = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    if (chars == 0 || (out = (WCHAR*)malloc(chars * sizeof(WCHAR))) == NULL)
+        return NULL;
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, out, chars);
+    return out;
+}
+
+static int znA_processreq(znA_AddrRequest *req) {
+    zn_AddrInfo hints, *info;
+    WCHAR *node = NULL, *service = NULL;
+    if (req == NULL) return 0;
     znA_makehints(req, &hints);
-    req->ret = getaddrinfo(req->node, req->service, &hints, &info);
+    if (req->node)    node    = znA_getwstring(req->node);
+    if (req->service) service = znA_getwstring(req->service);
+    req->ret = GetAddrInfoW(node, service, &hints, &info);
+    free(node), free(service);
     if (req->ret == 0 && info) {
         znA_makepeers(req, info);
-        freeaddrinfo(info);
+        FreeAddrInfoW(info);
     }
+    return 1;
 }
 
 static DWORD WINAPI znA_worker(void *param) {
@@ -210,48 +225,66 @@ static DWORD WINAPI znA_worker(void *param) {
         znA_AddrRequest *req;
         if (WaitForSingleObject(znA_event, INFINITE) != WAIT_OBJECT_0)
             return 1;
-
-        EnterCriticalSection(&znA_lock);
-        req = znA_fetchreq();
-        LeaveCriticalSection(&znA_lock);
-
-        if (req != NULL) znA_processreq(req);
+        do {
+            EnterCriticalSection(&znA_lock);
+            req = znA_fetchreq();
+            LeaveCriticalSection(&znA_lock);
+        } while (znA_processreq(req));
     }
+    return 0;
+}
+
+static int znA_init(zn_State *S, znA_AddrRequest *req) {
+    znQ_init(&znA_queue);
+    InitializeCriticalSection(&znA_lock);
+    znA_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (znA_event != INVALID_HANDLE_VALUE) {
+        znA_thread = CreateThread(NULL, 0, znA_worker, NULL, 0, NULL);
+        if (znA_thread != INVALID_HANDLE_VALUE)
+            return 1;
+    }
+    if (znA_event != INVALID_HANDLE_VALUE)
+        CloseHandle(znA_event);
+    DeleteCriticalSection(&znA_lock);
+    zn_release(S);
+    free(req);
     return 0;
 }
 
 ZN_API int zn_getaddrinfo(zn_State *S, const char *node, const char *service, int flags, zn_AddrInfoHandler *h, void *ud) {
     znA_AddrRequest *req = znA_makereq(S, node, service, flags, h, ud);
+    LONG ret;
     if (req == NULL) return ZN_ERROR;
-    EnterCriticalSection(&znA_lock);
-    if (!znA_initalize) {
-        znA_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-        if (znA_event != INVALID_HANDLE_VALUE) {
-            znA_thread = CreateThread(NULL, 0, znA_worker, NULL, 0, NULL);
-            if (znA_thread != INVALID_HANDLE_VALUE)
-                znA_initalize = 1;
-            else
-                CloseHandle(znA_event);
-        }
-        znQ_init(&znA_queue);
+    while ((ret = InterlockedCompareExchange(&znA_initalize, -1, 0)) < 0)
+        Sleep(1);
+    if (ret == 0) {
+        ret = znA_init(S, req);
+        InterlockedExchange(&znA_initalize, ret);
+        if (!ret) return ZN_ERROR;
     }
+    EnterCriticalSection(&znA_lock);
     znQ_enqueue(&znA_queue, req);
-    SetEvent(&znA_event);
+    SetEvent(znA_event);
     LeaveCriticalSection(&znA_lock);
     return ZN_OK;
 }
 
 ZN_API void zn_closeaddrinfo(zn_State *S) {
-    EnterCriticalSection(&znA_lock);
-    if (!znA_initalize) return;
-    znA_clearreq(S);
-    if (S == NULL) {
-        TerminateThread(znA_thread, 0);
-        CloseHandle(znA_event);
-        CloseHandle(znA_thread);
-        znA_initalize = 0;
+    LONG ret;
+    while ((ret = InterlockedCompareExchange(&znA_initalize, -1, 1)) < 0)
+        Sleep(1);
+    if (ret) {
+        EnterCriticalSection(&znA_lock);
+        znA_clearreq(S);
+        LeaveCriticalSection(&znA_lock);
+        if (S == NULL) {
+            TerminateThread(znA_thread, 0);
+            CloseHandle(znA_event);
+            CloseHandle(znA_thread);
+            DeleteCriticalSection(&znA_lock);
+        }
     }
-    LeaveCriticalSection(&znA_lock);
+    InterlockedExchange(&znA_initalize, 0);
 }
 
 #else
@@ -264,6 +297,7 @@ ZN_API void zn_closeaddrinfo(zn_State *S) {
 #define znA_ntop    inet_ntop
 #define zn_AddrInfo struct addrinfo
 
+static int             znA_initalize = 0;
 static pthread_mutex_t znA_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  znA_event = PTHREAD_COND_INITIALIZER;
 static pthread_t       znA_thread;
@@ -325,7 +359,7 @@ static void znA_makepeers(znA_AddrRequest *req, void *info) {
     if (req->peers == NULL) return;
     for (p = (zn_AddrInfo*)info; p != NULL; p = p->ai_next) {
         zn_PeerInfo *peer = &req->peers[req->count];
-        sa_family_t family = p->ai_family;
+        int family = p->ai_family;
         if (family == AF_INET) {
             struct sockaddr_in *addr = (struct sockaddr_in*)p->ai_addr;
             znA_ntop(family, &addr->sin_addr, peer->addr, ZN_MAX_ADDRLEN);
