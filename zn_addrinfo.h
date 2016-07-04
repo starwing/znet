@@ -168,6 +168,7 @@ static znA_AddrRequest *znA_fetchreq(void) {
 #endif /* WIN32_LEAN_AND_MEAN */
 #include <Windows.h>
 #include <WinSock2.h>
+#include <process.h>
 
 #define zn_AddrInfo ADDRINFOW
 
@@ -220,7 +221,7 @@ static int znA_processreq(znA_AddrRequest *req) {
     return 1;
 }
 
-static DWORD WINAPI znA_worker(void *param) {
+static unsigned __stdcall znA_worker(void *param) {
     for (;;) {
         znA_AddrRequest *req;
         if (WaitForSingleObject(znA_event, INFINITE) != WAIT_OBJECT_0)
@@ -238,13 +239,12 @@ static int znA_init(zn_State *S, znA_AddrRequest *req) {
     znQ_init(&znA_queue);
     InitializeCriticalSection(&znA_lock);
     znA_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (znA_event != INVALID_HANDLE_VALUE) {
-        znA_thread = CreateThread(NULL, 0, znA_worker, NULL, 0, NULL);
-        if (znA_thread != INVALID_HANDLE_VALUE)
+    if (znA_event != NULL) {
+        znA_thread = (HANDLE)_beginthreadex(NULL, 0, znA_worker, NULL, 0, NULL);
+        if (znA_thread != NULL)
             return 1;
     }
-    if (znA_event != INVALID_HANDLE_VALUE)
-        CloseHandle(znA_event);
+    if (znA_event != NULL) CloseHandle(znA_event);
     DeleteCriticalSection(&znA_lock);
     zn_release(S);
     free(req);
@@ -278,7 +278,7 @@ ZN_API void zn_closeaddrinfo(zn_State *S) {
         znA_clearreq(S);
         LeaveCriticalSection(&znA_lock);
         if (S == NULL) {
-            TerminateThread(znA_thread, 0);
+            _endthreadex((uintptr_t)znA_thread);
             CloseHandle(znA_event);
             CloseHandle(znA_thread);
             DeleteCriticalSection(&znA_lock);

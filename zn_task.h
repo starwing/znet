@@ -182,23 +182,24 @@ ZN_API zn_TaskPool *zn_newtaskpool(int nthread) {
     if (nthread <= 0 || nthread > ZN_MAX_THREAD_COUNT)
         nthread = ZN_MAX_THREAD_COUNT;
     ws->event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (ws->event == NULL) goto err;
-    InitializeCriticalSection(&ws->lock);
-    ws->status = ZN_WS_NORMAL;
-    ws->nthread = nthread;
-    znQ_init(&ws->tasks);
-    znQ_init(&ws->freed_tasks);
-    for (i = 0; i < nthread; ++i) {
-        ws->threads[i] = CreateThread(NULL, 0, &zn_tasker, (LPVOID)ws, 0, NULL);
-        if (ws->threads[i] == NULL) {
-            if (i == 0) goto err;
-            ws->nthread = i;
-            break;
+    if (ws->event != NULL) {
+        InitializeCriticalSection(&ws->lock);
+        ws->status = ZN_WS_NORMAL;
+        ws->nthread = nthread;
+        znQ_init(&ws->tasks);
+        znQ_init(&ws->freed_tasks);
+        for (i = 0; i < nthread; ++i) {
+            ws->threads[i] = (HANDLE)_beginthreadex(NULL, 0,
+                    &zn_tasker, (LPVOID)ws, 0, NULL);
+            if (ws->threads[i] == NULL) {
+                ws->nthread = i;
+                break;
+            }
         }
+        if (ws->nthread != 0) return ws;
     }
-    return ws;
-err:
-    if (ws->event != NULL) CloseHandle(ws->event);
+    if (ws->event != NULL)
+        CloseHandle(ws->event);
     DeleteCriticalSection(&ws->lock);
     free(ws);
     return NULL;
@@ -219,7 +220,7 @@ ZN_API void zn_deltaskpool(zn_TaskPool *ws) {
     }
     else {
         for (i = 0; i < ws->nthread; ++i) {
-            TerminateThread(ws->threads[i], 0);
+            _endthreadex(ws->threads[i]);
             CloseHandle(ws->threads[i]);
         }
     }

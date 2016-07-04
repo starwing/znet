@@ -3,7 +3,7 @@
 #define LBIND_DEFAULT_FLAG (LBIND_TRACK|LBIND_ACCESSOR)
 #include "lbind.h"
 
-#define ZN_STATIC_API
+#define ZN_IMPLEMENTATION
 #include "znet.h"
 #include "zn_buffer.h"
 #include "zn_addrinfo.h"
@@ -147,6 +147,7 @@ static void open_timer(lua_State *L) {
 
 typedef struct lzn_Tcp {
     zn_Tcp *tcp;
+    zn_State *S;
     lua_State *L;
     int onconnect_ref;
     int onheader_ref;
@@ -263,9 +264,10 @@ static void lzn_onrecv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     if (err != ZN_OK) lzn_tcperror(obj->L, obj, err);
 }
 
-static lzn_Tcp *lzn_newtcp(lua_State *L, zn_Tcp *tcp) {
+static lzn_Tcp *lzn_newtcp(lua_State *L, zn_State *S, zn_Tcp *tcp) {
     lzn_Tcp *obj = (lzn_Tcp*)lbind_new(L, sizeof(lzn_Tcp), &lbT_Tcp);
     obj->tcp = tcp;
+    obj->S = S;
     obj->L = L;
     obj->onconnect_ref = LUA_NOREF;
     obj->onheader_ref = LUA_NOREF;
@@ -297,7 +299,7 @@ static int Ltcp_connect(lua_State *L) {
     luaL_argcheck(L, port > 0, 3, "port out of range");
     lzn_ref(L, 4, &obj->onconnect_ref);
     lzn_ref(L, 1, &obj->ref);
-    ret = zn_getaddrinfo(obj->tcp->S, addr, port, ZN_TCP, lzn_ongetaddr, obj);
+    ret = zn_getaddrinfo(obj->S, addr, port, ZN_TCP, lzn_ongetaddr, obj);
     return_result(L, ret);
 }
 
@@ -307,7 +309,7 @@ static int Ltcp_new(lua_State *L) {
     zn_Tcp *tcp;
     if ((tcp = zn_newtcp(S)) == NULL)
         return 0;
-    lzn_newtcp(L, tcp);
+    lzn_newtcp(L, S, tcp);
     if (top != 1) {
         lua_replace(L, 1);
         return Ltcp_connect(L);
@@ -415,6 +417,7 @@ static void open_tcp(lua_State *L) {
 
 typedef struct lzn_Accept {
     zn_Accept *accept;
+    zn_State *S;
     lua_State *L;
     int onaccept_ref;
     int ref;
@@ -426,7 +429,7 @@ static void lzn_onaccept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp)
     if (err != ZN_OK) return;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onaccept_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
-    lzn_newtcp(L, tcp);
+    lzn_newtcp(L, obj->S, tcp);
     if (lbind_pcall(L, 2, 1) != LUA_OK) {
         fprintf(stderr, "%s\n", lua_tostring(L, -1));
         lzn_unref(L, &obj->ref);
@@ -448,6 +451,7 @@ static int Laccept_new(lua_State *L) {
     lzn_Accept *obj;
     luaL_checktype(L, 2, LUA_TFUNCTION);
     obj = (lzn_Accept*)lbind_new(L, sizeof(lzn_Accept), &lbT_Accept);
+    obj->S = S;
     obj->L = L;
     obj->accept = zn_newaccept(S);
     obj->onaccept_ref = LUA_NOREF;
