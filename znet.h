@@ -1002,7 +1002,7 @@ typedef enum zn_Status {
     ZN_STATUS_CLOSING_IN_RUN = 2  /* prepare close in run() */
 } zn_Status;
 
-typedef struct zn_State {
+struct zn_State {
     zn_MemPool posts;
     zn_MemPool accepts;
     zn_MemPool tcps;
@@ -1038,7 +1038,7 @@ typedef struct zn_State {
     fd_set readfds, writefds, exceptfds;
     zn_SocketInfo *infos[FD_SETSIZE];
 #endif
-} zn_State;
+};
 
 # define ZN_GETOBJECT(S, type, name)          type* name; do { \
     if (S->status > ZN_STATUS_READY)                           \
