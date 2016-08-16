@@ -166,8 +166,9 @@ ZN_API int zn_recv (zn_Tcp *tcp,       char *buff, unsigned len,
 
 /* znet udp socket routines */
 
-ZN_API zn_Udp* zn_newudp (zn_State *S, const char *addr, unsigned port);
-ZN_API void    zn_deludp (zn_Udp *udp);
+ZN_API zn_Udp* zn_newudp   (zn_State *S, const char *addr, unsigned port);
+ZN_API int     zn_closeudp (zn_Udp *udp);
+ZN_API void    zn_deludp   (zn_Udp *udp);
 
 ZN_API int zn_sendto   (zn_Udp *udp, const char *buff, unsigned len,
                         const char *addr, unsigned port);
@@ -194,6 +195,8 @@ ZN_NS_END
 #if !defined(_WIN32)
 # define zn_have_info /* all objects have zn_SocketInfo field */
 #endif
+
+ZN_NS_BEGIN
 
 #define zn_use_mempool
 #define zn_use_timer
@@ -223,6 +226,8 @@ ZN_NS_END
 
 #define zn_use_api
 #include "znet.h"
+
+ZN_NS_END
 
 #endif /* ZN_IMPLEMENTATION */
 
