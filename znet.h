@@ -705,7 +705,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
         return NULL;
     }
     udp->socket = ZN_INVALID_SOCKET;
-    if (!znP_initudp(udp, &local_addr)) {
+    if (znP_initudp(udp, &local_addr) != ZN_OK) {
         ZN_PUTOBJECT(udp);
         return NULL;
     }
@@ -2646,7 +2646,7 @@ static void zn_onaccept(zn_Accept *a, int filter, int flags) {
     }
 }
 
-static void zn_onrecvfrom(zn_Udp *udp, int flags, int filter) {
+static void zn_onrecvfrom(zn_Udp *udp, int filter, int flags) {
     zn_DataBuffer buff = udp->recv_buffer;
     zn_RecvFromHandler *cb = udp->recv_handler;
     if (cb == NULL) return;

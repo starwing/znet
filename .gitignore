@@ -1,7 +1,9 @@
+deprecated
+.vscode
 *.exe
 *.dll
 *.so
-deprecated
+*.dSYM
 *.exp
 *.lib
 *.obj
