@@ -630,12 +630,13 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
 
 ZN_API void zn_deltcp(zn_Tcp *tcp) {
     zn_closetcp(tcp);
-    assert(tcp->connect_handler == NULL);
     /* if a request is on-the-go, then the IOCP will give callback, we
      * delete object on that callback. notice if you do not submit a
      * request, IOCP will not queued the callback, so delete is safe.
      * same as zn_delaccept() and zn_deludp() */
-    if (tcp->recv_handler == NULL && tcp->send_handler == NULL)
+    if (tcp->connect_handler == NULL
+            && tcp->recv_handler == NULL
+            && tcp->send_handler == NULL)
         ZN_PUTOBJECT(tcp);
 }
 
