@@ -222,13 +222,13 @@ void on_server_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
      * the times we done the send work.  */
 
     if (ud == NULL) { /* the first time? */
-        printf("[%p] first send to client is done\n", tcp);
+        printf("[%p] first send to client done\n", tcp);
         zn_send(tcp, send_string("this is our second message."),
                 on_server_sent, (void*)1);
     }
     else { /* not the first time? */
         /* do nothing. but a log. */
-        printf("[%p] second send to client is done\n", tcp);
+        printf("[%p] second send to client done\n", tcp);
     }
 }
 
@@ -293,11 +293,11 @@ void on_connection(void *ud, zn_Tcp *tcp, unsigned err) {
     printf("[%p] client%d connected to server now!\n", tcp, data->idx);
 
     /* now we connect to the server, send something to server.
-     * when send is done, on_send() is called.  */
+     * when send done, on_send() is called.  */
     /*zn_send(tcp, send_string("Hello world\n"), on_send, NULL);*/
 
     /* but, we want not just send one message, but five messages to
-     * server. how we know which message we sent is done? a idea is
+     * server. how we know which message we sent done? a idea is
      * setting many callback functions, but the better way is use a
      * context object to hold memories about how many message we sent.
      * */
@@ -374,5 +374,6 @@ void on_udp_recv(void *ud, zn_Udp *udp, unsigned err, unsigned count,
 }
 
 /* cc: flags+='-ggdb -O0' 
- * win32cc: libs+='-lws2_32' */
+ * win32cc: libs+='-lws2_32'
+ * linuxcc: libs+='-pthread -lrt' */
 

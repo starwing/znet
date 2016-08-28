@@ -882,6 +882,12 @@ ZN_API zn_Time zn_time(void) {
 
 #define ZN_INVALID_SOCKET (-1)
 
+#ifdef MSG_NOSIGNAL
+# define ZN_NOSIGNAL MSG_NOSIGNAL
+#else
+# define ZN_NOSIGNAL 0
+#endif
+
 #define znU_pton inet_pton
 #define znU_ntop inet_ntop
 
@@ -1860,14 +1866,10 @@ static void zn_onsend(zn_Tcp *tcp, int err) {
         return;
     }
 
-#ifdef MSG_NOSIGNAL 
-    if ((bytes = send(tcp->socket, buff.buf, buff.len, MSG_NOSIGNAL)) >= 0)
-#else
-    if ((bytes = send(tcp->socket, buff.buf, buff.len, 0)) >= 0)
-#endif /* MSG_NOSIGNAL */
+    if ((bytes = send(tcp->socket, buff.buf, buff.len, ZN_NOSIGNAL)) >= 0)
         cb(tcp->send_ud, tcp, ZN_OK, bytes);
     else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-        int err = znU_error(err);
+        int err = znU_error(errno);
         zn_closetcp(tcp);
         cb(tcp->send_ud, tcp, err, 0);
     }
@@ -1897,7 +1899,7 @@ static void zn_onrecv(zn_Tcp *tcp, int err) {
         cb(tcp->recv_ud, tcp, ZN_ECLOSED, bytes);
     }
     else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-        int err = znU_error(err);
+        int err = znU_error(errno);
         zn_closetcp(tcp);
         cb(tcp->recv_ud, tcp, err, 0);
     }
@@ -2179,8 +2181,8 @@ static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, zn_SockAddr *remote_addr) {
         return NULL;
     }
 
-    znU_set_nodelay(tcp->socket);
     znU_set_nosigpipe(tcp->socket);
+    znU_set_nodelay(tcp->socket);
     znU_setinfo(remote_addr, &tcp->peer_info);
     return tcp;
 }
@@ -2236,7 +2238,7 @@ static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
 static int znP_send(zn_Tcp *tcp) {
     if (tcp->can_write) {
         int bytes = send(tcp->socket,
-                tcp->send_buffer.buf, tcp->send_buffer.len, 0);
+                tcp->send_buffer.buf, tcp->send_buffer.len, ZN_NOSIGNAL);
         if (bytes >= 0) {
             tcp->send_buffer.len = bytes;
             znR_add(tcp->S, ZN_OK, &tcp->send_result);
@@ -2418,6 +2420,7 @@ static void zn_onconnect(zn_Tcp *tcp, int eventmask) {
 
     if ((eventmask & EPOLLOUT) != 0) {
         tcp->can_read = tcp->can_write = 1;
+        znU_set_nosigpipe(tcp->socket);
         znU_set_nodelay(tcp->socket);
         cb(tcp->connect_ud, tcp, ZN_OK);
     }
@@ -2613,6 +2616,7 @@ static void zn_onconnect(zn_Tcp *tcp, int filter, int flags) {
 
     if (filter == EVFILT_WRITE) {
         tcp->can_read = tcp->can_write = 1;
+        znU_set_nosigpipe(tcp->socket);
         znU_set_nodelay(tcp->socket);
         cb(tcp->connect_ud, tcp, ZN_OK);
     }
