@@ -55,7 +55,7 @@ typedef unsigned zn_Time;
 #define ZN_MAX_PAGESIZE  4096   
 
 #define ZN_TIMER_NOINDEX (~(unsigned)0)
-#define ZN_FOREVER       (~(zn_Time)0)
+#define ZN_FOREVER       ((~(zn_Time)0)-100)
 #define ZN_MAX_SIZET     ((~(size_t)0)-100)
 
 
@@ -929,6 +929,17 @@ static int znU_set_nosigpipe(int socket) {
 #endif /* SO_NOSIGPIPE */
 }
 
+static int znU_error(int syserr) {
+    switch (syserr) {
+    case EPIPE:
+    case ECONNABORTED:
+    case ECONNREFUSED:
+    case ECONNRESET:
+        return ZN_EHANGUP;
+    }
+    return ZN_ERROR;
+}
+
 ZN_API zn_Time zn_time(void) {
 #ifdef __MACH__
     static mach_timebase_info_data_t time_info;
@@ -1637,7 +1648,7 @@ static void znP_dispatch(zn_State *S, BOOL bRet, LPOVERLAPPED_ENTRY pEntry) {
 
 static void znP_poll(zn_State *S, zn_Time timeout) {
     BOOL bRet;
-    DWORD ms = timeout > INFINITE ? INFINITE : timeout;
+    DWORD ms = timeout >= ZN_FOREVER ? INFINITE : timeout;
     if (pGetQueuedCompletionStatusEx) {
         ULONG i, count;
         bRet = pGetQueuedCompletionStatusEx(S->iocp,
@@ -1760,8 +1771,10 @@ static int znP_recv(zn_Tcp *tcp)
 
 static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, zn_SockAddr *remote_addr) {
     zn_Tcp *tcp;
-    if (fd >= FD_SETSIZE)
+    if (fd >= FD_SETSIZE) {
+        close(fd);
         return NULL;
+    }
     znU_set_nosigpipe(fd);
     znU_set_nonblock(fd);
     znU_set_nodelay(fd);
@@ -1854,8 +1867,9 @@ static void zn_onsend(zn_Tcp *tcp, int err) {
 #endif /* MSG_NOSIGNAL */
         cb(tcp->send_ud, tcp, ZN_OK, bytes);
     else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        int err = znU_error(err);
         zn_closetcp(tcp);
-        cb(tcp->send_ud, tcp, ZN_ERROR, 0);
+        cb(tcp->send_ud, tcp, err, 0);
     }
 }
 
@@ -1876,11 +1890,16 @@ static void zn_onrecv(zn_Tcp *tcp, int err) {
         return;
     }
 
-    if ((bytes = recv(tcp->socket, buff.buf, buff.len, 0)) >= 0)
+    if ((bytes = recv(tcp->socket, buff.buf, buff.len, 0)) > 0)
         cb(tcp->recv_ud, tcp, ZN_OK, bytes);
-    else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+    else if (bytes == 0) {
         zn_closetcp(tcp);
-        cb(tcp->recv_ud, tcp, ZN_ERROR, 0);
+        cb(tcp->recv_ud, tcp, ZN_ECLOSED, bytes);
+    }
+    else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        int err = znU_error(err);
+        zn_closetcp(tcp);
+        cb(tcp->recv_ud, tcp, err, 0);
     }
 }
 
@@ -1938,8 +1957,9 @@ static void zn_onaccept(zn_Accept *a, int err) {
             close(ret);
         else if (ret >= 0) {
             zn_Tcp *tcp = zn_tcpfromfd(a->S, ret, &remote_addr);
+            if (tcp == NULL) return;
             if (a->S->nfds < ret) a->S->nfds = ret;
-            if (tcp != NULL) cb(a->accept_ud, a, ZN_OK, tcp);
+            cb(a->accept_ud, a, ZN_OK, tcp);
         }
         else if (errno != EAGAIN && errno != EWOULDBLOCK)
             break;
@@ -2008,7 +2028,7 @@ static void zn_onrecvfrom(zn_Udp *udp, int err) {
             cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
         }
         else if (errno != EAGAIN && errno != EWOULDBLOCK)
-            cb(udp->recv_ud, udp, ZN_ERROR, 0, NULL, 0);
+            cb(udp->recv_ud, udp, znU_error(errno), 0, NULL, 0);
     }
 }
 
@@ -2054,12 +2074,13 @@ static void znP_poll(zn_State *S, zn_Time timeout) {
     fd_set readfds = S->readfds;
     fd_set writefds = S->writefds;
     fd_set exceptfds = S->exceptfds;
-    struct timeval tv = { 0, 0 };
-    if (timeout != 0) {
+    struct timeval tv, *ptv = NULL;
+    if (timeout < ZN_FOREVER) {
         tv.tv_sec = timeout/1000;
         tv.tv_usec = timeout%1000*1000;
+        ptv = &tv;
     }
-    ret = select(S->nfds+1, &readfds, &writefds, &exceptfds, &tv);
+    ret = select(S->nfds+1, &readfds, &writefds, &exceptfds, ptv);
     if (ret < 0 && errno != EINTR) /* error out */
         return;
     for (i = 0; i <= S->nfds; ++i) {
@@ -2214,13 +2235,14 @@ static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
 
 static int znP_send(zn_Tcp *tcp) {
     if (tcp->can_write) {
-        int bytes = send(tcp->socket, tcp->send_buffer.buf, tcp->send_buffer.len, 0);
+        int bytes = send(tcp->socket,
+                tcp->send_buffer.buf, tcp->send_buffer.len, 0);
         if (bytes >= 0) {
             tcp->send_buffer.len = bytes;
             znR_add(tcp->S, ZN_OK, &tcp->send_result);
         }
         else if (bytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-            znR_add(tcp->S, ZN_ERROR, &tcp->send_result);
+            znR_add(tcp->S, znU_error(errno), &tcp->send_result);
         else
             tcp->can_write = 0;
     }
@@ -2229,7 +2251,8 @@ static int znP_send(zn_Tcp *tcp) {
 
 static int znP_recv(zn_Tcp *tcp) {
     if (tcp->can_read) {
-        int bytes = recv(tcp->socket, tcp->recv_buffer.buf, tcp->recv_buffer.len, 0);
+        int bytes = recv(tcp->socket,
+                tcp->recv_buffer.buf, tcp->recv_buffer.len, 0);
         if (bytes > 0) {
             tcp->recv_buffer.len = bytes;
             znR_add(tcp->S, ZN_OK, &tcp->recv_result);
@@ -2237,7 +2260,7 @@ static int znP_recv(zn_Tcp *tcp) {
         else if (bytes == 0)
             znR_add(tcp->S, ZN_ECLOSED, &tcp->recv_result);
         else if (errno != EAGAIN && errno != EWOULDBLOCK)
-            znR_add(tcp->S, ZN_ERROR, &tcp->recv_result);
+            znR_add(tcp->S, znU_error(errno), &tcp->recv_result);
         else
             tcp->can_read = 0;
     }
@@ -2261,7 +2284,7 @@ static void zn_onresult(zn_Result *result) {
         }
         else if (result->err == ZN_OK)
             cb(tcp->send_ud, tcp, ZN_OK, buff.len);
-        else if (tcp->recv_handler == NULL) {
+        else {
             zn_closetcp(tcp);
             cb(tcp->send_ud, tcp, result->err, 0);
         }
@@ -2280,7 +2303,7 @@ static void zn_onresult(zn_Result *result) {
         }
         else if (result->err == ZN_OK)
             cb(tcp->recv_ud, tcp, ZN_OK, buff.len);
-        else if (tcp->send_handler == NULL) {
+        else {
             zn_closetcp(tcp);
             cb(tcp->recv_ud, tcp, result->err, 0);
         }
@@ -2446,8 +2469,9 @@ static void zn_onaccept(zn_Accept *a, int eventmask) {
             if (tcp != NULL) cb(a->accept_ud, a, ZN_OK, tcp);
         }
         else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            int err = znU_error(errno);
             zn_closeaccept(a);
-            cb(a->accept_ud, a, ZN_ERROR, NULL);
+            cb(a->accept_ud, a, err, NULL);
         }
     }
 }
@@ -2479,7 +2503,7 @@ static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
             cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
         }
         else if (errno != EAGAIN && errno != EWOULDBLOCK)
-            cb(udp->recv_ud, udp, ZN_ERROR, 0, NULL, 0);
+            cb(udp->recv_ud, udp, znU_error(errno), 0, NULL, 0);
     }
 }
 
@@ -2513,7 +2537,7 @@ static void znP_dispatch(zn_State *S, struct epoll_event *evt) {
 
 static void znP_poll(zn_State *S, zn_Time timeout) {
     int i, ret;
-    int ms = timeout > INT_MAX ? -1 : (int)timeout;
+    int ms = timeout >= ZN_FOREVER ? -1 : (int)timeout;
     ret = epoll_wait(S->epoll, S->events, ZN_MAX_EVENTS, ms);
     if (ret < 0 && errno != EINTR) /* error out */
         return;
@@ -2640,8 +2664,9 @@ static void zn_onaccept(zn_Accept *a, int filter, int flags) {
             if (tcp != NULL) cb(a->accept_ud, a, ZN_OK, tcp);
         }
         else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            int err = znU_error(errno);
             zn_closeaccept(a);
-            cb(a->accept_ud, a, ZN_ERROR, NULL);
+            cb(a->accept_ud, a, err, NULL);
         }
     }
 }
@@ -2673,7 +2698,7 @@ static void zn_onrecvfrom(zn_Udp *udp, int filter, int flags) {
             cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
         }
         else if (errno != EAGAIN && errno != EWOULDBLOCK)
-            cb(udp->recv_ud, udp, ZN_ERROR, 0, NULL, 0);
+            cb(udp->recv_ud, udp, znU_error(errno), 0, NULL, 0);
     }
 }
 
@@ -2707,12 +2732,13 @@ static void znP_dispatch(zn_State *S, struct kevent *evt) {
 
 static void znP_poll(zn_State *S, zn_Time timeout) {
     int i, ret;
-    struct timespec ms = { 0, 0 };
-    if (timeout != 0) {
+    struct timespec ms, *pms = NULL;
+    if (timeout < ZN_FOREVER) {
         ms.tv_sec = timeout / 1000;
         ms.tv_nsec = (timeout % 1000) * 1000000;
+        pms = &ms;
     }
-    ret = kevent(S->kqueue, NULL, 0, S->events, ZN_MAX_EVENTS, &ms);
+    ret = kevent(S->kqueue, NULL, 0, S->events, ZN_MAX_EVENTS, pms);
     if (ret < 0) /* error out */
         return;
     for (i = 0; i < ret; ++i)

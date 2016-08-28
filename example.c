@@ -1,6 +1,11 @@
 
 /* tell znet include all implement details into here */ 
 #define ZN_IMPLEMENTATION
+
+/* if you want use select backend on *nix or Mac, define this: */
+/*#define ZN_USE_SELECT*/
+
+/* include znet library: only need a header file! */
 #include "znet.h"
 
 
@@ -64,6 +69,9 @@ int main(void) {
     zn_Udp    *udpserver; /* znet udp service handler    */
     MyData    *data;      /* our user data pointer       */
 
+    /* we can print out which engine znet uses: */
+    printf("znet example: use %s engine.\n", zn_engine());
+
     /* first, we initialize znet global environment. we needn't do
      * this on *nix or Mac, because on Windows we should initialize
      * and free the WinSocks2 global service, the
@@ -99,7 +107,9 @@ int main(void) {
 
     /* make a timer to close server after 3 seconds. */
     timer = zn_newtimer(S, on_timer, accept);
+#if !defined(MANUAL_CLOSE) /* for debug */
     zn_starttimer(timer, 3000);
+#endif
 
     /* now connect to the server we created */
     data = (MyData*)malloc(sizeof(MyData));
@@ -119,10 +129,9 @@ int main(void) {
     udpclient = zn_newudp(S, "127.0.0.1", 0);
 
     /* now we try to recv packages from udp client. we must prepare a
-     *     buffer for receive messages, and the buffer should
-     *     available in the all receiving durations. notice that we
-     *     send MyData pointer as the context user pointer to read
-     *     messages from buffer. */
+     * buffer for receive messages, and the buffer should available in
+     * the all receiving durations. notice that we send MyData pointer
+     * as the context user pointer to read messages from buffer. */
     data = (MyData*)malloc(sizeof(MyData));
     data->count = 0; /* we receive this count times */
     zn_recvfrom(udpserver, data->buffer, MYDATA_BUFLEN,
@@ -235,8 +244,8 @@ void on_server_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
      * maybe it means a connection is over, so we could delete it
      * safely. */
     if (err != ZN_OK) {
-        fprintf(stderr, "error when receiving from client: %s\n",
-                zn_strerror(err));
+        fprintf(stderr, "[%p] error when receiving from client: %s\n",
+                tcp, zn_strerror(err));
         /* after error, tcp object will be closed. but you still could
          * use it to do other things, e.g. to connect to other server.
          * but we don't wanna do that now, so put it back to znet.
@@ -251,7 +260,9 @@ void on_server_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
             " %.*s (%d bytes)\n", tcp, (int)count, data->buffer, (int)count);
 
     /* make another receive process... */
-    if (zn_recv(tcp, data->buffer, MYDATA_BUFLEN, on_server_recv, data) != ZN_OK) {
+    err = zn_recv(tcp, data->buffer, MYDATA_BUFLEN, on_server_recv, data);
+    if (err != ZN_OK) {
+        printf("[%p] prepare to receive error: %s", tcp, zn_strerror(err));
         zn_deltcp(tcp);
         free(data);
     }
@@ -285,11 +296,11 @@ void on_connection(void *ud, zn_Tcp *tcp, unsigned err) {
      * when send is done, on_send() is called.  */
     /*zn_send(tcp, send_string("Hello world\n"), on_send, NULL);*/
 
-    /* buf we want not just send one message, but five messages to
-     * server.  but, how we know which message we sent is done? a
-     * method is to set many callback functions, but the better way is
-     * use a context object to hold memories about how many message we
-     * sent. */
+    /* but, we want not just send one message, but five messages to
+     * server. how we know which message we sent is done? a idea is
+     * setting many callback functions, but the better way is use a
+     * context object to hold memories about how many message we sent.
+     * */
     data->count = 0;
     zn_send(tcp, send_string("this is the first message from client!"),
             on_client_sent, data);
@@ -312,6 +323,7 @@ void on_client_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     }
 
     if (++data->count > 5) {
+        printf("[%p] client%d ok, closed!\n", tcp, data->idx);
         zn_deltcp(tcp); /* and we close connection. */
         free(data);
         return;
