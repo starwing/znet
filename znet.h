@@ -829,6 +829,16 @@ static int znU_set_reuseaddr(SOCKET socket) {
             (const char*)&bReuseAddr, sizeof(BOOL)) == 0;
 }
 
+static int znU_error(int syserr) {
+    switch (syserr) {
+    case WSAECONNABORTED:
+    case WSAECONNREFUSED:
+    case WSAECONNRESET:
+        return ZN_EHANGUP;
+    }
+    return ZN_ERROR;
+}
+
 ZN_API zn_Time zn_time(void) {
     static LARGE_INTEGER counterFreq;
     static LARGE_INTEGER startTime;
@@ -1341,23 +1351,25 @@ static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
 
 static int znP_send(zn_Tcp *tcp) {
     DWORD dwTemp1=0;
+    int err;
     if (WSASend(tcp->socket, &tcp->send_buffer, 1,
                 &dwTemp1, 0, &tcp->send_request.overlapped, NULL) == 0
-            || WSAGetLastError() == WSA_IO_PENDING)
+            || (err = WSAGetLastError()) == WSA_IO_PENDING)
         return ZN_OK;
     zn_closetcp(tcp);
-    return ZN_ERROR;
+    return znU_error(err);
 }
 
 static int znP_recv(zn_Tcp *tcp) {
     DWORD dwRecv = 0;
     DWORD dwFlag = 0;
+    int err;
     if (WSARecv(tcp->socket, &tcp->recv_buffer, 1,
                 &dwRecv, &dwFlag, &tcp->recv_request.overlapped, NULL) == 0
-            || WSAGetLastError() == WSA_IO_PENDING)
+            || (err = WSAGetLastError()) == WSA_IO_PENDING)
         return ZN_OK;
     zn_closetcp(tcp);
-    return ZN_ERROR;
+    return znU_error(err);
 }
 
 static void zn_onconnect(zn_Tcp *tcp, BOOL bSuccess) {

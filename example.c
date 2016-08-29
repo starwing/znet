@@ -262,7 +262,7 @@ void on_server_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     /* make another receive process... */
     err = zn_recv(tcp, data->buffer, MYDATA_BUFLEN, on_server_recv, data);
     if (err != ZN_OK) {
-        printf("[%p] prepare to receive error: %s", tcp, zn_strerror(err));
+        printf("[%p] prepare to receive error: %s\n", tcp, zn_strerror(err));
         zn_deltcp(tcp);
         free(data);
     }
