@@ -61,7 +61,7 @@ typedef unsigned zn_Time;
 
 ZN_NS_BEGIN
 
-#define ZN_ERRORS(X)                                           \
+#define ZN_ERRORS(X)                                      \
     X(OK,       "No error")                               \
     X(ERROR,    "Operation failed")                       \
     X(ECLOSE,   "socket closed")                          \
@@ -406,7 +406,7 @@ static int znT_resizeheap(zn_TimerState *ts, size_t size) {
     heap = (zn_Timer**)realloc(ts->heap, realsize*sizeof(zn_Timer*));
     if (heap == NULL) return 0;
     ts->heap = heap;
-    ts->heap_size = realsize;
+    ts->heap_size = (unsigned)realsize;
     return 1;
 }
 
