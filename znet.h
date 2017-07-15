@@ -52,7 +52,7 @@ typedef unsigned zn_Time;
 #define ZN_MAX_ADDRLEN   50
 #define ZN_MAX_TIMERPOOL 512
 #define ZN_MAX_TIMERHEAP 512
-#define ZN_MAX_PAGESIZE  4096   
+#define ZN_MAX_PAGESIZE  4096
 
 #define ZN_TIMER_NOINDEX (~(unsigned)0)
 #define ZN_FOREVER       ((~(zn_Time)0)-100)
@@ -106,7 +106,7 @@ typedef void zn_RecvFromHandler (void *ud, zn_Udp *udp, unsigned err, unsigned c
 
 /* znet state routines */
 
-#define ZN_RUN_ONCE  0 
+#define ZN_RUN_ONCE  0
 #define ZN_RUN_CHECK 1
 #define ZN_RUN_LOOP  2
 
@@ -1419,7 +1419,7 @@ static void zn_onrecv(zn_Tcp *tcp, BOOL bSuccess, DWORD dwBytes) {
         zn_closetcp(tcp);
         cb(tcp->recv_ud, tcp, ZN_EHANGUP, dwBytes);
     }
-    else 
+    else
         cb(tcp->recv_ud, tcp, ZN_OK, dwBytes);
 }
 
@@ -1797,6 +1797,10 @@ static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, zn_SockAddr *remote_addr) {
     znU_set_nonblock(fd);
     znU_set_nodelay(fd);
     tcp = zn_newtcp(S);
+    if (tcp == NULL) {
+        close(fd);
+        return NULL;
+    }
     tcp->socket = fd;
     znU_setinfo(remote_addr, &tcp->peer_info);
     return tcp;
@@ -2184,6 +2188,11 @@ struct zn_Udp {
 
 static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, zn_SockAddr *remote_addr) {
     zn_Tcp *tcp = zn_newtcp(S);
+    if (tcp == NULL) {
+        close(fd);
+        return NULL;
+    }
+
     tcp->socket = fd;
 
     znU_set_nonblock(tcp->socket);
