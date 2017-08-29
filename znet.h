@@ -1123,6 +1123,10 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     int ret;
     pthread_spin_lock(&S->post_lock);
     post = (zn_Post*)znM_getobject(&S->posts);
+    if (post == NULL) {
+        pthread_spin_unlock(&S->post_lock);
+        return ZN_ERROR;
+    }
     post->S = S;
     post->handler = cb;
     post->ud = ud;
@@ -1618,6 +1622,9 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     EnterCriticalSection(&S->lock);
     post = (zn_Post*)znM_getobject(&S->posts);
     LeaveCriticalSection(&S->lock);
+    if (post == NULL) {
+        return ZN_ERROR;
+    }
     post->S = S;
     post->handler = cb;
     post->ud = ud;
