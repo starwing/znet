@@ -881,13 +881,9 @@ ZN_API zn_Time zn_time(void) {
 # include <sys/event.h>
 #endif
 
-#ifdef __MACH__ /* apple don't have spinlock :( */
+#ifdef __MACH__
 #  include <mach/mach.h>
 #  include <mach/mach_time.h>
-#  define pthread_spinlock_t  pthread_mutex_t
-#  define pthread_spin_init   pthread_mutex_init
-#  define pthread_spin_lock   pthread_mutex_lock
-#  define pthread_spin_unlock pthread_mutex_unlock
 #endif /* __MACH__ */
 
 #define ZN_INVALID_SOCKET (-1)
@@ -1047,7 +1043,7 @@ struct zn_State {
     zn_Status  status;
     unsigned   waitings;
 #ifdef zn_use_postqueue
-    pthread_spinlock_t post_lock;
+    pthread_mutex_t post_lock;
     znQ_type(struct zn_Post) post_queue;
 #endif
 #ifdef zn_use_resultqueue
@@ -1103,16 +1099,16 @@ typedef struct zn_Post {
 } zn_Post;
 
 static void znT_init(zn_State *S) {
-    pthread_spin_init(&S->post_lock, 0);
+    pthread_mutex_init(&S->post_lock, 0);
     znQ_init(&S->post_queue);
 }
 
 static void znT_process(zn_State *S) {
     zn_Post *post;
-    pthread_spin_lock(&S->post_lock);
+    pthread_mutex_lock(&S->post_lock);
     post = S->post_queue.first;
     znQ_init(&S->post_queue);
-    pthread_spin_unlock(&S->post_lock);
+    pthread_mutex_unlock(&S->post_lock);
     znQ_apply(zn_Post, post,
         if (cur->handler) cur->handler(cur->ud, cur->S);
         znM_putobject(&S->posts, cur));
@@ -1120,19 +1116,17 @@ static void znT_process(zn_State *S) {
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     zn_Post *post;
-    int ret;
-    pthread_spin_lock(&S->post_lock);
+    int ret = ZN_ERROR;
+    pthread_mutex_lock(&S->post_lock);
     post = (zn_Post*)znM_getobject(&S->posts);
-    if (post == NULL) {
-        pthread_spin_unlock(&S->post_lock);
-        return ZN_ERROR;
+    if (post != NULL) {
+        post->S = S;
+        post->handler = cb;
+        post->ud = ud;
+        znQ_enqueue(&S->post_queue, post);
+        ret = znP_signal(S);
     }
-    post->S = S;
-    post->handler = cb;
-    post->ud = ud;
-    znQ_enqueue(&S->post_queue, post);
-    ret = znP_signal(S);
-    pthread_spin_unlock(&S->post_lock);
+    pthread_mutex_unlock(&S->post_lock);
     return ret;
 }
 
@@ -1622,9 +1616,7 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
     EnterCriticalSection(&S->lock);
     post = (zn_Post*)znM_getobject(&S->posts);
     LeaveCriticalSection(&S->lock);
-    if (post == NULL) {
-        return ZN_ERROR;
-    }
+    if (post == NULL) return ZN_ERROR;
     post->S = S;
     post->handler = cb;
     post->ud = ud;

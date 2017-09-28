@@ -216,4 +216,6 @@ int main(int argc, const char **argv) {
     register_interrupted();
     return zn_run(S, ZN_RUN_LOOP);
 }
-/* cc: flags+='-s -O3' libs+='-lws2_32' */
+/* win32cc: flags+='-s -O3' libs+='-lws2_32' */
+/* linuxcc: flags+='-s -O3' libs+='-pthread -lrt' */
+/* maccc: flags+='-O3' libs+='-pthread' */

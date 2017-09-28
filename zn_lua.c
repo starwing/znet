@@ -275,8 +275,8 @@ static lzn_Tcp *lzn_newtcp(lua_State *L, zn_State *S, zn_Tcp *tcp) {
     obj->onerror_ref = LUA_NOREF;
     obj->ref = LUA_NOREF;
     obj->closing = 0;
-    zn_initsendbuffer(&obj->send);
-    zn_initrecvbuffer(&obj->recv);
+    zn_initsendbuffer(&obj->send, NULL);
+    zn_initrecvbuffer(&obj->recv, NULL);
     zn_recvonheader(&obj->recv, lzn_onheader, obj);
     zn_recvonpacket(&obj->recv, lzn_onpacket, obj);
     return obj;

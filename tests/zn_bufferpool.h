@@ -13,14 +13,18 @@
 typedef struct zn_BufferPoolNode {
     struct zn_BufferPoolNode *next;
     zn_Tcp *tcp;
+    zn_BufferCache *bc;
     ZN_BUFFER_FIELDS
     zn_SendBuffer send;
     zn_RecvBuffer recv;
 } zn_BufferPoolNode, *zn_BufferPool;
 
+static zn_BufferCache *bc;
+
 
 static void zn_initbuffpool(zn_BufferPool *pool) {
     *pool = NULL;
+    bc = zn_newbuffcache(NULL, NULL);
 }
 
 static zn_BufferPoolNode *zn_getbuffer(zn_BufferPool *pool) {
@@ -33,8 +37,8 @@ static zn_BufferPoolNode *zn_getbuffer(zn_BufferPool *pool) {
     if (node == NULL) return NULL;
     node->next = NULL;
     node->tcp = NULL;
-    zn_initrecvbuffer(&node->recv);
-    zn_initsendbuffer(&node->send);
+    zn_initrecvbuffer(&node->recv, bc);
+    zn_initsendbuffer(&node->send, bc);
     return node;
 }
 

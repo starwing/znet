@@ -272,4 +272,4 @@ int main(int argc, const char **argv) {
     return zn_run(S, ZN_RUN_LOOP);
 }
 /* win32cc: flags+='-s -O3' libs+='-lws2_32' */
-/* unixcc: flags+='-ggdb -O0' libs+='-pthread -lrt' */
+/* unixcc: flags+='-g -O3' libs+='-pthread' */
