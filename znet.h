@@ -119,6 +119,9 @@ ZN_API const char *zn_engine   (void);
 ZN_API zn_State *zn_newstate (void);
 ZN_API void      zn_close    (zn_State *S);
 
+ZN_API void *zn_getuserdata (zn_State *S);
+ZN_API void  zn_setuserdata (zn_State *S, void *ud);
+
 ZN_API unsigned zn_retain  (zn_State *S);
 ZN_API unsigned zn_release (zn_State *S);
 
@@ -485,8 +488,10 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
 #ifdef zn_use_api /* need: state, backend, addr */
 #undef zn_use_api
 
-ZN_API unsigned zn_retain  (zn_State *S) { return ++S->waitings; }
-ZN_API unsigned zn_release (zn_State *S) { return --S->waitings; }
+ZN_API unsigned zn_retain   (zn_State *S) { return ++S->waitings; }
+ZN_API unsigned zn_release  (zn_State *S) { return --S->waitings; }
+ZN_API void *zn_getuserdata (zn_State *S) { return S->userdata; }
+ZN_API void  zn_setuserdata (zn_State *S, void *ud) { S->userdata = ud; }
 
 ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *h, void *ud)
 { return znT_newtimer(&S->ts, h, ud); }
@@ -1039,6 +1044,7 @@ struct zn_State {
     zn_Accept *active_accepts;
     zn_Tcp    *active_tcps;
     zn_Udp    *active_udps;
+    void      *userdata;
     zn_TimerState ts;
     zn_Status  status;
     unsigned   waitings;

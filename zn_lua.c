@@ -266,6 +266,7 @@ static void lzn_onrecv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 
 static lzn_Tcp *lzn_newtcp(lua_State *L, zn_State *S, zn_Tcp *tcp) {
     lzn_Tcp *obj = (lzn_Tcp*)lbind_new(L, sizeof(lzn_Tcp), &lbT_Tcp);
+    zn_BufferCache *bc = (zn_BufferCache*)zn_getuserdata(S);
     obj->tcp = tcp;
     obj->S = S;
     obj->L = L;
@@ -275,8 +276,8 @@ static lzn_Tcp *lzn_newtcp(lua_State *L, zn_State *S, zn_Tcp *tcp) {
     obj->onerror_ref = LUA_NOREF;
     obj->ref = LUA_NOREF;
     obj->closing = 0;
-    zn_initsendbuffer(&obj->send, NULL);
-    zn_initrecvbuffer(&obj->recv, NULL);
+    zn_initsendbuffer(&obj->send, bc);
+    zn_initrecvbuffer(&obj->recv, bc);
     zn_recvonheader(&obj->recv, lzn_onheader, obj);
     zn_recvonpacket(&obj->recv, lzn_onpacket, obj);
     return obj;
@@ -700,6 +701,7 @@ static int Lstate_new(lua_State *L) {
     if (S == NULL)
         return 0;
     lbind_wrap(L, S, &lbT_State);
+    zn_setuserdata(S, zn_newbuffcache(NULL, NULL));
     return 1;
 }
 
@@ -708,6 +710,7 @@ static int Lstate_delete(lua_State *L) {
     if (S != NULL) {
         lbind_delete(L, 1);
         zn_closeaddrinfo(S);
+        zn_delbuffcache((zn_BufferCache*)zn_getuserdata(S));
         zn_close(S);
     }
     return 0;
