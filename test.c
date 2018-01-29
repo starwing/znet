@@ -52,17 +52,18 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
 static zn_Time on_timer(void *ud, zn_Timer *t, zn_Time elapsed) {
     static int i = 0;
 
+    if (i == 5) {
+        printf("stop listening ...\n");
+        zn_delaccept(a);
+        return 0;
+    }
+
     printf("%d>> %u\n", ++i, (unsigned)elapsed);
     zn_Tcp *tcp = zn_newtcp(S);
     printf("%p: connecting ...", tcp);
     int ret = zn_connect(tcp, IP, PORT, on_connect, NULL);
     printf("%s\n", zn_strerror(ret));
 
-    if (i == 5) {
-        printf("stop listening ...\n");
-        zn_delaccept(a);
-        return 0;
-    }
     return 1000;
 }
 

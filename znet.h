@@ -238,53 +238,44 @@ ZN_NS_END
 #ifndef zn_list_h
 #define zn_list_h
 
-#define znL_entry(T) T *next; T **pprev
-#define znL_head(T)  struct T##_hlist { znL_entry(T); }
+#define zn_rawset(l, r)   (*(void**)&(l) = (void*)(r))
+#define zn_reverse(T, h)                                  do { \
+    T *ret_ = NULL, *next_;                                    \
+    while (h) next_ = h->next, h->next = ret_,                 \
+              ret_ = h, h = next_;                             \
+    (h) = ret_;                                              } while (0)
 
-#define znL_init(n)                                       do { \
-    (n)->pprev = &(n)->next;                                   \
-    (n)->next = NULL;                                        } while (0)
+#define znL_entry(T)      T *next; T *prev
+#define znL_head(T)       struct T##_hlist { znL_entry(T); }
+#define znL_init(h)       (zn_rawset((h)->prev, h), zn_rawset((h)->next, h))
+#define znL_empty(h)      ((void*)(h)->prev == (void*)&(h))
 
-#define znL_insert(h, n)                                  do { \
-    (n)->pprev = (h);                                          \
-    (n)->next = *(h);                                          \
-    if (*(h) != NULL)                                          \
-        (*(h))->pprev = &(n)->next;                            \
-    *(h) = (n);                                              } while (0)
+#define znL_insert(h,n)   (zn_rawset((n)->next, h),            \
+                           (n)->prev = (h)->prev,              \
+                           (h)->prev->next = (n),              \
+                           (h)->prev = (n))                    \
 
-#define znL_remove(n)                                     do { \
-    if ((n)->next != NULL)                                     \
-        (n)->next->pprev = (n)->pprev;                         \
-    *(n)->pprev = (n)->next;                                 } while (0)
+#define znL_remove(n)     ((n)->prev->next = (n)->next,        \
+                           (n)->next->prev = (n)->prev)        \
 
-#define znL_apply(type, h, stmt)                          do { \
-    type *cur = (type*)*(h);                                   \
-    *(h) = NULL;                                               \
-    while (cur)                                                \
-    { type *next_ = cur->next; stmt; cur = next_; }          } while (0)
+#define znL_apply(T, h, stmt)                             do { \
+    T *cur, *next_ = (h)->next;                                \
+    while (cur = next_, next_ = next_->next, cur != (T*)(h))   \
+    { stmt; }                                                } while (0)
 
-#define znQ_entry(T) T* next
-#define znQ_type(T)  struct { T *first; T **plast; }
+#define znQ_entry(T)      T *next
+#define znQ_head(T)       struct T##_qlist { T *first, **plast; }
+#define znQ_init(h)       ((h)->first = NULL, (h)->plast = &(h)->first)
+#define znQ_first(h)      ((h)->first)
+#define znQ_empty(h)      ((h)->first == NULL)
 
-#define znQ_init(h)                                       do { \
-    (h)->first = NULL;                                         \
-    (h)->plast = &(h)->first;                                } while (0)
+#define znQ_enqueue(h, n) ((n)->next = NULL,                   \
+                          *(h)->plast = (n),                   \
+                           (h)->plast = &(n)->next)            \
 
-#define znQ_enqueue(h, n)                                 do { \
-    *(h)->plast = (n);                                         \
-    (h)->plast = &(n)->next;                                   \
-    (n)->next = NULL;                                        } while (0)
-
-#define znQ_dequeue(h, pn)                                do { \
-    if (((pn) = (h)->first) != NULL) {                         \
-        (h)->first = (h)->first->next;                         \
-        if ((h)->plast == &(pn)->next)                         \
-            (h)->plast = &(h)->first; }                      } while (0)
-
-#define znQ_apply(type, h, stmt)                          do { \
-    type *cur = (type*)(h);                                    \
-    while (cur)                                                \
-    { type *next_ = cur->next; stmt; cur = next_; }          } while (0)
+#define znQ_apply(T, h, stmt)                             do { \
+    T *cur = (h), *next_;                                      \
+    while (cur) { next_ = cur->next; stmt; cur = next_; }    } while (0)
 
 #endif /* zn_list_h */
 
@@ -518,6 +509,9 @@ ZN_API zn_State *zn_newstate(void) {
     if (S == NULL) return NULL;
     memset(S, 0, sizeof(*S));
     S->ts.nexttime = ZN_FOREVER;
+    znL_init(&S->active_accepts);
+    znL_init(&S->active_tcps);
+    znL_init(&S->active_udps);
     znM_initpool(&S->ts.timers,  sizeof(zn_Timer));
     znM_initpool(&S->posts,   sizeof(zn_Post));
     znM_initpool(&S->accepts, sizeof(zn_Accept));
@@ -1018,24 +1012,27 @@ typedef enum zn_Status {
     ZN_STATUS_CLOSING_IN_RUN = 2  /* prepare close in run() */
 } zn_Status;
 
+typedef struct zn_Post   zn_Post;
+typedef struct zn_Result zn_Result;
+
 struct zn_State {
     zn_MemPool posts;
     zn_MemPool accepts;
     zn_MemPool tcps;
     zn_MemPool udps;
-    zn_Accept *active_accepts;
-    zn_Tcp    *active_tcps;
-    zn_Udp    *active_udps;
+    znL_head(zn_Accept) active_accepts;
+    znL_head(zn_Tcp)    active_tcps;
+    znL_head(zn_Udp)    active_udps;
     void      *userdata;
     zn_TimerState ts;
     zn_Status  status;
     unsigned   waitings;
 #ifdef zn_use_postqueue
     pthread_mutex_t post_lock;
-    znQ_type(struct zn_Post) post_queue;
+    znQ_head(zn_Post) post_queue;
 #endif
 #ifdef zn_use_resultqueue
-    znQ_type(struct zn_Result) results;
+    znQ_head(zn_Result) result_queue;
 #endif
 #ifdef zn_use_backend_iocp
     HANDLE iocp;
@@ -1057,12 +1054,12 @@ struct zn_State {
 #endif
 };
 
-# define ZN_GETOBJECT(S, type, name)          type* name; do { \
+# define ZN_GETOBJECT(S, T, name)                T* name; do { \
     if (S->status > ZN_STATUS_READY)                           \
         return 0;                                              \
-    name = (type*)znM_getobject(&S->name##s);                  \
+    name = (T*)znM_getobject(&S->name##s);                     \
     if (name == NULL) return 0;                                \
-    memset(name, 0, sizeof(type));                             \
+    memset(name, 0, sizeof(T));                                \
     znL_insert(&S->active_##name##s, name);                    \
     name->S = S;                                             } while (0)
 
@@ -1079,12 +1076,12 @@ struct zn_State {
 
 static int znP_signal(zn_State *S);
 
-typedef struct zn_Post {
-    znQ_entry(struct zn_Post);
+struct zn_Post {
+    zn_Post  *next;
     zn_State *S;
     zn_PostHandler *handler;
     void *ud;
-} zn_Post;
+};
 
 static void znT_init(zn_State *S) {
     pthread_mutex_init(&S->post_lock, 0);
@@ -1094,7 +1091,7 @@ static void znT_init(zn_State *S) {
 static void znT_process(zn_State *S) {
     zn_Post *post;
     pthread_mutex_lock(&S->post_lock);
-    post = S->post_queue.first;
+    post = znQ_first(&S->post_queue);
     znQ_init(&S->post_queue);
     pthread_mutex_unlock(&S->post_lock);
     znQ_apply(zn_Post, post,
@@ -1126,31 +1123,24 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
 
 #define ZN_MAX_RESULT_LOOPS 100
 
-static void zn_onresult(struct zn_Result *result);
-static void znR_init(zn_State *S) { znQ_init(&S->results); }
+static void zn_onresult(zn_Result *result);
+static void znR_init(zn_State *S) { znQ_init(&S->result_queue); }
 
-typedef struct zn_Result {
-    znQ_entry(struct zn_Result);
-    zn_Tcp *tcp;
-    int err;
-} zn_Result;
+struct zn_Result {
+    zn_Result *next;
+    zn_Tcp    *tcp;
+    int        err;
+};
 
-static void znR_add(zn_State *S, int err, zn_Result *result) {
-    result->err = err;
-    znQ_enqueue(&S->results, result);
-}
+static void znR_add(zn_State *S, int err, zn_Result *result)
+{ result->err = err; znQ_enqueue(&S->result_queue, result); }
 
 static void znR_process(zn_State *S) {
-    zn_Result *results;
     int count = 0;
-    while ((results = S->results.first) != NULL
-            && ++count <= ZN_MAX_RESULT_LOOPS) {
-        znQ_init(&S->results);
-        while (results) {
-            zn_Result *next = results->next;
-            zn_onresult(results);
-            results = next;
-        }
+    while (!znQ_empty(&S->result_queue) && ++count <= ZN_MAX_RESULT_LOOPS) {
+        zn_Result *results = znQ_first(&S->result_queue);
+        znQ_init(&S->result_queue);
+        znQ_apply(zn_Result, results, zn_onresult(cur));
     }
 }
 
@@ -1191,11 +1181,11 @@ typedef struct zn_Request {
     zn_RequestType type;
 } zn_Request;
 
-typedef struct zn_Post {
+struct zn_Post {
     zn_State *S;
     zn_PostHandler *handler;
     void *ud;
-} zn_Post;
+};
 
 struct zn_Tcp {
     znL_entry(zn_Tcp);
@@ -2574,7 +2564,7 @@ static int znP_init(zn_State *S) {
 static void znP_close(zn_State *S) {
     znT_process(S);
     znR_process(S);
-    assert(S->results.first == NULL);
+    assert(znQ_empty(&S->result_queue));
     close(S->eventfd);
     close(S->epoll);
 }
@@ -2787,7 +2777,7 @@ static void znP_close(zn_State *S) {
 
 /* unixcc: flags+='-Wall -Wextra -O3 -shared -fPIC -DZN_IMPLEMENTATION -xc'
  * win32cc: flags+='-Wall -Wextra -O3 -mdll -DZN_IMPLEMENTATION -xc'
- * linuxcc: libs+='-pthread -lrt' output='znet.so'
  * win32cc: libs+='-lws2_32' output='znet.dll'
+ * linuxcc: libs+='-pthread -lrt' output='znet.so'
  * maccc: libs+='-pthread' output='znet.so' */
 
