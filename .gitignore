@@ -7,3 +7,5 @@ deprecated
 *.exp
 *.lib
 *.obj
+*.iobj
+*.ipdb
