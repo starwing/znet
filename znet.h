@@ -13,15 +13,19 @@
 # endif
 #endif /* ZN_NS_BEGIN */
 
+#ifndef ZN_STATIC
+# if __GNUC__
+#   define ZN_STATIC static __attribute__((unused))
+# else
+#   define ZN_STATIC static
+# endif
+#endif
+
 #ifdef ZN_STATIC_API
 # ifndef ZN_IMPLEMENTATION
 #  define ZN_IMPLEMENTATION
 # endif
-# if __GNUC__
-#   define ZN_API static __attribute((unused))
-# else
-#   define ZN_API static
-# endif
+# define ZN_API ZN_STATIC
 #endif
 
 #if !defined(ZN_API) && defined(_WIN32)
@@ -573,6 +577,7 @@ ZN_API zn_Accept* zn_newaccept(zn_State *S) {
 }
 
 ZN_API void zn_delaccept(zn_Accept *accept) {
+    if (accept == NULL) return;
     zn_closeaccept(accept);
     if (accept->accept_handler == NULL)
         ZN_PUTOBJECT(accept);
@@ -580,6 +585,7 @@ ZN_API void zn_delaccept(zn_Accept *accept) {
 
 ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
     zn_SockAddr local_addr;
+    if (accept == NULL)                      return ZN_EPARAM;
     if (accept->socket != ZN_INVALID_SOCKET) return ZN_ESTATE;
     if (accept->accept_handler != NULL)      return ZN_EBUSY;
     if (!znU_parseaddr(&local_addr, addr, port)) return ZN_EPARAM;
@@ -588,8 +594,8 @@ ZN_API int zn_listen(zn_Accept *accept, const char *addr, unsigned port) {
 
 ZN_API int zn_accept(zn_Accept *accept, zn_AcceptHandler *cb, void *ud) {
     int ret;
+    if (accept == NULL || cb == NULL)        return ZN_EPARAM;
     if (accept->socket == ZN_INVALID_SOCKET) return ZN_ESTATE;
-    if (cb == NULL)                          return ZN_EPARAM;
     if ((ret = znP_accept(accept)) == ZN_OK) {
         accept->accept_handler = cb;
         accept->accept_ud = ud;
@@ -610,6 +616,7 @@ ZN_API zn_Tcp* zn_newtcp(zn_State *S) {
 }
 
 ZN_API void zn_deltcp(zn_Tcp *tcp) {
+    if (tcp == NULL) return;
     zn_closetcp(tcp);
     /* if a request is on-the-go, then the IOCP will give callback, we
      * delete object on that callback. notice if you do not submit a
@@ -624,9 +631,9 @@ ZN_API void zn_deltcp(zn_Tcp *tcp) {
 ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
     zn_SockAddr remote_addr;
     int         ret;
+    if (tcp == NULL || cb == NULL)        return ZN_EPARAM;
     if (tcp->socket != ZN_INVALID_SOCKET) return ZN_ESTATE;
     if (tcp->connect_handler != NULL)     return ZN_EBUSY;
-    if (cb == NULL)                       return ZN_EPARAM;
     if (znU_parseaddr(&remote_addr, addr, port) == 0) return ZN_EPARAM;
 
     if ((ret = znP_connect(tcp, &remote_addr)) != ZN_OK)
@@ -642,9 +649,9 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
 
 ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *cb, void *ud) {
     int ret;
-    if (tcp->socket == ZN_INVALID_SOCKET) return ZN_ESTATE;
-    if (tcp->send_handler != NULL)        return ZN_EBUSY;
-    if (cb == NULL || len == 0)           return ZN_EPARAM;
+    if (tcp == NULL || cb == NULL || len == 0) return ZN_EPARAM;
+    if (tcp->socket == ZN_INVALID_SOCKET)      return ZN_ESTATE;
+    if (tcp->send_handler != NULL)             return ZN_EBUSY;
     tcp->send_buffer.buf = (char*)buff;
     tcp->send_buffer.len = len;
     if ((ret = znP_send(tcp)) != ZN_OK) {
@@ -661,9 +668,9 @@ ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len, zn_SendHandler *
 
 ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb, void *ud) {
     int ret;
-    if (tcp->socket == ZN_INVALID_SOCKET) return ZN_ESTATE;
-    if (tcp->recv_handler != NULL)        return ZN_EBUSY;
-    if (cb == NULL || len == 0)           return ZN_EPARAM;
+    if (tcp == NULL || cb == NULL || len == 0) return ZN_EPARAM;
+    if (tcp->socket == ZN_INVALID_SOCKET)      return ZN_ESTATE;
+    if (tcp->recv_handler != NULL)             return ZN_EBUSY;
     tcp->recv_buffer.buf = buff;
     tcp->recv_buffer.len = len;
     if ((ret = znP_recv(tcp)) != ZN_OK) {
@@ -698,6 +705,7 @@ ZN_API zn_Udp* zn_newudp(zn_State *S, const char *addr, unsigned port) {
 }
 
 ZN_API void zn_deludp(zn_Udp *udp) {
+    if (udp == NULL) return;
     znP_closeudp(udp);
     if (udp->recv_handler == NULL)
         ZN_PUTOBJECT(udp);
@@ -705,17 +713,17 @@ ZN_API void zn_deludp(zn_Udp *udp) {
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
     zn_SockAddr remote_addr;
-    if (udp->socket == ZN_INVALID_SOCKET) return ZN_ESTATE;
-    if (len == 0 || len >1200)            return ZN_EPARAM;
+    if (udp == NULL || len == 0 || len >1200) return ZN_EPARAM;
+    if (udp->socket == ZN_INVALID_SOCKET)     return ZN_ESTATE;
     if (znU_parseaddr(&remote_addr, addr, port) == 0) return ZN_EPARAM;
     return znP_sendto(udp, buff, len, &remote_addr);
 }
 
 ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler *cb, void *ud) {
     int ret;
-    if (udp->socket == ZN_INVALID_SOCKET) return ZN_ESTATE;
-    if (udp->recv_handler)                return ZN_EBUSY;
-    if (len == 0 || cb == NULL)           return ZN_EPARAM;
+    if (udp == NULL || len == 0 || cb == NULL) return ZN_EPARAM;
+    if (udp->socket == ZN_INVALID_SOCKET)      return ZN_ESTATE;
+    if (udp->recv_handler)                     return ZN_EBUSY;
 
     udp->recv_buffer.buf = buff;
     udp->recv_buffer.len = len;

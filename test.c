@@ -32,6 +32,7 @@ static void on_accept(void *ud, zn_Accept *a, unsigned err, zn_Tcp *tcp) {
     printf("%p: accepted: %s\n", tcp, zn_strerror(err));
     printf("%p: receiving ... ", tcp);
     int ret = zn_recv(tcp, buff, 128, on_recv, buff);
+    if (ret != ZN_OK) free(buff);
     printf("%s\n", zn_strerror(ret));
     zn_accept(a, on_accept, ud);
 }
@@ -46,7 +47,8 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
     if (!buff) return;
     memset(buff, 0, 128);
     strcpy(buff, "hello world!");
-    zn_send(tcp, buff, 128, on_send, buff);
+    if (zn_send(tcp, buff, 128, on_send, buff) != ZN_OK)
+	free(buff);
 }
 
 static zn_Time on_timer(void *ud, zn_Timer *t, zn_Time elapsed) {
