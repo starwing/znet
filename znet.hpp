@@ -152,6 +152,7 @@ static inline zn_Time timer_cb(void *ud, zn_Timer *timer, unsigned elapsed)
 {
     auto loop = static_cast<EventLoop*>(ud);
     auto it = loop->timers.find(timer);
+    (void)elapsed;
     if (it == loop->timers.end()) return 0;
 #ifdef ZN_USE_NEW_TIMERHANDLER
     auto ret = it->second();
@@ -190,7 +191,7 @@ inline bool TcpAccept::openAccept(std::string const& ip, unsigned short port)
 inline bool TcpAccept::initialize(EventLoopPtr const& summer)
 {
     if (accept == nullptr)
-        return (accept = zn_newaccept(summer->S)) != nullptr;
+        return (accept = zn_newaccept(summer->S, 0)) != nullptr;
     return true;
 }
 
@@ -198,6 +199,7 @@ static inline void accept_cb(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *
 {
     auto ta = static_cast<TcpAccept*>(ud);
     auto h(std::move(ta->acceptHandler));
+    (void)accept;
     ta->client->tcp = tcp;
     h(static_cast<NetErrorCode>(err), std::move(ta->client));
 }
@@ -237,12 +239,13 @@ static inline void connect_cb(void *ud, zn_Tcp *tcp, unsigned err)
 {
     auto ts = static_cast<TcpSocket*>(ud);
     auto h(std::move(ts->connectHandler));
+    (void)tcp;
     h(static_cast<NetErrorCode>(err));
 }
 
 inline bool TcpSocket::doConnect(std::string const& remoteIP, unsigned short remotePort, OnConnectHandler&& h)
 {
-    if (zn_connect(tcp, remoteIP.c_str(), remotePort, connect_cb, this) == ZN_OK)
+    if (zn_connect(tcp, remoteIP.c_str(), remotePort, 0, connect_cb, this) == ZN_OK)
     {
         connectHandler = std::move(h);
         return true;
@@ -254,6 +257,7 @@ static inline void send_cb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count)
 {
     auto ts = static_cast<TcpSocket*>(ud);
     auto h(std::move(ts->sendHandler));
+    (void)tcp;
     h(static_cast<NetErrorCode>(err), count);
 }
 
@@ -271,6 +275,7 @@ static inline void recv_cb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count)
 {
     auto ts = static_cast<TcpSocket*>(ud);
     auto h(std::move(ts->recvHandler));
+    (void)tcp;
     h(static_cast<NetErrorCode>(err), count);
 }
 
@@ -299,6 +304,7 @@ static inline void recvfrom_cb(void *ud, zn_Udp *udp, unsigned err, unsigned cou
 {
     auto us = static_cast<UdpSocket*>(ud);
     auto h(std::move(us->recvFromHandler));
+    (void)udp;
     h(static_cast<NetErrorCode>(err), ip, port, count);
 }
 

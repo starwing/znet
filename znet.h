@@ -110,10 +110,6 @@ typedef void zn_RecvFromHandler (void *ud, zn_Udp *udp, unsigned err, unsigned c
 
 /* znet state routines */
 
-#define ZN_RUN_ONCE  0
-#define ZN_RUN_CHECK 1
-#define ZN_RUN_LOOP  2
-
 ZN_API void zn_initialize   (void);
 ZN_API void zn_deinitialize (void);
 
@@ -129,7 +125,11 @@ ZN_API void  zn_setuserdata (zn_State *S, void *ud);
 ZN_API unsigned zn_retain  (zn_State *S);
 ZN_API unsigned zn_release (zn_State *S);
 
-ZN_API int zn_run  (zn_State *S, int mode);
+ZN_API int zn_run (zn_State *S, int mode);
+#define ZN_RUN_ONCE  0
+#define ZN_RUN_CHECK 1
+#define ZN_RUN_LOOP  2
+
 ZN_API int zn_post (zn_State *S, zn_PostHandler *cb, void *ud);
 
 
@@ -146,7 +146,7 @@ ZN_API void zn_canceltimer (zn_Timer *timer);
 
 /* znet accept routines */
 
-ZN_API zn_Accept* zn_newaccept   (zn_State *S);
+ZN_API zn_Accept* zn_newaccept   (zn_State *S, int packet);
 ZN_API int        zn_closeaccept (zn_Accept *accept);
 ZN_API void       zn_delaccept   (zn_Accept *accept);
 
@@ -163,6 +163,7 @@ ZN_API void    zn_deltcp   (zn_Tcp *tcp);
 ZN_API void zn_getpeerinfo (zn_Tcp *tcp, zn_PeerInfo *info);
 
 ZN_API int zn_connect (zn_Tcp *tcp, const char *addr, unsigned port,
+                       int packet,
                        zn_ConnectHandler *cb, void *ud);
 
 ZN_API int zn_send (zn_Tcp *tcp, const char *buff, unsigned len,
@@ -276,6 +277,12 @@ ZN_NS_END
 #define znQ_enqueue(h, n) ((n)->next = NULL,                   \
                           *(h)->plast = (n),                   \
                            (h)->plast = &(n)->next)            \
+
+#define znQ_dequeue(h, pn)                                do { \
+    if (((pn) = (h)->first) != NULL) {                         \
+        (h)->first = (h)->first->next;                         \
+        if ((h)->plast == &(pn)->next)                         \
+            (h)->plast = &(h)->first; }                      } while (0)
 
 #define znQ_apply(T, h, stmt)                             do { \
     T *cur = (h), *next_;                                      \
@@ -565,13 +572,14 @@ ZN_API int zn_run(zn_State *S, int mode) {
     return -ZN_ERROR;
 }
 
-ZN_API zn_Accept* zn_newaccept(zn_State *S) {
+ZN_API zn_Accept* zn_newaccept(zn_State *S, int packet) {
     ZN_GETOBJECT(S, zn_Accept, accept);
     accept->socket = ZN_INVALID_SOCKET;
 #ifdef zn_have_info
     accept->info.type = ZN_SOCK_ACCEPT;
     accept->info.head = accept;
 #endif /* zn_have_info */
+    accept->type = packet ? SOCK_DGRAM : SOCK_STREAM;
     znP_initaccept(accept);
     return accept;
 }
@@ -628,7 +636,7 @@ ZN_API void zn_deltcp(zn_Tcp *tcp) {
         ZN_PUTOBJECT(tcp);
 }
 
-ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHandler *cb, void *ud) {
+ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, int packet, zn_ConnectHandler *cb, void *ud) {
     zn_SockAddr remote_addr;
     int         ret;
     if (tcp == NULL || cb == NULL)        return ZN_EPARAM;
@@ -636,7 +644,8 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, zn_ConnectHa
     if (tcp->connect_handler != NULL)     return ZN_EBUSY;
     if (znU_parseaddr(&remote_addr, addr, port) == 0) return ZN_EPARAM;
 
-    if ((ret = znP_connect(tcp, &remote_addr)) != ZN_OK)
+    if ((ret = znP_connect(tcp, &remote_addr, packet ?
+                    SOCK_DGRAM : SOCK_STREAM)) != ZN_OK)
         return ret;
     assert(strlen(addr) < ZN_MAX_ADDRLEN);
     strcpy(tcp->peer_info.addr, addr);
@@ -976,6 +985,9 @@ typedef union zn_SockAddr {
     struct sockaddr_in6 ipv6;
 } zn_SockAddr;
 
+static int znU_ipproto(int type)
+{ return type == SOCK_STREAM ? IPPROTO_TCP : IPPROTO_UDP; }
+
 static int znU_parseaddr(zn_SockAddr *ret, const char *addr, unsigned port) {
     memset(ret, 0, sizeof(*ret));
     if (strchr(addr, ':') != 0) {
@@ -1218,6 +1230,7 @@ struct zn_Accept {
     SOCKET socket;
     SOCKET client;
     int   family;
+    int   type;
     DWORD recv_length;
     char recv_buffer[(sizeof(zn_SockAddr)+16)*2];
 };
@@ -1268,11 +1281,11 @@ static int zn_getextension(SOCKET socket, GUID* gid, void *fn) {
             &dwSize, NULL, NULL) == 0;
 }
 
-static int zn_tcpfromfamily(zn_Tcp *tcp, int family) {
+static int zn_tcpfromfamily(zn_Tcp *tcp, int family, int type) {
     SOCKET      socket;
     zn_SockAddr local_addr;
 
-    if ((socket = WSASocket(family, SOCK_STREAM, IPPROTO_TCP,
+    if ((socket = WSASocket(family, type, znU_ipproto(type),
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
@@ -1310,12 +1323,12 @@ static int znP_closetcp(zn_Tcp *tcp) {
     return ret;
 }
 
-static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
+static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr, int type) {
     static LPFN_CONNECTEX lpConnectEx = NULL;
     static GUID gid = WSAID_CONNECTEX;
     DWORD dwLength = 0;
     char buf[1];
-    int err = zn_tcpfromfamily(tcp, znU_family(addr));
+    int err = zn_tcpfromfamily(tcp, znU_family(addr), type);
     if (err != ZN_OK) return err;
 
     if (!lpConnectEx && !zn_getextension(tcp->socket, &gid, &lpConnectEx))
@@ -1432,7 +1445,8 @@ static int znP_closeaccept(zn_Accept *accept) {
 static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
     SOCKET socket;
     accept->family = znU_family(addr);
-    if ((socket = WSASocket(accept->family, SOCK_STREAM, IPPROTO_TCP,
+    if ((socket = WSASocket(accept->family,
+                    accept->type, znU_ipproto(accept->type),
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
@@ -1442,7 +1456,7 @@ static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
         return ZN_EBIND;
     }
 
-    if (listen(socket, SOMAXCONN) != 0) {
+    if (accept->type == SOCK_STREAM && listen(socket, SOMAXCONN) != 0) {
         closesocket(socket);
         return ZN_ERROR;
     }
@@ -1466,7 +1480,8 @@ static int znP_accept(zn_Accept *accept) {
     if (!lpAcceptEx && !zn_getextension(accept->socket, &gid, &lpAcceptEx))
         return ZN_ERROR;
 
-    if ((socket = WSASocket(accept->family, SOCK_STREAM, IPPROTO_TCP,
+    if ((socket = WSASocket(accept->family,
+                    accept->type, znU_ipproto(accept->type),
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
@@ -1505,7 +1520,7 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
     }
 
     znU_update_acceptinfo(accept->socket, accept->client);
-    znU_set_nodelay(accept->client);
+    if (accept->type == SOCK_STREAM) znU_set_nodelay(accept->client);
 
     if (!lpGetAcceptExSockaddrs && !zn_getextension(accept->client,
                 &gid, &lpGetAcceptExSockaddrs))
@@ -1752,6 +1767,7 @@ struct zn_Accept {
     zn_State *S;
     void *accept_ud; zn_AcceptHandler *accept_handler;
     int socket;
+    int type;
     zn_SocketInfo info;
 };
 
@@ -1808,8 +1824,8 @@ static int znP_closetcp(zn_Tcp *tcp) {
     return ret;
 }
 
-static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
-    int ret, fd = socket(znU_family(addr), SOCK_STREAM, 0);
+static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr, int type) {
+    int ret, fd = socket(znU_family(addr), type, 0);
     if (fd < 0) return ZN_ESOCKET;
 
     if (fd >= FD_SETSIZE) {
@@ -1925,7 +1941,7 @@ static int znP_closeaccept(zn_Accept *accept) {
 }
 
 static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
-    int fd = socket(znU_family(addr), SOCK_STREAM, IPPROTO_TCP);
+    int fd = socket(znU_family(addr), accept->type, znU_ipproto(accept->type));
     if (fd < 0) return ZN_ESOCKET;
     if (accept->S->nfds < fd) accept->S->nfds = fd;
 
@@ -1936,7 +1952,7 @@ static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
         return ZN_EBIND;
     }
 
-    if (listen(fd, SOMAXCONN) != 0) {
+    if (accept->type == SOCK_STREAM && listen(fd, SOMAXCONN) != 0) {
         close(fd);
         return ZN_ERROR;
     }
@@ -1976,7 +1992,7 @@ static void zn_onaccept(zn_Accept *a, int err) {
 /* udp */
 
 static int znP_initudp(zn_Udp *udp, zn_SockAddr *addr) {
-    int fd = socket(znU_family(addr), SOCK_DGRAM, IPPROTO_UDP);
+    int fd = socket(znU_family(addr), accept->type, znU_ipproto(accept->type));
     if (fd < 0) return ZN_ESOCKET;
 
     if (bind(fd, &addr->addr, znU_size(addr)) != 0) {
@@ -2157,6 +2173,7 @@ struct zn_Accept {
     zn_State *S;
     void *accept_ud; zn_AcceptHandler *accept_handler;
     int socket;
+    int type;
     zn_SocketInfo info;
 };
 
@@ -2224,8 +2241,8 @@ static int znP_closetcp(zn_Tcp *tcp) {
     return ret;
 }
 
-static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
-    int ret, fd = socket(znU_family(addr), SOCK_STREAM, 0);
+static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr, int type) {
+    int ret, fd = socket(znU_family(addr), type, 0);
     if (fd < 0) return ZN_ESOCKET;
     znU_set_nonblock(fd);
     ret = connect(fd, &addr->addr, znU_size(addr));
@@ -2334,7 +2351,7 @@ static int znP_closeaccept(zn_Accept *accept) {
 }
 
 static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
-    int fd = socket(znU_family(addr), SOCK_STREAM, IPPROTO_TCP);
+    int fd = socket(znU_family(addr), accept->type, znU_ipproto(accept->type));
     if (fd < 0) return ZN_ESOCKET;
     if (!znF_register_in(accept->S, fd, &accept->info)) {
         close(fd);
@@ -2345,7 +2362,7 @@ static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
         close(fd);
         return ZN_EBIND;
     }
-    if (listen(fd, SOMAXCONN) != 0) {
+    if (accept->type == SOCK_STREAM && listen(fd, SOMAXCONN) != 0) {
         close(fd);
         return ZN_ERROR;
     }
@@ -2775,7 +2792,7 @@ static int znP_init(zn_State *S) {
 static void znP_close(zn_State *S) {
     znT_process(S);
     znR_process(S);
-    assert(S->results.first == NULL);
+    assert(znQ_first(&S->result_queue) == NULL);
     close(S->sockpairs[0]);
     close(S->sockpairs[1]);
     close(S->kqueue);

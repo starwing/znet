@@ -39,6 +39,7 @@ static void on_accept(void *ud, zn_Accept *a, unsigned err, zn_Tcp *tcp) {
 
 static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
     printf("%p: on_connect: %s\n", tcp, zn_strerror(err));
+    (void)ud;
     if (err != ZN_OK) {
         zn_deltcp(tcp);
         return;
@@ -53,6 +54,7 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
 
 static zn_Time on_timer(void *ud, zn_Timer *t, zn_Time elapsed) {
     static int i = 0;
+    (void)ud, (void)t;
 
     if (i == 5) {
         printf("stop listening ...\n");
@@ -63,7 +65,7 @@ static zn_Time on_timer(void *ud, zn_Timer *t, zn_Time elapsed) {
     printf("%d>> %u\n", ++i, (unsigned)elapsed);
     zn_Tcp *tcp = zn_newtcp(S);
     printf("%p: connecting ...", tcp);
-    int ret = zn_connect(tcp, IP, PORT, on_connect, NULL);
+    int ret = zn_connect(tcp, IP, PORT, 0, on_connect, NULL);
     printf("%s\n", zn_strerror(ret));
 
     return 1000;
@@ -115,7 +117,7 @@ int main(void) {
         return 2;
 
     /* server */
-    a = zn_newaccept(S);
+    a = zn_newaccept(S, 0);
     zn_listen(a, IP, PORT);
     zn_accept(a, on_accept, NULL);
     printf("%p: listening ...\n", a);

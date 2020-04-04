@@ -30,42 +30,40 @@ ZN_NS_END
 #ifndef zn_list_h
 #define zn_list_h
 
-#define znL_entry(T) T *next; T **pprev
-#define znL_head(T)  struct T##_hlist { znL_entry(T); }
+#define zn_rawset(l, r)   (*(void**)&(l) = (void*)(r))
+#define zn_reverse(T, h)                                  do { \
+    T *ret_ = NULL, *next_;                                    \
+    while (h) next_ = h->next, h->next = ret_,                 \
+              ret_ = h, h = next_;                             \
+    (h) = ret_;                                              } while (0)
 
-#define znL_init(n)                                       do { \
-    (n)->pprev = &(n)->next;                                   \
-    (n)->next = NULL;                                        } while (0)
+#define znL_entry(T)      T *next; T *prev
+#define znL_head(T)       struct T##_hlist { znL_entry(T); }
+#define znL_init(h)       (zn_rawset((h)->prev, h), zn_rawset((h)->next, h))
+#define znL_empty(h)      ((void*)(h)->prev == (void*)&(h))
 
-#define znL_insert(h, n)                                  do { \
-    (n)->pprev = (h);                                          \
-    (n)->next = *(h);                                          \
-    if (*(h) != NULL)                                          \
-        (*(h))->pprev = &(n)->next;                            \
-    *(h) = (n);                                              } while (0)
+#define znL_insert(h,n)   (zn_rawset((n)->next, h),            \
+                           (n)->prev = (h)->prev,              \
+                           (h)->prev->next = (n),              \
+                           (h)->prev = (n))                    \
 
-#define znL_remove(n)                                     do { \
-    if ((n)->next != NULL)                                     \
-        (n)->next->pprev = (n)->pprev;                         \
-    *(n)->pprev = (n)->next;                                 } while (0)
+#define znL_remove(n)     ((n)->prev->next = (n)->next,        \
+                           (n)->next->prev = (n)->prev)        \
 
-#define znL_apply(type, h, stmt)                          do { \
-    type *cur = (type*)*(h);                                   \
-    *(h) = NULL;                                               \
-    while (cur)                                                \
-    { type *next_ = cur->next; stmt; cur = next_; }          } while (0)
+#define znL_apply(T, h, stmt)                             do { \
+    T *cur, *next_ = (h)->next;                                \
+    while (cur = next_, next_ = next_->next, cur != (T*)(h))   \
+    { stmt; }                                                } while (0)
 
-#define znQ_entry(T) T* next
-#define znQ_type(T)  struct { T *first; T **plast; }
+#define znQ_entry(T)      T *next
+#define znQ_head(T)       struct T##_qlist { T *first, **plast; }
+#define znQ_init(h)       ((h)->first = NULL, (h)->plast = &(h)->first)
+#define znQ_first(h)      ((h)->first)
+#define znQ_empty(h)      ((h)->first == NULL)
 
-#define znQ_init(h)                                       do { \
-    (h)->first = NULL;                                         \
-    (h)->plast = &(h)->first;                                } while (0)
-
-#define znQ_enqueue(h, n)                                 do { \
-    *(h)->plast = (n);                                         \
-    (h)->plast = &(n)->next;                                   \
-    (n)->next = NULL;                                        } while (0)
+#define znQ_enqueue(h, n) ((n)->next = NULL,                   \
+                          *(h)->plast = (n),                   \
+                           (h)->plast = &(n)->next)            \
 
 #define znQ_dequeue(h, pn)                                do { \
     if (((pn) = (h)->first) != NULL) {                         \
@@ -73,10 +71,9 @@ ZN_NS_END
         if ((h)->plast == &(pn)->next)                         \
             (h)->plast = &(h)->first; }                      } while (0)
 
-#define znQ_apply(type, h, stmt)                          do { \
-    type *cur = (type*)(h);                                    \
-    while (cur)                                                \
-    { type *next_ = cur->next; stmt; cur = next_; }          } while (0)
+#define znQ_apply(T, h, stmt)                             do { \
+    T *cur = (h), *next_;                                      \
+    while (cur) { next_ = cur->next; stmt; cur = next_; }    } while (0)
 
 #endif /* zn_list_h */
 
@@ -103,7 +100,7 @@ typedef struct znA_AddrRequest {
 } znA_AddrRequest;
 
 static znA_AddrRequest          *znA_current;
-static znQ_type(znA_AddrRequest) znA_queue;
+static znQ_head(znA_AddrRequest) znA_queue;
 
 static void znA_makepeers(znA_AddrRequest *req, void *info);
 static void znA_makehints(znA_AddrRequest *req, void *info);

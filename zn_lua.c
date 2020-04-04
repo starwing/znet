@@ -5,8 +5,8 @@
 
 #define ZN_IMPLEMENTATION
 #include "znet.h"
-#include "zn_buffer.h"
 #include "zn_addrinfo.h"
+#include "zn_buffer.h"
 
 #define LZN_UDP_RECVSIZE 2048
 
@@ -154,7 +154,8 @@ typedef struct lzn_Tcp {
     int onpacket_ref;
     int onerror_ref;
     int ref;
-    int closing;
+    unsigned closing : 1;
+    unsigned packet  : 1;
     zn_SendBuffer send;
     zn_RecvBuffer recv;
 } lzn_Tcp;
@@ -285,8 +286,10 @@ static lzn_Tcp *lzn_newtcp(lua_State *L, zn_State *S, zn_Tcp *tcp) {
 
 static void lzn_ongetaddr(void *ud, unsigned err, unsigned count, zn_PeerInfo *peers) {
     lzn_Tcp *obj = (lzn_Tcp*)ud;
+    (void)count;
     if (err == ZN_OK)
-        err = zn_connect(obj->tcp, peers[0].addr, peers[0].port, lzn_onconnect, obj);
+        err = zn_connect(obj->tcp, peers[0].addr, peers[0].port,
+                obj->packet, lzn_onconnect, obj);
     else err += ZN_ERROR_COUNT;
     if (err != ZN_OK) lzn_onconnect(ud, obj->tcp, err);
 }
@@ -296,6 +299,7 @@ static int Ltcp_connect(lua_State *L) {
     const char *addr = luaL_optstring(L, 2, "127.0.0.1");
     const char *port = luaL_optstring(L, 3, "http");
     int ret;
+    obj->packet = lua_toboolean(L, 5);
     luaL_checktype(L, 4, LUA_TFUNCTION);
     luaL_argcheck(L, port > 0, 3, "port out of range");
     lzn_ref(L, 4, &obj->onconnect_ref);
@@ -450,11 +454,12 @@ static void lzn_freeaccept(lua_State *L, lzn_Accept *obj) {
 static int Laccept_new(lua_State *L) {
     zn_State *S = (zn_State*)lbind_check(L, 1, &lbT_State);
     lzn_Accept *obj;
+    int packet = lua_toboolean(L, 3);
     luaL_checktype(L, 2, LUA_TFUNCTION);
     obj = (lzn_Accept*)lbind_new(L, sizeof(lzn_Accept), &lbT_Accept);
     obj->S = S;
     obj->L = L;
-    obj->accept = zn_newaccept(S);
+    obj->accept = zn_newaccept(S, packet);
     obj->onaccept_ref = LUA_NOREF;
     obj->ref = LUA_NOREF;
     if (obj->accept != NULL) {
