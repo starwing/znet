@@ -219,6 +219,7 @@ static int znA_processreq(znA_AddrRequest *req) {
 }
 
 static unsigned __stdcall znA_worker(void *param) {
+    (void)param;
     for (;;) {
         znA_AddrRequest *req;
         if (WaitForSingleObject(znA_event, INFINITE) != WAIT_OBJECT_0)
@@ -300,6 +301,7 @@ static pthread_cond_t  znA_event = PTHREAD_COND_INITIALIZER;
 static pthread_t       znA_thread;
 
 static void *znA_worker(void *param) {
+    (void)param;
     for (;;) {
         zn_AddrInfo hints, *info;
         znA_AddrRequest *req;

@@ -441,10 +441,8 @@ ZN_API int zn_starttimer(zn_Timer *timer, zn_Time delayms) {
     i = ts->used++;
     timer->start = zn_time();
     timer->emit  = timer->start + delayms;
-    while (p = (i-1)>>1, i > 0
-            && ts->heap[p]->emit > timer->emit
-            && ((ts->heap[i] = ts->heap[p])->index = i, i = p))
-        ;
+    while (p = (i-1)>>1, i > 0 && ts->heap[p]->emit > timer->emit)
+        (ts->heap[i] = ts->heap[p])->index = i, i = p;
     (ts->heap[i] = timer)->index = i;
     if (i == 0) ts->nexttime = timer->emit;
     return ZN_OK;
@@ -452,17 +450,19 @@ ZN_API int zn_starttimer(zn_Timer *timer, zn_Time delayms) {
 
 ZN_API void zn_canceltimer(zn_Timer *timer) {
     zn_TimerState *ts = timer->ts;
-    unsigned i = timer->index, k;
+    unsigned i = timer->index, p, k;
     if (i == ZN_TIMER_NOINDEX) return;
     timer->index = ZN_TIMER_NOINDEX;
     if (ts->used == 0 || timer == ts->heap[--ts->used])
         return;
     timer = ts->heap[ts->used];
+    while (p = (i-1)>>1, i > 0 && ts->heap[p]->emit > timer->emit)
+        (ts->heap[i] = ts->heap[p])->index = i, i = p;
     while ((k = i<<1|1) < ts->used
             && timer->emit > ts->heap[
                 k += k+1 < ts->used && ts->heap[k]->emit > ts->heap[k+1]->emit
-            ]->emit && ((ts->heap[i] = ts->heap[k])->index = i, i = k))
-        ;
+            ]->emit)
+        (ts->heap[i] = ts->heap[k])->index = i, i = k;
     (ts->heap[i] = timer)->index = i;
 }
 
@@ -1256,9 +1256,14 @@ ZN_API void zn_initialize(void) {
             abort();
         }
         kernel32 = GetModuleHandleA("KERNEL32.DLL");
-        if (kernel32)
-            pGetQueuedCompletionStatusEx = (LPGETQUEUEDCOMPLETIONSTATUSEX)
-                GetProcAddress(kernel32, "GetQueuedCompletionStatusEx");
+        if (kernel32) {
+            union {
+                LPGETQUEUEDCOMPLETIONSTATUSEX f;
+                FARPROC                       v;
+            } u;
+            u.v = GetProcAddress(kernel32, "GetQueuedCompletionStatusEx");
+            pGetQueuedCompletionStatusEx = u.f;
+        }
         zn_initialized = TRUE;
     }
 }

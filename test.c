@@ -83,6 +83,7 @@ static void cleanup(void) {
 #ifdef _WIN32
 static int deinited = 0;
 static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
+    (void)dwCtrlEvent;
     if (!deinited) {
         deinited = 1;
         /* windows ctrl handler is running at another thread */

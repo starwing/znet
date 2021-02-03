@@ -301,7 +301,6 @@ static int Ltcp_connect(lua_State *L) {
     int ret;
     obj->packet = lua_toboolean(L, 5);
     luaL_checktype(L, 4, LUA_TFUNCTION);
-    luaL_argcheck(L, port > 0, 3, "port out of range");
     lzn_ref(L, 4, &obj->onconnect_ref);
     lzn_ref(L, 1, &obj->ref);
     ret = zn_getaddrinfo(obj->S, addr, port, ZN_TCP, lzn_ongetaddr, obj);
@@ -775,7 +774,7 @@ LUALIB_API int luaopen_znet(lua_State *L) {
 }
 
 /* win32cc: flags+='-mdll -s -O3 -DLUA_BUILD_AS_DLL'
- * win32cc: libs+='-lws2_32 -llua53' output='znet.dll'
+ * win32cc: libs+='-lws2_32 -llua54' output='znet.dll'
  * maccc: flags+='-bundle -O3 -undefined dynamic_lookup -pthread'
  * maccc: output='znet.so' */
 
