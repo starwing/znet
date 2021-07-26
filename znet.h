@@ -1997,7 +1997,7 @@ static void zn_onaccept(zn_Accept *a, int err) {
 /* udp */
 
 static int znP_initudp(zn_Udp *udp, zn_SockAddr *addr) {
-    int fd = socket(znU_family(addr), accept->type, znU_ipproto(accept->type));
+    int fd = socket(znU_family(addr), SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) return ZN_ESOCKET;
 
     if (bind(fd, &addr->addr, znU_size(addr)) != 0) {
