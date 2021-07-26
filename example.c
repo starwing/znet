@@ -59,6 +59,9 @@ void on_udp_recv(void *ud, zn_Udp *udp, unsigned err, unsigned count,
 /* functions that will called after some milliseconds after.  */
 zn_Time on_timer(void *ud, zn_Timer *timer, zn_Time elapsed);
 
+/* tcp listen port */
+const int PORT = 12345; 
+
 /* the main entry of our examples. */
 int main(void) {
     zn_State  *S;         /* the znet event loop handler */
@@ -92,9 +95,9 @@ int main(void) {
     /* create a znet tcp server */
     accept = zn_newaccept(S, 0);
 
-    /* this server listen to 8080 port */
-    if (zn_listen(accept, "127.0.0.1", 8080) == ZN_OK) {
-        printf("[%p] accept listening to 8080 ...\n", accept);
+    /* this server listen to port */
+    if (zn_listen(accept, "127.0.0.1", PORT) == ZN_OK) {
+        printf("[%p] accept listening to %d ...\n", accept, PORT);
     }
 
     /* this server and when new connection coming, on_accept()
@@ -116,14 +119,14 @@ int main(void) {
     data->idx = 1;
     data->count = 0;
     tcp = zn_newtcp(S);
-    zn_connect(tcp, "127.0.0.1", 8080, 0, on_connection, data);
+    zn_connect(tcp, "127.0.0.1", PORT, 0, on_connection, data);
 
     /* ..., and another one */
     data = (MyData*)malloc(sizeof(MyData));
     data->idx = 2;
     data->count = 0;
     tcp = zn_newtcp(S);
-    zn_connect(tcp, "127.0.0.1", 8080, 0, on_connection, data);
+    zn_connect(tcp, "127.0.0.1", PORT, 0, on_connection, data);
 
     udpserver = zn_newudp(S, "127.0.0.1", 8088);
     udpclient = zn_newudp(S, "127.0.0.1", 0);
@@ -281,7 +284,7 @@ void on_connection(void *ud, zn_Tcp *tcp, unsigned err) {
         if (++data->count < 10) {
             fprintf(stderr, "[%p client%d just try again (%d times)! :-/ \n",
                     tcp, data->idx, data->count);
-            zn_connect(tcp, "127.0.0.1", 8080, 0, on_connection, data);
+            zn_connect(tcp, "127.0.0.1", PORT, 0, on_connection, data);
         }
         else {
             fprintf(stderr, "[%p] client%d just give up to connect :-( \n",
