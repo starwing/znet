@@ -489,11 +489,12 @@ ZN_API int zn_closeudp(zn_Udp *udp) { return znP_closeudp(udp);  }
 
 static int znS_poll(zn_State *S, int checkonly) {
     zn_Time current, timeout = 0;
+    int has_more;
 
     S->status = ZN_STATUS_IN_RUN;
     znT_updatetimers(&S->ts, current = zn_time());
     if (!checkonly) timeout = znT_gettimeout(&S->ts, current);
-    znP_poll(S, timeout);
+    has_more = znP_poll(S, timeout);
     znT_updatetimers(&S->ts, zn_time());
 
     if (S->status == ZN_STATUS_CLOSING_IN_RUN) {
@@ -502,7 +503,7 @@ static int znS_poll(zn_State *S, int checkonly) {
         return 0;
     }
     S->status = ZN_STATUS_READY;
-    return znT_hastimers(&S->ts) || S->waitings > 0;
+    return has_more || znT_hastimers(&S->ts) || S->waitings > 0;
 }
 
 ZN_API const char *zn_strerror(int err) {
@@ -1155,13 +1156,15 @@ struct zn_Result {
 static void znR_add(zn_State *S, int err, zn_Result *result)
 { result->err = err; znQ_enqueue(&S->result_queue, result); }
 
-static void znR_process(zn_State *S) {
+static int znR_process(zn_State *S, int all) {
     int count = 0;
-    while (!znQ_empty(&S->result_queue) && ++count <= ZN_MAX_RESULT_LOOPS) {
+    while (!znQ_empty(&S->result_queue)
+            && (all || ++count <= ZN_MAX_RESULT_LOOPS)) {
         zn_Result *results = znQ_first(&S->result_queue);
         znQ_init(&S->result_queue);
         znQ_apply(zn_Result, results, zn_onresult(cur));
     }
+    return !znQ_empty(&S->result_queue);
 }
 
 #endif /* zn_use_resultqueue */
@@ -1669,14 +1672,14 @@ static void znP_dispatch(zn_State *S, BOOL bRet, LPOVERLAPPED_ENTRY pEntry) {
     }
 }
 
-static void znP_poll(zn_State *S, zn_Time timeout) {
+static int znP_poll(zn_State *S, zn_Time timeout) {
     BOOL bRet;
     DWORD ms = timeout >= ZN_FOREVER ? INFINITE : timeout;
     if (pGetQueuedCompletionStatusEx) {
         ULONG i, count;
         bRet = pGetQueuedCompletionStatusEx(S->iocp,
                 S->entries, ZN_MAX_EVENTS, &count, ms, FALSE);
-        if (!bRet) return; /* time out */
+        if (!bRet) return 0; /* time out */
         for (i = 0; i < count; ++i) {
             DWORD transfer;
             BOOL result;
@@ -1699,9 +1702,10 @@ static void znP_poll(zn_State *S, zn_Time timeout) {
                 &entry.lpCompletionKey,
                 &entry.lpOverlapped, ms);
         if (!bRet && !entry.lpOverlapped) /* time out */
-            return;
+            return 0;
         znP_dispatch(S, bRet, &entry);
     }
+    return 0;
 }
 
 #endif /* zn_use_backend_iocp */
@@ -2093,7 +2097,7 @@ static void znP_dispatch(zn_State *S, int fd, int setno) {
     }
 }
 
-static void znP_poll(zn_State *S, zn_Time timeout) {
+static int znP_poll(zn_State *S, zn_Time timeout) {
     int i, ret;
     fd_set readfds = S->readfds;
     fd_set writefds = S->writefds;
@@ -2106,7 +2110,7 @@ static void znP_poll(zn_State *S, zn_Time timeout) {
     }
     ret = select(S->nfds+1, &readfds, &writefds, &exceptfds, ptv);
     if (ret < 0 && errno != EINTR) /* error out */
-        return;
+        return 0;
     for (i = 0; i <= S->nfds; ++i) {
         if (FD_ISSET(i, &readfds))
             znP_dispatch(S, i, 0);
@@ -2115,6 +2119,7 @@ static void znP_poll(zn_State *S, zn_Time timeout) {
         if (FD_ISSET(i, &exceptfds))
             znP_dispatch(S, i, 2);
     }
+    return 0;
 }
 
 static int znP_init(zn_State *S) {
@@ -2566,15 +2571,17 @@ static void znP_dispatch(zn_State *S, struct epoll_event *evt) {
     }
 }
 
-static void znP_poll(zn_State *S, zn_Time timeout) {
+static int znP_poll(zn_State *S, zn_Time timeout) {
     int i, ret;
     int ms = timeout >= ZN_FOREVER ? -1 : (int)timeout;
+    if (znR_process(S, 0))
+        return 1;
     ret = epoll_wait(S->epoll, S->events, ZN_MAX_EVENTS, ms);
     if (ret < 0 && errno != EINTR) /* error out */
-        return;
+        return 0;
     for (i = 0; i < ret; ++i)
         znP_dispatch(S, &S->events[i]);
-    znR_process(S);
+    return znR_process(S, 0);
 }
 
 static int znP_init(zn_State *S) {
@@ -2593,7 +2600,7 @@ static int znP_init(zn_State *S) {
 
 static void znP_close(zn_State *S) {
     znT_process(S);
-    znR_process(S);
+    znR_process(S, 1);
     assert(znQ_empty(&S->result_queue));
     close(S->eventfd);
     close(S->epoll);
@@ -2762,7 +2769,7 @@ static void znP_dispatch(zn_State *S, struct kevent *evt) {
     }
 }
 
-static void znP_poll(zn_State *S, zn_Time timeout) {
+static int znP_poll(zn_State *S, zn_Time timeout) {
     int i, ret;
     struct timespec ms, *pms = NULL;
     if (timeout < ZN_FOREVER) {
@@ -2772,10 +2779,10 @@ static void znP_poll(zn_State *S, zn_Time timeout) {
     }
     ret = kevent(S->kqueue, NULL, 0, S->events, ZN_MAX_EVENTS, pms);
     if (ret < 0) /* error out */
-        return;
+        return 0;
     for (i = 0; i < ret; ++i)
         znP_dispatch(S, &S->events[i]);
-    znR_process(S);
+    return znR_process(S, 0);
 }
 
 static int znP_init(zn_State *S) {
@@ -2796,7 +2803,7 @@ static int znP_init(zn_State *S) {
 
 static void znP_close(zn_State *S) {
     znT_process(S);
-    znR_process(S);
+    znR_process(S, 1);
     assert(znQ_first(&S->result_queue) == NULL);
     close(S->sockpairs[0]);
     close(S->sockpairs[1]);
