@@ -2759,6 +2759,8 @@ static int znP_poll(zn_State *S, zn_Time timeout) {
         ms.tv_nsec = (timeout % 1000) * 1000000;
         pms = &ms;
     }
+    if (znR_process(S, 0))
+        return 1;
     ret = kevent(S->kqueue, NULL, 0, S->events, ZN_MAX_EVENTS, pms);
     if (ret < 0) /* error out */
         return 0;
