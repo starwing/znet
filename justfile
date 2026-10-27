@@ -14,7 +14,8 @@
 #   just test tcp tcp_conn only tests whose name starts with tcp_conn
 #   just cov               lcov report for znet.h
 #   just clean-cov         remove coverage data only
-#   just smoke             build + run example.c and test.c
+#   just test-lua          build the Lua binding + run tests/test.lua
+#   just smoke             build + run example.c
 #   just bench             build the benchmark programs
 #   just bench echo 5      echo benchmark, 5 seconds
 #   just clean             remove every build artifact
@@ -64,6 +65,9 @@ test suite="tcp" *args="":
 test-select suite="tcp" *args="":
     @just --justfile tests/justfile test-select {{suite}} {{args}}
 
+# Lua binding smoke test (needs Lua >= 5.3 and its headers)
+test-lua: (tests::test-lua)
+
 # lcov coverage report for znet.h (native + select, merged)
 cov: (tests::cov)
 
@@ -74,9 +78,9 @@ cov-lines: (tests::cov-lines)
 cov-unbranched: (tests::cov-unbranched)
 
 # ---------------------------------------------------------------------------
-# smoke programs (the two that still compile)
+# smoke program
 
-# build + run example.c and test.c
+# build + run example.c
 smoke: (smoke-run "native" "")
 smoke-select: (smoke-run "select" "-DZN_USE_SELECT")
 
@@ -86,10 +90,8 @@ smoke-run tag flags:
     set -euo pipefail
     out="/tmp/znet-smoke-{{tag}}"
     mkdir -p "$out"
-    for f in example test; do
-        {{CC}} {{CFLAGS}} {{flags}} -o "$out/$f" "$f.c" -pthread
-        "$out/$f"
-    done
+    {{CC}} {{CFLAGS}} {{flags}} -o "$out/example" example.c -pthread
+    "$out/example"
 
 # ---------------------------------------------------------------------------
 # cleanup

@@ -252,25 +252,19 @@ TEST(dispatch_delete_self_in_callback) {
     zt_close(c.S);
 }
 
-/* ---- select only: expected crash ---- */
+/* ---- select only: same-batch fd deletion (L1 regression) ---- */
 
 #if defined(ZN_USE_SELECT)
 
-/* TODO L1 (znet.h:2068): select's znP_dispatch() does
- *
- *     info = S->infos[fd];
- *     switch (info->type) { ...
- *
- * with no NULL check.  znF_unregister() sets S->infos[fd] = NULL, so when a
- * callback closes another fd that is ready in the *same* select batch, the
- * next dispatch in that batch dereferences NULL and the process dies
- * (SIGSEGV; with -fsanitize=undefined UBSan aborts first).
+/* L1: select's znP_dispatch() used to dereference S->infos[fd] without a NULL
+ * check.  znF_unregister() sets S->infos[fd] = NULL, so when a callback closes
+ * another fd that is ready in the *same* select batch, the next dispatch in
+ * that batch crashed.  The fix skips NULL entries; the deleted connection must
+ * also not deliver a second callback (nrecv == 1).
  *
  * Both server fds are made ready before the pump, and the batch is walked in
  * ascending fd order, so the callback for the lower (first accepted) fd always
- * runs first and always deletes the higher one that is still queued in the
- * batch.  DESIRED: no crash; the deleted connection must not deliver a second
- * callback (nrecv == 1).  Keep this test last: it aborts the whole process.
+ * runs first and always deletes the higher one that is still queued.
  */
 TEST(dispatch_select_close_other_fd) {
     dt_Ctx  c;

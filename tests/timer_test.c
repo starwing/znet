@@ -205,6 +205,44 @@ TEST(timer_cancel_mid) {
     zt_close(S);
 }
 
+/* Cancel a node whose replacement (the last heap slot) is smaller than the
+ * removed node's parent: the moved timer has to sift *up* before the usual
+ * sift-down.  A real arm/cancel sequence rarely produces that shape, so the
+ * heap is built by hand from six timers. */
+TEST(timer_cancel_sift_up) {
+    zn_State *S = zt_open();
+    zn_Timer *t[6];
+    zn_Time   emit[6];
+    int       i;
+
+    emit[0] = 1;  emit[1] = 10; emit[2] = 2;
+    emit[3] = 12; emit[4] = 11; emit[5] = 5;
+    assertok(znT_resizeheap(&S->ts, 6));
+    for (i = 0; i < 6; ++i) {
+        t[i] = zn_newtimer(S, cb_record, (void *)(size_t)i);
+        assertok(t[i] != NULL);
+        t[i]->start = 0;
+        t[i]->emit = emit[i];
+        t[i]->index = (unsigned)i;
+        S->ts.heap[i] = t[i];
+    }
+    S->ts.used = 6;
+    S->ts.nexttime = emit[0];
+    assertok(S->ts.size >= 6);
+
+    /* removing slot 4 (emit 11) moves the last timer (emit 5) into slot 1,
+     * which is above the old parent emit 10, so it must sift up */
+    zn_canceltimer(t[4]);
+    asserteq(S->ts.used, 5);
+    asserteq(t[4]->index, ZN_TIMER_NOINDEX);
+    asserteq(t[5]->index, 1);
+    asserteq(S->ts.heap[1], t[5]);
+    asserteq(S->ts.heap[3], t[3]);
+    asserteq(S->ts.heap[4], t[1]);
+    asserteq(S->ts.nexttime, emit[0]);
+    zt_close(S);
+}
+
 TEST(timer_cancel_last) {
     zn_State *S = zt_open();
     zt_Loop   L;

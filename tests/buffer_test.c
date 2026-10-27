@@ -399,6 +399,15 @@ TEST(recv_default_handlers) {
     assertok(rb.header_handler == znRB_onheader);
     zn_recvonpacket(&rb, NULL, NULL);
     assertok(rb.packet_handler == znRB_onpacket);
+
+    /* the built-in packet handler is a no-op: bytes are consumed and nothing
+     * reaches the recorder */
+    memcpy(rb.buff, "xy", 2);
+    ret = zn_recvfinish(&rb, 2);
+    assertok(ret == 0 || ret == 1);
+    asserteq(rec.packets, 0);
+    asserteq(rb.readed.used, 0);
+
     zn_recvonpacket(&rb, rec_packet, &rec);
 
     /* the default header hands over the whole chunk as one packet */
@@ -757,6 +766,40 @@ TEST(sendbuffer_oom) {
     asserteq(log.bad_free, 0);
 }
 
+/* A partial send has queued a payload in `pending`; merging it into
+ * `sending` can need a bigger block.  When that allocation fails the merge is
+ * retried on the next finish call, so `pending` must stay intact and the
+ * return value is still "something left to send". */
+TEST(sendbuffer_merge_oom) {
+    alloc_log       log;
+    zn_BufferCache *bc;
+    zn_SendBuffer   sb;
+    char            big[10000];
+
+    memset(&log, 0, sizeof(log));
+    memset(big, 'y', sizeof(big));
+    bc = zn_newbuffcache(alloc_log_f, &log);
+    assertok(bc != NULL);
+    zn_initsendbuffer(&sb, bc);
+
+    asserteq(zn_sendprepare(&sb, big, sizeof(big)), 1);
+    asserteq(zn_sendprepare(&sb, big, sizeof(big)), 0);
+    asserteq(sb.sending->used, sizeof(big));
+    asserteq(sb.pending->used, sizeof(big));
+
+    log.fail_count = 2;
+    asserteq(zn_sendfinish(&sb, 10), 1);
+    asserteq(sb.pending->used, sizeof(big)); /* kept for the retry */
+
+    log.fail_count = 0;
+    asserteq(zn_sendfinish(&sb, 10), 1);
+    asserteq(sb.pending->used, 0);           /* merged on the retry */
+
+    zn_resetsendbuffer(&sb);
+    zn_delbuffcache(bc);
+    asserteq(log.bad_free, 0);
+}
+
 TEST(sendbuffer_reset) {
     zn_SendBuffer sb;
     char          big[ZN_BUFFERSIZE * 2];
@@ -810,8 +853,15 @@ TEST(recv_split_header) {
     asserteq(rec.packets, 0);
     asserteq(rb.readed.used, 1);
 
+    /* a second single byte still leaves the prefix incomplete: the slow path
+     * has to keep the buffered tail instead of consuming it */
+    ret = rec_feed(&rb, frame + 1, 1);
+    asserteq(ret, 1);
+    asserteq(rec.packets, 0);
+    asserteq(rb.readed.used, 2);
+
     /* the rest of the prefix plus the payload completes the frame */
-    ret = rec_feed(&rb, frame + 1, 3);
+    ret = rec_feed(&rb, frame + 2, 2);
     assertok(ret == 0 || ret == 1);
     asserteq(rec.packets, 1);
     rec_assert(&rec, 0, frame, sizeof(frame));

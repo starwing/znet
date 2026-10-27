@@ -16,7 +16,9 @@ tests/ztest.h               znet-specific helpers; includes znet.h with
                             ZN_IMPLEMENTATION so unit tests see internals
 tests/<topic>_test.c        the suites
 tests/<topic>_test.gen.inc  generated, gitignored, never edited
-tests/build/                binaries and coverage output (gitignored)
+tests/test.lua              Lua binding smoke test (needs Lua >= 5.3)
+tests/COVERAGE.md           current line-coverage report and uncovered-line analysis
+tests/build/                binaries, Lua module and coverage output (gitignored)
 bench/                      benchmarks (own justfile); not part of the suite
 ```
 
@@ -121,9 +123,18 @@ just test tcp tcp_conn     # only matching tests
 just test-select tcp       # select backend
 just check                 # everything, native+select
 just check-64bit-timer     # timer suite, 64-bit zn_Time
+just test-lua              # build znet.so + run tests/test.lua
 just cov                   # lcov report for znet.h
 just clean-cov             # coverage data only
 ```
+
+`just test-lua` is outside `check`: it links the optional Lua binding against
+the host Lua (>= 5.3, headers found via pkg-config or `$LUA_INC`) and runs a
+self-contained loopback echo test, so it needs no network.
+
+The current line-coverage numbers and the per-line analysis of what cannot be
+covered (IOCP-only code, fault-injection paths, dead defensive branches) are in
+[`COVERAGE.md`](COVERAGE.md).
 
 `just test` runs the binary in one process (fast, stops at the first failure).
 `just check` runs one process per test, so one failing test does not hide the

@@ -151,9 +151,30 @@ test-select name *args='':
     {{CC}} {{BASE}} {{SAN}} -DZN_USE_SELECT -o "$out/$suite" "{{SRC}}/$suite.c"
     "$out/$suite" {{args}}
 
-# strict Clean C compile check (no run).  Expected to fail until TODO C1/C4
-# are fixed: znet.h has an enum trailing comma, example.c/test.c mix
-# declarations and code.
+# Lua binding smoke test: build znet.so from zn_lua.c, then run tests/test.lua.
+# Needs Lua >= 5.3 and its headers (pkg-config name lua5.5/5.4/5.3/lua).  It is
+# intentionally not part of `check`: the binding is an optional component and
+# the recipe links against the host's Lua ABI.
+test-lua:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out='{{BUILD}}/lua'
+    mkdir -p "$out"
+    inc="${LUA_INC:-$(pkg-config --cflags lua5.5 lua5.4 lua5.3 lua 2>/dev/null || true)}"
+    case "$(uname -s)" in
+        Darwin) shlib='-bundle -undefined dynamic_lookup' ;;
+        *)      shlib='-shared' ;;
+    esac
+    {{CC}} -std=c99 -O2 -fPIC $shlib -pthread $inc -I'{{ROOT}}' \
+        -o "$out/znet.so" '{{ROOT}}/zn_lua.c'
+    # some Lua builds only honour the versioned variable
+    LUA_CPATH="$out/?.so" \
+    LUA_CPATH_5_5="$out/?.so" LUA_CPATH_5_4="$out/?.so" \
+    LUA_CPATH_5_3="$out/?.so" \
+        {{LUA}} '{{SRC}}/test.lua'
+
+# strict Clean C compile check (no run).  Expected to fail until TODO C4 is
+# fixed: example.c still mixes declarations and code.
 check-c89:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -166,7 +187,7 @@ check-c89:
             -D_XOPEN_SOURCE=600 {{INC}} \
             -c -o /dev/null "{{SRC}}/$s.c" || fail=1
     done
-    for f in example test; do
+    for f in example; do
         echo "--- c89 $f.c ---"
         {{CC}} -std=c89 -pedantic-errors -Wno-variadic-macros \
             -D_XOPEN_SOURCE=600 {{INC}} \
@@ -187,7 +208,7 @@ check-cpp03:
             -D_XOPEN_SOURCE=600 {{INC}} \
             -x c++ -c -o /dev/null "{{SRC}}/$s.c" || fail=1
     done
-    for f in example test; do
+    for f in example; do
         echo "--- c++03 $f.c ---"
         {{CXX}} -std=c++03 -pedantic-errors -Wno-variadic-macros \
             -D_XOPEN_SOURCE=600 {{INC}} \

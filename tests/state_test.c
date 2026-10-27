@@ -32,6 +32,7 @@
 
 #ifndef _WIN32
 # include <pthread.h>
+# include <sys/resource.h>
 #endif
 
 /* ---- shared recorders ---- */
@@ -565,5 +566,27 @@ TEST(state_initialize_deinitialize) {
     zn_deinitialize();
     zn_initialize();
 }
+
+/* zn_newstate() must free the partially built state when the backend cannot
+ * open its wakeup socketpair.  RLIMIT_NOFILE=0 makes socketpair()/eventfd()
+ * fail deterministically; the limit is process-local and restored before any
+ * assertion can abort. */
+#ifndef _WIN32
+TEST(state_newstate_init_failure) {
+    struct rlimit old, lim;
+    zn_State     *S;
+
+    if (getrlimit(RLIMIT_NOFILE, &old) != 0)
+        test_skip("getrlimit(RLIMIT_NOFILE) unavailable");
+    lim = old;
+    lim.rlim_cur = 0;
+    if (setrlimit(RLIMIT_NOFILE, &lim) != 0)
+        test_skip("cannot lower RLIMIT_NOFILE");
+    S = zn_newstate();
+    if (setrlimit(RLIMIT_NOFILE, &old) != 0)
+        zt_fail("cannot restore RLIMIT_NOFILE");
+    assertok(S == NULL);
+}
+#endif
 
 #include "state_test.gen.inc"
