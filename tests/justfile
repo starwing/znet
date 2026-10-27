@@ -116,9 +116,6 @@ check-select: (build "select" "-DZN_USE_SELECT") (run "select") (verify "select"
 # alias: ASan+UBSan is the default for `check`
 check-asan: check
 
-# timers with the opt-in 64-bit zn_Time (T1/T2 regressions)
-check-64bit-timer: (build "timer64" "-DZN_USE_64BIT_TIMER" "timer_test") (run "timer64" "timer_test") (verify "timer64")
-
 # one suite, native backend: `just test tcp`, `just test tcp tcp_connect`
 test name *args='':
     #!/usr/bin/env bash

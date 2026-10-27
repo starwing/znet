@@ -3,8 +3,8 @@
  * Covers: ordering, 0 delay, same deadline, re-arm from the handler, delete
  * from the handler, cancel root/middle/last, cancel twice, cancel unarmed,
  * restart armed/after fire, nexttime/timeout accounting (T3/T4), the epoll
- * integer timeout clamp (B6), and the 64-bit timer option (zn_Time
- * truncation regressions T1/T2).
+ * integer timeout clamp (B6), and the zn_Time width (T1/T2 truncation
+ * regressions, skipped on 32-bit builds).
  *
  * Timer callbacks do not retain the state, so the tests drive the loop with
  * zt_begin/ZT_WAIT: the hidden 20 ms tick keeps every poll bounded.  zn_run()
@@ -386,6 +386,17 @@ TEST(timer_nexttime_and_timeout) {
     zt_close(S);
 }
 
+/* The poll wait is sized in int/DWORD, so znS_poll clamps it; the internal
+ * gettimeout keeps returning the exact delta (see timer_64bit_delay). */
+TEST(timer_timeout_clamp) {
+    asserteq(znS_clampms(0), 0);
+    asserteq(znS_clampms(25), 25);
+    asserteq(znS_clampms((zn_Time)INT_MAX), INT_MAX);
+    asserteq(znS_clampms((zn_Time)INT_MAX + 1), INT_MAX);
+    asserteq(znS_clampms(ZN_FOREVER - 1), INT_MAX);
+    asserteq(znS_clampms(ZN_FOREVER), ZN_FOREVER);
+}
+
 /* Cancelling the root must move nexttime to the new root: a stale nexttime
  * wakes the loop on every poll until the cancelled deadline (TODO T4). */
 TEST(timer_cancel_updates_nexttime) {
@@ -493,14 +504,19 @@ TEST(timer_handler_returns_int_max) {
     zt_close(S);
 }
 
-#ifdef ZN_USE_64BIT_TIMER
-
-/* T2: a delay wider than 32 bits must be stored exactly. */
+/* T2: a delay wider than 32 bits must be stored exactly.  Skipped where
+ * zn_Time is still 32-bit (the pre-existing wrap remains there). */
 TEST(timer_64bit_delay) {
-    zn_State *S = zt_open();
-    zn_Timer *t = zn_newtimer(S, cb_record, NULL);
+    zn_State *S;
+    zn_Timer *t;
     zn_Time   big = (zn_Time)0xFFFFFFFFu + 6;
 
+    if (sizeof(zn_Time) <= sizeof(unsigned)) {
+        test_skip("zn_Time is 32-bit");
+        return;
+    }
+    S = zt_open();
+    t = zn_newtimer(S, cb_record, NULL);
     assertok(t != NULL);
     asserteq(zn_starttimer(t, big), ZN_OK);
     asserteq(t->emit, t->start + big);
@@ -524,10 +540,16 @@ static zn_Time cb_big_rearm(void *ud, zn_Timer *timer, zn_Time elapsed) {
 }
 
 TEST(timer_64bit_handler_return) {
-    zn_State *S = zt_open();
+    zn_State *S;
     zt_Loop   L;
-    zn_Timer *t = zn_newtimer(S, cb_big_rearm, NULL);
+    zn_Timer *t;
 
+    if (sizeof(zn_Time) <= sizeof(unsigned)) {
+        test_skip("zn_Time is 32-bit");
+        return;
+    }
+    S = zt_open();
+    t = zn_newtimer(S, cb_big_rearm, NULL);
     reset_events();
     assertok(t != NULL);
     asserteq(zn_starttimer(t, 0), ZN_OK);
@@ -540,8 +562,6 @@ TEST(timer_64bit_handler_return) {
     zt_end(&L);
     zt_close(S);
 }
-
-#endif /* ZN_USE_64BIT_TIMER */
 
 /* More than ZN_MAX_TIMERHEAP (512) armed timers forces znT_resizeheap() to
  * double the array, covering the growth path. */

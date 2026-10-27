@@ -57,7 +57,7 @@ typedef struct lzn_Timer {
     lua_State *L;
     int ontimer_ref;
     int ref;
-    unsigned delayms;
+    zn_Time delayms;
 } lzn_Timer;
 
 static zn_Time lzn_ontimer(void *ud, zn_Timer *timer, zn_Time elapsed) {
@@ -116,7 +116,7 @@ static int Ltimer_start(lua_State *L) {
     lua_Integer delayms = luaL_optinteger(L, 2, 0);
     if (!obj->timer) return 0;
     if (delayms < 0) delayms = 0;
-    obj->delayms = (unsigned)delayms;
+    obj->delayms = (zn_Time)delayms;
     if (zn_starttimer(obj->timer, obj->delayms))
         lzn_ref(L, 1, &obj->ref);
     lbind_returnself(L);

@@ -2,6 +2,8 @@
 #ifndef znet_h
 #define znet_h
 
+#include <stddef.h>
+
 
 #ifndef ZN_NS_BEGIN
 # ifdef __cplusplus
@@ -40,21 +42,14 @@
 # define ZN_API extern
 #endif
 
-#ifndef zn_Time
-# ifdef ZN_USE_64BIT_TIMER
-typedef unsigned long long zn_Time;
-# else
-typedef unsigned zn_Time;
-# endif
-# define zn_Time zn_Time
-#endif /* zn_Time */
+/* width follows the target; 32-bit builds still wrap at 49.7 days */
+typedef size_t zn_Time;
 
 #ifndef ZN_MAX_EVENTS
 # define ZN_MAX_EVENTS   1024
 #endif
 
 #define ZN_MAX_ADDRLEN   50
-#define ZN_MAX_TIMERPOOL 512
 #define ZN_MAX_TIMERHEAP 512
 #define ZN_MAX_PAGESIZE  4096
 
@@ -476,6 +471,8 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
 #ifdef zn_use_api /* need: state, backend, addr */
 #undef zn_use_api
 
+#include <limits.h>
+
 ZN_API unsigned zn_retain   (zn_State *S) { return ++S->waitings; }
 ZN_API unsigned zn_release  (zn_State *S) { return --S->waitings; }
 ZN_API void *zn_getuserdata (zn_State *S) { return S->userdata; }
@@ -497,13 +494,20 @@ ZN_API int zn_closetcp(zn_Tcp *tcp) { return znP_closetcp(tcp);  }
 ZN_API int zn_closeudp(zn_Udp *udp)
 { return udp->socket == ZN_INVALID_SOCKET ? ZN_OK : znP_closeudp(udp); }
 
+static zn_Time znS_clampms(zn_Time timeout) {
+    /* poll APIs take an int: clamp so 64-bit time cannot wrap the wait */
+    if (timeout < ZN_FOREVER && timeout > (zn_Time)INT_MAX) return INT_MAX;
+    return timeout;
+}
+
 static int znS_poll(zn_State *S, int checkonly) {
     zn_Time current, timeout = 0;
     int has_more;
 
     S->status = ZN_STATUS_IN_RUN;
     znT_updatetimers(&S->ts, current = zn_time());
-    if (!checkonly) timeout = znT_gettimeout(&S->ts, current);
+    if (!checkonly)
+        timeout = znS_clampms(znT_gettimeout(&S->ts, current));
     has_more = znP_poll(S, timeout);
     znT_updatetimers(&S->ts, zn_time());
 
@@ -974,7 +978,7 @@ ZN_API zn_Time zn_time(void) {
     struct timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) < 0)
         return 0;
-    return (zn_Time)(ts.tv_sec*1000+ts.tv_nsec/1000000);
+    return (zn_Time)ts.tv_sec*1000+(zn_Time)ts.tv_nsec/1000000;
 #endif
 }
 
@@ -1684,7 +1688,7 @@ static void znP_dispatch(zn_State *S, BOOL bRet, LPOVERLAPPED_ENTRY pEntry) {
 
 static int znP_poll(zn_State *S, zn_Time timeout) {
     BOOL bRet;
-    DWORD ms = timeout >= ZN_FOREVER ? INFINITE : timeout;
+    DWORD ms = timeout >= ZN_FOREVER ? INFINITE : (DWORD)timeout;
     if (pGetQueuedCompletionStatusEx) {
         ULONG i, count;
         bRet = pGetQueuedCompletionStatusEx(S->iocp,

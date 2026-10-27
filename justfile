@@ -8,7 +8,6 @@
 #
 #   just check             whole suite: native backend + select
 #   just check-select      select backend only
-#   just check-64bit-timer timer suite with -DZN_USE_64BIT_TIMER
 #   just check-c89         strict C89 compile check (TODO C1/C4 still red)
 #   just test tcp          one suite on the native backend
 #   just test tcp tcp_conn only tests whose name starts with tcp_conn
@@ -44,9 +43,6 @@ check-select: (tests::check-select)
 
 # alias of check (ASan/UBSan is the default)
 check-asan: (tests::check-asan)
-
-# timer suite with the opt-in 64-bit zn_Time
-check-64bit-timer: (tests::check-64bit-timer)
 
 # strict C89 compile check (no run): suites + example.c + zn_task.h
 check-c89: (tests::check-c89)

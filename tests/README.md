@@ -89,7 +89,6 @@ macros that survive instead:
 | reactive backend (kqueue/epoll) | `#if !defined(ZN_USE_SELECT) && !defined(_WIN32)` |
 | kqueue backend | `#if defined(zn_have_kqueue) && !defined(ZN_USE_SELECT)` |
 | epoll backend | `#if defined(__linux__) && !defined(ZN_USE_SELECT)` |
-| 64-bit timer | `#if defined(ZN_USE_64BIT_TIMER)` |
 
 `zn_have_kqueue` and `zn_have_info` are defined by znet.h on the matching
 platforms and are not undefined, so they are safe to test after the include.
@@ -122,7 +121,6 @@ just test tcp              # build+run tcp_test (native)
 just test tcp tcp_conn     # only matching tests
 just test-select tcp       # select backend
 just check                 # everything, native+select
-just check-64bit-timer     # timer suite, 64-bit zn_Time
 just test-lua              # build znet.so + run tests/test.lua
 just cov                   # lcov report for znet.h
 just uncovered             # uncovered lines grouped by function (last cov)

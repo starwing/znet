@@ -16,7 +16,7 @@
 | 优先级 | 内容 | 理由 |
 | --- | --- | --- |
 | **P0** | L8：epoll/kqueue 事件批保存裸 `zn_SocketInfo *`，同批回调删除另一个对象后可能 UAF | 是唯一剩下的崩溃/内存安全项；测试套件目前只覆盖“另一个 fd 不在本批”的情况 |
-| **P1** | L6/L7/L9、B3/B4/B13、T2、C1（64 位 timer）/C2/C3、U1/U10、C4（`zn_lua.c` 审计） | 正确性、平台差异、Clean C / MSVC / 签名硬约束 |
+| **P1** | L6/L7/L9、B3/B4/B13、C2/C3、U1/U10、C4（`zn_lua.c` 审计） | 正确性、平台差异、Clean C / MSVC / 签名硬约束 |
 | **P2** | L10/L11、B8/B9、T5/T6、U7/U8/U11、F1/F3 | 健壮性、可维护性、资源边界 |
 | **P3** | L13、T7、M4（timer 四叉堆）、M5（收尾） | 清理和性能优化；必须先有基准/测试 |
 
@@ -47,7 +47,7 @@
 | U2 | P1 | `znBC_upperbound`/`znBC_lowerbound` 的档位索引钳到真实数组范围，>2 GiB 请求走 fallback | `buffcache_boundaries`、`buffcache_huge_index` |
 | U3 | P1 | `zn_addlstring`/`zn_addchar` 检查 `zn_prepbuffsize` 返回 NULL，OOM 不再越界写 | `buffer_append_oom`、`recv_oom_slow_path` |
 | U5 | P2 | header handler 返回 0/帧跨读时，缓冲下来的字节会参与下一次 header 解析 | `recv_split_header`、`recv_partial_header_then_frames` |
-| C1（部分） | P1 | 删除枚举尾逗号；`znet.h`/`zn_buffer.h` 通过 `-std=c89 -pedantic-errors` 和 `-std=c++03 -pedantic-errors` | `just check-c89` 的 suite 部分（`example.c` 仍见 C4） |
+| C1 | P1 | 删除枚举尾逗号；`zn_Time` 改为 `size_t`（见 1.7）；`znet.h`/`zn_buffer.h` 通过 `-std=c89 -pedantic-errors` 和 `-std=c++03 -pedantic-errors` | `just check-c89` 的 suite 部分（`example.c` 仍见 C4） |
 | F4 | P2 | 构建入口收敛到根 `justfile`（`mod tests` / `mod bench`），删除 `GNUmakefile` 和 `.bat` | `just check` / `just bench` |
 | U12 | P3 | 基准/echo 程序移到 `bench/` 并移植到当前 API（`packet = 0`）；帧格式修正 | `just bench`、`bench/README.md` |
 
@@ -128,6 +128,23 @@
 - IOCP/Windows 无法在本机构建；相关条目只能标“代码审查 + 待 CI”，不能声称已验证。
 - 没有 CI；覆盖率/测试矩阵目前靠本机与 `orb` 手工跑。
 
+### 1.7 本轮：`zn_Time` 统一为 `size_t`（2026-10-28）
+
+决策：删掉 `ZN_USE_64BIT_TIMER` 这个 opt-in 标记，默认 `zn_Time` = `size_t`（`znet.h:46`）。
+64 位平台上 timer 直接是 64 位毫秒；32 位平台仍是 32 位，49.7 天回绕作为文档化限制保留。
+这是**刻意的 ABI 变更**：`zn_time`、`zn_starttimer`、`zn_TimerHandler` 都用 `zn_Time`，
+调用方必须用 `zn_Time`，不能再用 `unsigned`/`int` 接。
+
+| 内容 | 结果 |
+| --- | --- |
+| C1 的 64 位部分 | 关闭：不再需要 `unsigned long long`，默认配置保持 Clean C |
+| T2 | 64 位平台关闭；32 位回绕保留并在 `notes/timers.md` 说明 |
+| T5 的宏部分 | 删除未使用的 `ZN_MAX_TIMERPOOL`；堆不收缩/无上限仍在 T5 |
+| 收窄点 | `znS_poll` 新增 `znS_clampms` 把非 `ZN_FOREVER` 等待钳到 `INT_MAX`；IOCP 显式 `(DWORD)`；`zn_time` POSIX 先转再乘 |
+| 绑定 | `znet.hpp` 的 `timer_cb` 参数、`zn_lua.c` 的 `delayms` 改为 `zn_Time` |
+| 测试 | `timer_64bit_delay`/`timer_64bit_handler_return` 从 `#ifdef` 改为 32 位运行期 skip；新增 `timer_timeout_clamp`；删除 `check-64bit-timer` 目标 |
+| 验证 | macOS：`just check-c89` / `just check-cpp03` / `just smoke` / `just check`；Linux：`orb just check`。IOCP 只做代码审查，**未在 Windows 验证**；32 位未验证 |
+
 ---
 
 ## 2. 待做
@@ -153,16 +170,14 @@
 
 **定时器**
 
-| ID | 位置 | 缺陷与影响 |
-| --- | --- | --- |
-| T2 | `znet.h:43` | 默认 32 位 `zn_Time` 约 49.7 天回绕；所有比较都是普通 `>`/`<=`。改类型对 DLL/`.so`/`znet.hpp` 是 ABI 变更，需要单独决策。 |
+T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位平台的 49.7 天回绕是
+文档化限制（`notes/timers.md`），不再是待修项；`start + delayms` 的溢出检查仍见 T6。
 
 **Clean C / MSVC / 签名**
 
 | ID | 位置 | 缺陷与影响 |
 | --- | --- | --- |
-| C1（64 位部分） | `znet.h:45` | `ZN_USE_64BIT_TIMER` 仍依赖 `unsigned long long`，默认配置不启用；若要求该选项也 Clean C，需改成可移植的 64 位表示。 |
-| C2 | `znet.h` 多处 | MSVC `/W4` 收窄/符号性风险未分类完成：收窄点（`ssize_t`→`int`、`size_t`→`unsigned`、`uintptr_t`→`int`、timer `zn_Time`→`int`）需显式 cast + 值域检查；同宽 signedness 优先改类型/比较/printf 格式。clang `-Wconversion -Wsign-conversion` 只是近似，实际清单需 Windows CI。 |
+| C2 | `znet.h` 多处 | MSVC `/W4` 收窄/符号性风险未分类完成：收窄点（`ssize_t`→`int`、`size_t`→`unsigned`、`uintptr_t`→`int`）需显式 cast + 值域检查；同宽 signedness 优先改类型/比较/printf 格式。clang `-Wconversion -Wsign-conversion` 只是近似，实际清单需 Windows CI。 |
 | C3 | `znet.h:103,107,417,486,640,660,678,722,730,791,1582,2015,2393` | 签名 <80 且不换行：`zn_connect` 114 列、`zn_send` 95、`zn_sendto` 100、`zn_recvfrom` 97、`zn_recv` 89、`zn_closeaccept` 81；回调 typedef 也超。`zn_connect` 必须改 API（参数结构体/去掉 `packet`/新入口），不能只折行。 |
 | C4 | `zn_lua.c` | 剩余 Clean C 审计项：`zn_lua.c` 尚未按严格 C89 审计（依赖 Lua 头）。`example.c`、`zn_task.h` 已在本轮通过 `check-c89`/`check-cpp03`（见 1.3）。 |
 
@@ -181,7 +196,7 @@
 | L11 | `zn_addrinfo.h:146` | 不在 `zn_close` 前调用 `zn_closeaddrinfo` 时，迟到的 post 可能触碰已释放 state；`znA_clearreq` 忽略 `zn_post` 失败，请求和 retain 会泄漏。 |
 | B8 | `znet.h:2352` | reactive 的 `znP_listen` 先注册 fd 再 bind/listen；失败时不注销，留下 stale `S->infos[fd]`/epoll 注册。 |
 | B9 | `znet.h:1872,1898` | select 的 `zn_onsend`/`zn_onrecv` 在就绪后遇到 `EAGAIN` 会清 handler、release，却不回调，操作被静默丢弃。 |
-| T5 | `znet.h:57` | 定时器堆只增长、不收缩；`ZN_MAX_TIMERPOOL` 声明未使用；没有数量上限。 |
+| T5 | `znet.h:53` | 定时器堆只增长、不收缩；没有数量上限。 |
 | T6 | `znet.h:443` | `start + delayms` 没有溢出检查；回绕后 `emit` 顺序错误。 |
 | U7 | `bench/zn_bufferpool.h` | `zn_putbuffer` 回收节点时没有 `zn_resetrecvbuffer`/`zn_resetsendbuffer`；下一个连接继承旧分帧状态。 |
 | U8 | `znet.hpp` | `TcpAccept` 把 client 存在 accept 对象里，连续 accept 会修改同一个 `TcpSocket`；handler 运行一次即被消费，容易误用。 |
@@ -215,7 +230,7 @@
 | 内存安全方案选择 | L8 | 延迟释放队列 vs 对象代际/活跃检查；还要先写出“两个 fd 同批就绪”的失败用例 |
 | 虚假就绪语义 | L6、L7、B9 | 自动重挂还是回调 `ZN_ERROR`（第 7.1 节）；自动重挂还要防水平触发忙等 |
 | 跨后端完成/资源语义 | B3、L9 | UDP 发送失败如何变成完成事件；IOCP 的 socket 所有权与失败清理 |
-| 公共 API/ABI 决策 | T2、C1、C3、B4、B13 | 64 位 `zn_Time` 是 ABI 变更；签名 <80 要重构 `zn_connect`；UDP 上限与 SIGPIPE 策略（第 7.2、7.10 节） |
+| 公共 API/ABI 决策 | C3、B4、B13 | 签名 <80 要重构 `zn_connect`；UDP 上限与 SIGPIPE 策略（第 7.2、7.10 节） |
 | 工具/绑定重构 | U1、U7、U8、U10、U11 | `zn_deque.h` 是修还是删（第 7.5 节）；Lua/pool 的语义要先写进文档 |
 | 记账与资源边界 | L10、L11、B8、T5、T6 | 非法参数/失败路径要引入错误码或上限，属契约改动 |
 | 机械但多站点或需外部环境 | M3/F1、F3、CI、`zn_lua.c` 的 C89 审计 | 单独提交（格式化）或需要 Windows/CI，不适合混进语义提交 |
@@ -247,7 +262,7 @@ C1/C2/C4（Clean C、MSVC `/W4`、其余文件）和 C3（签名 <80 不换行�
 - `tests/` 套件：mempool、timer、addr、addrinfo、state、resultqueue、tcp、dispatch、
   udp、buffer；`misc/gen_entries.lua` 生成入口；默认 ASan+UBSan。
 - `just check`（native + select）、`just test`、`just check-select`、
-  `just check-64bit-timer`、`just cov`、`just cov-lines`、`just cov-unbranched`。
+  `just cov`、`just cov-lines`、`just cov-unbranched`。
 - macOS kqueue+select 与 Linux epoll+select 全绿；L2 的多个失败面有回归。
 - `just test-lua`：Lua 绑定的自包含冒烟测试。
 - 覆盖率报告 `tests/COVERAGE.md`。
@@ -260,18 +275,16 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 
 ### M2 — P1 正确性与平台修复（进行中）
 
-已完成：B2、B5、C1 的枚举尾逗号、C4 的 `test.c`/`example.c`/`zn_task.h` 部分、
-B6/B7/U4/U6/U9/T3/T4（见 1.3）。
+已完成：B2、B5、C1（枚举尾逗号 + 64 位 timer，见 1.7）、C4 的
+`test.c`/`example.c`/`zn_task.h` 部分、B6/B7/U4/U6/U9/T3/T4（见 1.3）。
 
 剩余：
 
-1. C1 的 64 位 timer 可移植表示（或明确保持 opt-in）；
-2. C4 的 `zn_lua.c` 严格 C89 审计；
-3. C2 的 MSVC `/W4` 收窄分类与 Windows CI；
-4. L6/L7 的 EAGAIN 语义（推荐自动重挂）、L9 的 IOCP 资源泄漏；
-5. B3/B4/B13；
-6. T2 的 32 位回绕文档/决策；
-7. U1/U10。
+1. C4 的 `zn_lua.c` 严格 C89 审计；
+2. C2 的 MSVC `/W4` 收窄分类与 Windows CI；
+3. L6/L7 的 EAGAIN 语义（推荐自动重挂）、L9 的 IOCP 资源泄漏；
+4. B3/B4/B13；
+5. U1/U10。
 
 ### M3 — 签名重构 + 全量 clang-format（未开始）
 
@@ -318,6 +331,7 @@ B6/B7/U4/U6/U9/T3/T4（见 1.3）。
 | U2/U3 | `buffcache_boundaries` / `buffer_append_oom` | 越界档位拒绝；OOM 不写坏内存 |
 | U5 | `recv_split_header` | 跨读 header 正确解码 |
 | T3 | `timer_nexttime_and_timeout` | 空堆时 `znT_gettimeout` 恰好返回 `ZN_FOREVER` |
+| T3/收窄 | `timer_timeout_clamp` | `znS_clampms` 把非 `ZN_FOREVER` 等待钳到 `INT_MAX`，`ZN_FOREVER` 原样保留 |
 | T4 | `timer_cancel_updates_nexttime` | 取消根后 `nexttime` 指向新根；清空后为 `ZN_FOREVER` |
 | B6 | `epoll_timeout_clamp`（Linux） | 超时 > `INT_MAX` 被钳位，不回绕成负数 |
 | B7 | `udp_socket_is_nonblocking`（POSIX） | UDP fd 带 `O_NONBLOCK` |
@@ -336,7 +350,8 @@ B6/B7/U4/U6/U9/T3/T4（见 1.3）。
 4. **不要用“加一个 NULL 检查”解决 L8**：对象内存可能已被复用；要延迟释放或引入
    代际/活跃检查。
 5. **不要在没有 Windows/Linux 环境时声称 IOCP/epoll 已验证**：只写“代码审阅 + 待 CI”。
-6. **不要擅自把默认 `zn_Time` 改成 64 位**：这是 ABI 变更，需要单独决策和版本说明。
+6. **不要退回 32 位 `zn_Time`，也不要重新引入 `ZN_USE_64BIT_TIMER`**：1.7 已决定
+   `zn_Time` = `size_t`；这是刻意的 ABI 变更，调用方必须用 `zn_Time`。
 7. **不要把格式化提交和语义提交混在一起**；格式化提交必须能用 `git diff -w` 验证为空。
 8. **不要删除 `.clang-format.new`/`.clang-format` 了事**：要么定策略并纳入版本控制，
    要么明确“不格式化”。
@@ -345,7 +360,7 @@ B6/B7/U4/U6/U9/T3/T4（见 1.3）。
 10. **不要机械给所有 `size_t`/`ssize_t`/`int`/`unsigned` 转换加 cast**：MSVC `/W4` 只对
     收窄转换强制要求显式 cast；同宽问题优先改类型/格式。
 11. **不要把 `znet.hpp` 拉进 Clean C**：它是显式 C++11 可选包装。
-12. **不要默认打开 `ZN_USE_64BIT_TIMER` 来回避 `long long` 问题**：默认配置必须 Clean C。
+12. **不要用 `long long` 表示 `zn_Time`**：宽度靠 `size_t` 自适应，默认配置必须 Clean C。
 13. **不要用 fd 耗尽/信号关闭等脆弱手段硬凑覆盖率**：见 `tests/COVERAGE.md` 的取舍。
 
 ---
@@ -366,8 +381,8 @@ B6/B7/U4/U6/U9/T3/T4（见 1.3）。
    “函数名 + 参数列表”，部分函数可以少改；但 `zn_connect` 仍需要 API 重构。
 7. **`zn_connect` 的 API 重构**：参数结构体、把 `packet` 移到 `zn_newtcp`、新增
    `zn_connectex` 三个方向；要评估源码/ABI 兼容性。
-8. **`ZN_USE_64BIT_TIMER` 与 Clean C**：保持 opt-in 扩展（当前），还是改成可移植的
-   64 位表示（两个 32 位字或平台类型）。
+8. **`ZN_USE_64BIT_TIMER` 与 Clean C**：已决策（1.7）：删除该标记，`zn_Time` = `size_t`。
+   64 位平台得到 64 位时间，32 位回绕按文档化限制处理；不再有 opt-in 分支。
 9. **MSVC C4100（未使用参数）**：用 `(void)` 全覆盖，还是构建脚本 `/wd4100`？用户要求
    `/W4` 无警告；建议 `(void)`，豁免必须在构建文件里写明。
 10. **B13 的 SIGPIPE 策略**：库自己忽略 `SIGPIPE`（进程级副作用），还是在 macOS 上

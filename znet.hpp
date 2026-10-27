@@ -148,7 +148,7 @@ inline void EventLoop::post(OnPostHandler&& h)
     }, new OnPostHandler(std::move(h)));
 }
 
-static inline zn_Time timer_cb(void *ud, zn_Timer *timer, unsigned elapsed)
+static inline zn_Time timer_cb(void *ud, zn_Timer *timer, zn_Time elapsed)
 {
     auto loop = static_cast<EventLoop*>(ud);
     auto it = loop->timers.find(timer);
