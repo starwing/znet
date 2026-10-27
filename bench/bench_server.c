@@ -3,20 +3,15 @@
 #include "../zn_buffer.h"
 #include "zn_bufferpool.h"
 
-
 #include <stdio.h>
-#include <string.h>
 
+
+/* server */
 
 zn_State *S;
 zn_BufferPool pool;
 
 #define INTERVAL 5000
-#define DATA_SIZE 1024
-
-char addr[ZN_MAX_ADDRLEN];
-char data[DATA_SIZE+2];
-unsigned port = 12345;
 int send_count = 0;
 int recv_count = 0;
 int connect_count = 0;
@@ -30,10 +25,6 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     }
     send_count += count;
     zn_sendfinish(&node->send, count);
-    if (node->user_data == 4) {
-        zn_deltcp(tcp);
-        zn_putbuffer(&pool, node);
-    }
 }
 
 static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
@@ -46,8 +37,8 @@ static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     recv_count += count;
     zn_recvfinish(&node->recv, count);
     zn_recv(tcp,
-        zn_recvbuff(&node->recv),
-        zn_recvsize(&node->recv), on_recv, ud);
+            zn_recvbuff(&node->recv),
+            zn_recvsize(&node->recv), on_recv, ud);
 }
 
 static size_t on_header(void *ud, const char *buff, size_t len) {
@@ -59,51 +50,28 @@ static size_t on_header(void *ud, const char *buff, size_t len) {
 
 static void on_packet(void *ud, const char *buff, size_t len) {
     zn_BufferPoolNode *node = (zn_BufferPoolNode*)ud;
-    if (zn_sendprepare(&node->send, buff, len))
-        zn_send(node->tcp,
+    zn_sendprepare(&node->send, buff, len);
+    zn_send(node->tcp,
             zn_sendbuff(&node->send),
             zn_sendsize(&node->send), on_send, node);
-    ++node->user_data;
 }
 
-static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
-    zn_BufferPoolNode *node = (zn_BufferPoolNode*)ud;
-    if (err != ZN_OK) {
-        zn_putbuffer(&pool, node);
-        zn_deltcp(tcp);
-        return;
-    }
+static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
+    zn_BufferPoolNode *node;
+    if (err != ZN_OK)
+        exit(2);
     ++connect_count;
-    zn_recv(tcp,
-        zn_recvbuff(&node->recv),
-        zn_recvsize(&node->recv), on_recv, ud);
-    if (zn_sendprepare(&node->send, data, DATA_SIZE+2))
-        zn_send(tcp,
-            zn_sendbuff(&node->send),
-            zn_sendsize(&node->send), on_send, ud);
-}
-
-static zn_Time on_client(void *ud, zn_Timer *timer, zn_Time elapsed) {
-    zn_BufferPoolNode *node = zn_getbuffer(&pool);
-    zn_Tcp *tcp = zn_newtcp(S);
+    node = zn_getbuffer(&pool);
     zn_recvonheader(&node->recv, on_header, node);
     zn_recvonpacket(&node->recv, on_packet, node);
-    node->user_data = 0;
     node->tcp = tcp;
-    zn_connect(tcp, addr, port, on_connect, node);
-    return 1;
-}
-
-static void init_data(void) {
-    int count = 2;
-    const char *padding = "Hello world\r\n";
-    size_t paddlen = strlen(padding);
-    short len = htons(DATA_SIZE);
-    memcpy(data, &len, 2);
-    while (count < DATA_SIZE) {
-        strcpy(data+count, padding);
-        count += paddlen;
+    if (zn_recv(tcp,
+               zn_recvbuff(&node->recv),
+               zn_recvsize(&node->recv), on_recv, node) != ZN_OK) {
+        zn_putbuffer(&pool, node);
+        zn_deltcp(tcp);
     }
+    zn_accept(accept, on_accept, ud);
 }
 
 static zn_Time on_timer(void *ud, zn_Timer *timer, zn_Time elapsed) {
@@ -155,30 +123,30 @@ static void register_interrupted(void) {
 #endif
 
 int main(int argc, char **argv) {
-    zn_Timer *t1, *t2;
-    strcpy(addr, "127.0.0.1");
+    unsigned port = 12345;
+    zn_Accept *accept;
+    zn_Timer *timer;
+    setvbuf(stdout, NULL, _IOLBF, 0); /* line-buffered: run under just/CI */
     if (argc == 2) {
         unsigned p = atoi(argv[1]);
         if (p != 0) port = p;
     }
-    else if (argc == 3) {
-        unsigned p = atoi(argv[2]);
-        strcpy(addr, argv[1]);
-        if (p != 0) port = p;
-    }
 
-    init_data();
     zn_initialize();
     S = zn_newstate();
     zn_initbuffpool(&pool);
     if (S == NULL)
         return 2;
 
-    t1 = zn_newtimer(S, on_timer, NULL);
-    zn_starttimer(t1, INTERVAL);
+    accept = zn_newaccept(S, 0);
+    if (accept == NULL)
+        return 2;
+    zn_listen(accept, "0.0.0.0", port);
+    zn_accept(accept, on_accept, NULL);
+    printf("listening at: %u\n", port);
 
-    t2 = zn_newtimer(S, on_client, NULL);
-    zn_starttimer(t2, 0);
+    timer = zn_newtimer(S, on_timer, NULL);
+    zn_starttimer(timer, INTERVAL);
 
     register_interrupted();
     return zn_run(S, ZN_RUN_LOOP);

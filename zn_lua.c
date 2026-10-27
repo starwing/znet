@@ -257,7 +257,10 @@ check_close:
 static void lzn_onrecv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     lzn_Tcp *obj = (lzn_Tcp*)ud;
     if (err == ZN_OK) {
-        zn_recvfinish(&obj->recv, count);
+        if (zn_recvfinish(&obj->recv, count) < 0) {
+            lzn_tcperror(obj->L, obj, ZN_ERROR);
+            return;
+        }
         err = zn_recv(tcp,
                 zn_recvbuff(&obj->recv),
                 zn_recvsize(&obj->recv), lzn_onrecv, obj);
@@ -352,8 +355,11 @@ static int Ltcp_send(lua_State *L) {
     int ret = ZN_OK;
     len = (size_t)(i > j ? 0 : j - i + 1);
     if (!obj->tcp || obj->closing) return 0;
-    if (!zn_sendprepare(&obj->send, data + i - 1, len))
-        lbind_returnself(L);
+    {
+        int prep = zn_sendprepare(&obj->send, data + i - 1, len);
+        if (prep < 0) return_result(L, ZN_ERROR);
+        if (!prep) lbind_returnself(L);
+    }
     lzn_ref(L, 1, &obj->ref);
     ret = zn_send(obj->tcp,
             zn_sendbuff(&obj->send),

@@ -42,8 +42,9 @@
 
 #define ZN_MIN_ALLOCBUFFSIZE  4096
 #define ZN_BUFFCACHE_MINLSIZE 14
-#define ZN_BUFFCACHE_MAXLSIZE 31
+#define ZN_BUFFCACHE_MAXLSIZE 31   /* largest bucket is 1 << MAXLSIZE */
 #define ZN_BUFFCACHE_COUNT    (ZN_BUFFCACHE_MAXLSIZE-ZN_BUFFCACHE_MINLSIZE)
+#define ZN_BUFFCACHE_SLOTS    (ZN_BUFFCACHE_COUNT+1)
 
 
 #include <stddef.h>
@@ -55,6 +56,8 @@ ZN_NS_BEGIN
 
 typedef struct zn_BufferCache zn_BufferCache;
 
+/* realloc-like contract: ptr == NULL allocates, ns == 0 frees, and a failed
+ * grow leaves the old block valid; os is the old block size. */
 typedef void *zn_BufferAllocf (void *ud, void *ptr, size_t ns, size_t os);
 
 ZN_API zn_BufferCache *zn_newbuffcache (zn_BufferAllocf *f, void *ud);
@@ -75,9 +78,10 @@ typedef struct zn_Buffer {
 #define zn_buffer(b)      ((b)->buff)
 #define zn_bufflen(b)     ((b)->used)
 #define zn_addsize(b, sz) ((b)->used += (sz))
+/* 1 on success, 0 when the buffer could not grow (the char is not stored) */
 #define zn_addchar(b, ch) \
-    ((void)((b)->used < (b)->size || zn_prepbuffsize((b), 1)), \
-     ((b)->buff[(b)->used++] = (ch)))
+    (((b)->used < (b)->size || zn_prepbuffsize((b), 1) != NULL) \
+     ? ((b)->buff[(b)->used++] = (ch), 1) : 0)
 
 ZN_API void zn_initbuffer  (zn_Buffer *b, zn_BufferCache *bc);
 ZN_API void zn_resetbuffer (zn_Buffer *b);
@@ -85,7 +89,8 @@ ZN_API void zn_resetbuffer (zn_Buffer *b);
 ZN_API size_t zn_resizebuffer (zn_Buffer *b, size_t len);
 
 ZN_API char *zn_prepbuffsize (zn_Buffer *b, size_t len);
-ZN_API void zn_addlstring    (zn_Buffer *b, const char *s, size_t len);
+/* 1 on success, 0 when the buffer could not grow (OOM) */
+ZN_API int  zn_addlstring    (zn_Buffer *b, const char *s, size_t len);
 
 
 /* recv buffer */
@@ -110,6 +115,8 @@ ZN_API void zn_resetrecvbuffer (zn_RecvBuffer *b);
 ZN_API void zn_recvonheader (zn_RecvBuffer *b, zn_HeaderHandler *h, void *ud);
 ZN_API void zn_recvonpacket (zn_RecvBuffer *b, zn_PacketHandler *h, void *ud);
 
+/* 0 = everything consumed, 1 = need more bytes, -1 = the accumulator could
+ * not grow; on -1 the framing state is undefined, reset before reusing */
 ZN_API int zn_recvfinish (zn_RecvBuffer *b, size_t count);
 
 
@@ -127,10 +134,11 @@ ZN_API void zn_resetsendbuffer (zn_SendBuffer *b);
 
 #define zn_sendbuff(b)   zn_buffer((b)->sending)
 #define zn_sendsize(b)   zn_bufflen((b)->sending)
-ZN_API int zn_sendprepare (zn_SendBuffer *b, const char *buff, size_t len);
-
 #define zn_curbuffer(b)      (zn_sendsize(b) == 0 ? (b)->sending : (b)->pending)
 #define zn_needsend(b, buff) ((buff) == (b)->sending)
+/* 1 = nothing in flight, send now; 0 = queued behind the in-flight payload;
+ * -1 = out of memory (nothing was queued) */
+ZN_API int zn_sendprepare (zn_SendBuffer *b, const char *buff, size_t len);
 ZN_API int zn_sendfinish  (zn_SendBuffer *b, size_t count);
 
 
@@ -155,7 +163,7 @@ ZN_NS_BEGIN
 
 /* buffer cache */
 
-#define znBC_size(count) (sizeof(zn_BufferCache) + (count)*sizeof(void*))
+#define znBC_size(slots) (sizeof(zn_BufferCache) + ((slots)-1)*sizeof(void*))
 
 struct zn_BufferCache {
     zn_BufferAllocf *allocf;
@@ -172,35 +180,49 @@ static void *znBC_allocf(void *ud, void *ptr, size_t ns, size_t os) {
     return realloc(ptr, ns);
 }
 
+static size_t znBC_badindex(size_t *ppos)
+{ if (ppos) *ppos = 0; return 0; }
+
+/* round down to the largest cached bucket not above sz; returns 0 when sz is
+ * above the last bucket, so the caller cannot index buffs[] at all */
 static size_t znBC_lowerbound(size_t sz, size_t *ppos) {
-    size_t next, realsize = (1 << ZN_BUFFCACHE_MINLSIZE);
-    size_t pos = 0;
-    while (next = realsize<<1, next <= sz && next < ZN_MAX_SIZET)
+    size_t realsize = (size_t)1 << ZN_BUFFCACHE_MINLSIZE;
+    size_t pos = 0, next;
+    while ((next = realsize << 1) > realsize && next <= sz
+            && next < ZN_MAX_SIZET)
         realsize = next, ++pos;
-    if (ppos) *ppos = pos <= ZN_BUFFCACHE_MAXLSIZE ?
-        pos : ZN_BUFFCACHE_MAXLSIZE;
-    return realsize < ZN_MAX_SIZET ? realsize : 0;
+    if (pos >= ZN_BUFFCACHE_SLOTS)
+        return znBC_badindex(ppos);
+    if (ppos) *ppos = pos;
+    return realsize;
 }
 
+/* round up to the smallest cached bucket covering sz; returns 0 when the
+ * request is above the last bucket, so the caller falls back to malloc */
 static size_t znBC_upperbound(size_t sz, size_t *ppos) {
-    size_t realsize = (1 << ZN_BUFFCACHE_MINLSIZE);
-    size_t pos = 0;
-    while (realsize < sz && realsize < ZN_MAX_SIZET)
-        realsize <<= 1, ++pos;
-    if (ppos) *ppos = pos <= ZN_BUFFCACHE_MAXLSIZE ?
-        pos : ZN_BUFFCACHE_MAXLSIZE;
-    return realsize < ZN_MAX_SIZET ? realsize : 0;
+    size_t realsize = (size_t)1 << ZN_BUFFCACHE_MINLSIZE;
+    size_t pos = 0, next;
+    while (realsize < sz && realsize < ZN_MAX_SIZET) {
+        next = realsize << 1;
+        if (next <= realsize) break;         /* shift overflow */
+        realsize = next;
+        ++pos;
+    }
+    if (realsize < sz || pos >= ZN_BUFFCACHE_SLOTS)
+        return znBC_badindex(ppos);
+    if (ppos) *ppos = pos;
+    return realsize;
 }
 
 ZN_API zn_BufferCache *zn_newbuffcache(zn_BufferAllocf *f, void *ud) {
     zn_BufferAllocf *allocf = f ? f : znBC_allocf;
     zn_BufferCache *bc = (zn_BufferCache*)allocf(ud, NULL,
-            znBC_size(ZN_BUFFCACHE_COUNT), 0);
+            znBC_size(ZN_BUFFCACHE_SLOTS), 0);
     int i;
     if (bc == NULL) return NULL;
     bc->allocf = allocf;
     bc->ud = ud;
-    for (i = 0; i <= ZN_BUFFCACHE_COUNT; ++i)
+    for (i = 0; i < ZN_BUFFCACHE_SLOTS; ++i)
         bc->buffs[i] = NULL;
     return bc;
 }
@@ -208,15 +230,16 @@ ZN_API zn_BufferCache *zn_newbuffcache(zn_BufferAllocf *f, void *ud) {
 ZN_API void zn_delbuffcache(zn_BufferCache *bc) {
     int i;
     if (bc == NULL) return;
-    for (i = 0; i <= ZN_BUFFCACHE_COUNT; ++i) {
+    for (i = 0; i < ZN_BUFFCACHE_SLOTS; ++i) {
         void *ptr = bc->buffs[i];
         while (ptr) {
             void *next = *(void**)ptr;
-            bc->allocf(bc->ud, ptr, 0, 1<<(ZN_BUFFCACHE_MINLSIZE+i));
+            bc->allocf(bc->ud, ptr, 0,
+                    (size_t)1 << (ZN_BUFFCACHE_MINLSIZE+i));
             ptr = next;
         }
     }
-    bc->allocf(bc->ud, bc, 0, znBC_size(ZN_BUFFCACHE_COUNT));
+    bc->allocf(bc->ud, bc, 0, znBC_size(ZN_BUFFCACHE_SLOTS));
 }
 
 ZN_API int zn_prepbuffcache(zn_BufferCache *bc, size_t sz, size_t count) {
@@ -224,6 +247,7 @@ ZN_API int zn_prepbuffcache(zn_BufferCache *bc, size_t sz, size_t count) {
     int ret = 0;
     if (bc == NULL) return 0;
     sz = znBC_upperbound(sz, &pos);
+    if (sz == 0) return 0;
     for (i = 0; i < count; ++i) {
         void *ptr = bc->allocf(bc->ud, NULL, sz, 0);
         if (ptr) {
@@ -238,9 +262,14 @@ static void znBC_putcache(zn_Buffer *b) {
     zn_BufferCache *bc = b->bc;
     if (b->buff != b->init_buff) {
         size_t pos;
-        znBC_lowerbound(b->size, &pos);
-        *(void**)b->buff = bc->buffs[pos];
-        bc->buffs[pos] = b->buff;
+        if (znBC_lowerbound(b->size, &pos) != 0) {
+            *(void**)b->buff = bc->buffs[pos];
+            bc->buffs[pos] = b->buff;
+        } else {
+            /* larger than the last bucket: not cacheable; zn_resizebuffer
+             * allocated it with the same allocator, so hand it back there */
+            bc->allocf(bc->ud, b->buff, 0, b->size);
+        }
     }
 }
 
@@ -248,13 +277,14 @@ static int znBC_getcache(zn_Buffer *b, size_t len) {
     zn_BufferCache *bc = b->bc;
     size_t pos, sz = znBC_upperbound(len, &pos);
     void *newptr;
+    if (sz == 0) return 0;
     if ((newptr = bc->buffs[pos]) != NULL)
         bc->buffs[pos] = *(void**)newptr;
     else if ((newptr = bc->allocf(bc->ud, NULL, sz, 0)) == NULL)
         return 0;
     memcpy(newptr, b->buff, b->used);
     znBC_putcache(b);
-    b->buff = newptr;
+    b->buff = (char*)newptr;
     b->size = sz;
     return 1;
 }
@@ -283,25 +313,41 @@ ZN_API size_t zn_resizebuffer(zn_Buffer *b, size_t len) {
         newsize <<= 1;
     if (newsize >= len && (b->bc == NULL || !znBC_getcache(b, len))) {
         char *newbuff;
-        if (b->buff != b->init_buff)
+        if (b->bc != NULL) {
+            /* a block that bypasses the buckets still belongs to the cache
+             * allocator, so zn_resetbuffer can hand it back to the same one */
+            void *old = b->buff == b->init_buff ? NULL : b->buff;
+            newbuff = (char*)b->bc->allocf(b->bc->ud, old, newsize,
+                    old != NULL ? b->size : 0);
+        } else if (b->buff != b->init_buff)
             newbuff = (char*)realloc(b->buff, newsize);
-        else if ((newbuff = (char*)malloc(newsize)) != NULL)
-            memcpy(newbuff, b->buff, b->used);
-        if (newbuff) b->buff = newbuff, b->size = newsize;
+        else
+            newbuff = (char*)malloc(newsize);
+        if (newbuff != NULL) {
+            if (b->buff == b->init_buff)
+                memcpy(newbuff, b->buff, b->used);
+            b->buff = newbuff;
+            b->size = newsize;
+        }
     }
     return b->size;
 }
 
 ZN_API char *zn_prepbuffsize(zn_Buffer *b, size_t len) {
-    size_t need = b->used + len, size = b->size;
+    size_t need, size = b->size;
+    if (len > ZN_MAX_SIZET - b->used) return NULL;
+    need = b->used + len;
     if (need > size && zn_resizebuffer(b, need) == size)
         return NULL;
     return &b->buff[b->used];
 }
 
-ZN_API void zn_addlstring(zn_Buffer *b, const char *s, size_t len) {
-    memcpy(zn_prepbuffsize(b, len), s, len);
+ZN_API int zn_addlstring(zn_Buffer *b, const char *s, size_t len) {
+    char *dst = zn_prepbuffsize(b, len);
+    if (dst == NULL) return 0;
+    memcpy(dst, s, len);
     b->used += len;
+    return 1;
 }
 
 
@@ -333,42 +379,63 @@ ZN_API void zn_resetrecvbuffer(zn_RecvBuffer *b) {
     zn_resetbuffer(&b->readed);
 }
 
+/* Consume as many complete frames as possible from buff[0..count).  The
+ * caller guarantees the bytes are contiguous: either the current chunk with
+ * nothing buffered, or b->readed after the chunk was appended.  Returns the
+ * bytes consumed; if consumed < count the tail is a partial frame and
+ * b->expected holds its total length, or 0 while the header is still
+ * unknown.  A zero return from the header handler means "need more". */
+static size_t znRB_parse(zn_RecvBuffer *b, char *buff, size_t count) {
+    size_t used = 0;
+    while (used < count) {
+        size_t ret;
+        if (b->expected == 0) {
+            ret = b->header_handler(b->header_ud, buff + used, count - used);
+            if (ret == 0) break;             /* header incomplete */
+            if (ret > count - used) {        /* frame spans this buffer */
+                b->expected = ret;
+                break;
+            }
+            if (b->packet_handler)
+                b->packet_handler(b->packet_ud, buff + used, ret);
+            used += ret;
+        } else {
+            if (count - used < b->expected) break;
+            if (b->packet_handler)
+                b->packet_handler(b->packet_ud, buff + used, b->expected);
+            used += b->expected;
+            b->expected = 0;
+        }
+    }
+    return used;
+}
+
 ZN_API int zn_recvfinish(zn_RecvBuffer *b, size_t count) {
-    char *buff = b->buff;
-again:
+    size_t used;
+
+    /* a zero-length call never consumes the bytes already buffered */
     if (count == 0) return 0;
 
-    if (b->expected == 0) {
-        size_t ret = b->header_handler(b->header_ud, buff, count);
-        if (ret == 0) { /* need more result */
-            zn_addlstring(&b->readed, buff, count);
-            return 1;
-        }
-        if (ret <= count) {
-            if (b->packet_handler)
-                b->packet_handler(b->packet_ud, buff, ret);
-            buff += ret;
-            count -= ret;
-            goto again;
-        }
-        b->expected = ret;
-        zn_addlstring(&b->readed, buff, count);
+    if (b->readed.used == 0 && b->expected == 0) {
+        used = znRB_parse(b, b->buff, count);
+        if (used == count) return 0;
+        if (!zn_addlstring(&b->readed, b->buff + used, count - used))
+            return -1;
         return 1;
     }
 
-    if (b->readed.used + count >= b->expected) {
-        size_t remaining = b->expected - b->readed.used;
-        zn_addlstring(&b->readed, buff, remaining);
-        if (b->packet_handler)
-            b->packet_handler(b->packet_ud, b->readed.buff, b->expected);
-        buff += remaining;
-        count -= remaining;
-        b->expected = 0;
-        zn_resetbuffer(&b->readed);
-        goto again;
+    /* a frame started in an earlier call: make it contiguous, parse it, and
+     * keep only the tail that is still incomplete */
+    if (!zn_addlstring(&b->readed, b->buff, count))
+        return -1;
+    count = b->readed.used;
+    used = znRB_parse(b, b->readed.buff, count);
+    if (used == count) {
+        b->readed.used = 0;
+        return 0;
     }
-
-    zn_addlstring(&b->readed, buff, count);
+    memmove(b->readed.buff, b->readed.buff + used, count - used);
+    b->readed.used = count - used;
     return 1;
 }
 
@@ -394,7 +461,8 @@ ZN_API void zn_resetsendbuffer(zn_SendBuffer *b) {
 ZN_API int zn_sendprepare(zn_SendBuffer *b, const char *buff, size_t len) {
     int can_send = b->sending->used == 0;
     zn_Buffer *buffer = can_send ? b->sending : b->pending;
-    zn_addlstring(buffer, buff, len);
+    if (!zn_addlstring(buffer, buff, len))
+        return -1;
     return can_send;
 }
 
@@ -418,7 +486,9 @@ ZN_API int zn_sendfinish(zn_SendBuffer *b, size_t count) {
             b->sent_count = 0;
         }
         if (b->pending->used != 0) {
-            zn_addlstring(b->sending, b->pending->buff, b->pending->used);
+            /* on OOM keep pending: the next finish call retries the merge */
+            if (!zn_addlstring(b->sending, b->pending->buff, b->pending->used))
+                return 1;
             zn_resetbuffer(b->pending);
         }
     }

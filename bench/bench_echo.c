@@ -22,9 +22,12 @@ Userdata server;
 Userdata client;
 
 static void client_error(zn_Tcp *tcp);
+static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
 
 static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     Userdata *data = (Userdata*)ud;
+    /*printf("on_client_send: %p, %p, %u, %u\n", ud, tcp, err, count);*/
     if (err != ZN_OK) {
         ++data->send_err;
         client_error(tcp);
@@ -32,12 +35,14 @@ static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) 
     }
     ++data->send_ok;
     data->send_bytes += count;
-    if (zn_send(tcp, data->send, BLOCK_SIZE, on_client_send, ud) != ZN_OK)
+    /*printf("zn_recv: %p\n", on_client_recv);*/
+    if (zn_recv(tcp, data->recv, BLOCK_SIZE, on_client_recv, ud) != ZN_OK)
         client_error(tcp);
 }
 
 static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     Userdata *data = (Userdata*)ud;
+    /*printf("on_client_recv: %p, %p, %u, %u\n", ud, tcp, err, count);*/
     if (err != ZN_OK) {
         ++data->recv_err;
         client_error(tcp);
@@ -46,7 +51,8 @@ static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) 
 
     ++data->recv_ok;
     data->recv_bytes += count;
-    if (zn_recv(tcp, data->recv, BLOCK_SIZE, on_client_recv, ud) != ZN_OK)
+    /*printf("zn_send: %p\n", on_client_send);*/
+    if (zn_send(tcp, data->send, BLOCK_SIZE, on_client_send, ud) != ZN_OK)
         client_error(tcp);
 }
 
@@ -55,13 +61,11 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
         client_error(tcp);
     else if (zn_send(tcp, client.send, BLOCK_SIZE, on_client_send, &client) != ZN_OK)
         client_error(tcp);
-    else if (zn_recv(tcp, client.recv, BLOCK_SIZE, on_client_recv, &client) != ZN_OK)
-        client_error(tcp);
 }
 
 static void on_error(void *ud, zn_State *S) {
     zn_Tcp *tcp = zn_newtcp(S);
-    if (zn_connect(tcp, addr, port, on_connect, &client) != ZN_OK)
+    if (tcp && zn_connect(tcp, addr, port, 0, on_connect, &client) != ZN_OK)
         zn_post(S, on_error, NULL);
 }
 
@@ -69,6 +73,10 @@ static void client_error(zn_Tcp *tcp) {
     zn_deltcp(tcp);
     zn_post(S, on_error, NULL);
 }
+
+
+static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
 
 static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     Userdata *data = (Userdata*)ud;
@@ -79,7 +87,7 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     }
     ++data->send_ok;
     data->send_bytes += count;
-    if (zn_send(tcp, data->send, BLOCK_SIZE, on_send, ud) != ZN_OK)
+    if (zn_recv(tcp, data->recv, BLOCK_SIZE, on_recv, ud) != ZN_OK)
         zn_deltcp(tcp);
 }
 
@@ -92,16 +100,14 @@ static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     }
     ++data->recv_ok;
     data->recv_bytes += count;
-    if (zn_recv(tcp, data->recv, BLOCK_SIZE, on_recv, ud) != ZN_OK)
+    if (zn_send(tcp, data->send, BLOCK_SIZE, on_send, ud) != ZN_OK)
         zn_deltcp(tcp);
 }
 
 static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     if (err != ZN_OK)
         return;
-    if (zn_send(tcp, server.send, BLOCK_SIZE, on_send, &server) != ZN_OK)
-        zn_deltcp(tcp);
-    else if (zn_recv(tcp, server.recv, BLOCK_SIZE, on_recv, &server) != ZN_OK)
+    if (zn_recv(tcp, server.recv, BLOCK_SIZE, on_recv, &server) != ZN_OK)
         zn_deltcp(tcp);
     zn_accept(accept, on_accept, ud);
 }
@@ -177,13 +183,18 @@ static void register_interrupted(void) {
 #endif
 
 int main(int argc, const char **argv) {
+    int i, client_count = 1;
+    setvbuf(stdout, NULL, _IOLBF, 0); /* line-buffered: run under just/CI */
     if (argc == 2 && strcmp(argv[1], "-h") == 0) {
         printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
         exit(0);
     }
     if (argc > 1) {
-        if (strcmp(argv[1], "client") == 0)
+        size_t n = strlen(argv[1]);
+        if (n >= 6 && memcmp(argv[1], "client", 6) == 0) {
             is_client = 1;
+            if (n > 6) client_count = atoi(argv[1] + 6);
+        }
     }
     if (argc > 2) {
         strncpy(addr, argv[2], ZN_MAX_ADDRLEN-1);
@@ -194,17 +205,21 @@ int main(int argc, const char **argv) {
     }
 
     zn_initialize();
+    printf("znet engine: %s\n", zn_engine());
     if ((S = zn_newstate()) == NULL) return 2;
 
     if (is_client) {
-        zn_Tcp *tcp;
-        if ((tcp = zn_newtcp(S)) == NULL) return 2;
-        zn_connect(tcp, addr, port, on_connect, NULL);
+        printf("client count: %d\n", client_count);
         printf("connecting to %s:%d ...\n", addr, port);
+        for (i = 0; i < client_count; ++i) {
+            zn_Tcp *tcp;
+            if ((tcp = zn_newtcp(S)) == NULL) return 2;
+            zn_connect(tcp, addr, port, 0, on_connect, NULL);
+        }
     }
     else {
         zn_Accept *accept;
-        if ((accept = zn_newaccept(S)) == NULL) return 2;
+        if ((accept = zn_newaccept(S, 0)) == NULL) return 2;
         zn_listen(accept, addr, port);
         zn_accept(accept, on_accept, NULL);
         printf("listening at %s:%d ...\n", addr, port);

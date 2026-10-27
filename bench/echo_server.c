@@ -104,6 +104,8 @@ static void register_interrupted(void) {
 #endif
 
 int main(int argc, const char **argv) {
+    zn_Accept *accept;
+    setvbuf(stdout, NULL, _IOLBF, 0); /* line-buffered: run under just/CI */
     if (argc == 2 && strcmp(argv[1], "-h") == 0) {
         printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
         exit(0);
@@ -121,8 +123,7 @@ int main(int argc, const char **argv) {
 
     zn_initbuffpool(&pool);
 
-    zn_Accept *accept;
-    if ((accept = zn_newaccept(S)) == NULL) return 2;
+    if ((accept = zn_newaccept(S, 0)) == NULL) return 2;
     zn_listen(accept, addr, port);
     zn_accept(accept, on_accept, NULL);
     printf("listening at %s:%d ...\n", addr, port);

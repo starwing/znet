@@ -1,0 +1,294 @@
+# znet test suite (C89-friendly, no external test framework).
+#
+# Normally driven from the repo root: `just check`, `just test tcp`, `just cov`
+# (the root justfile imports this directory as a module, so `just tests check`
+# works too).  This file can also be used directly:
+#
+#   just --justfile tests/justfile test tcp     # one suite, native backend
+#   just --justfile tests/justfile check-select # same suites with ZN_USE_SELECT
+#
+# Every check build uses ASan+UBSan by default.  Test sources live in
+# tests/<suite>.c; misc/gen_entries.lua turns the TEST(name) functions into the
+# entries table and main().
+
+ROOT  := source_directory() / ".."
+SRC   := source_directory()
+BUILD := source_directory() / "build"
+
+CC  := env("CC", "cc")
+CXX := env("CXX", "c++")
+LUA := env("LUA", "lua")
+
+# Defines the generator needs but the compiler already knows: znet.h #undefs
+# its internal zn_use_* macros, but zn_have_kqueue / zn_have_info survive and
+# tests use them to select backend-specific cases.  Keep this in sync with
+# tests/README.md ("conditional compilation").
+GEN_DEFS := if os() == "macos" {
+    "-Dzn_have_kqueue"
+} else if os() == "linux" {
+    "-D__linux__"
+} else if os() == "windows" {
+    "-D_WIN32"
+} else {
+    ""
+}
+
+WARN := "-Wall -Wextra -Werror -Wno-unused-parameter -pedantic"
+INC  := "-I" + ROOT + " -I" + source_directory()
+BASE := "-std=c99 -D_XOPEN_SOURCE=600 " + WARN + " " + INC
+SAN  := "-g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined"
+
+# every suite; generated runners are built from these names
+SUITES := "mempool_test timer_test addr_test addrinfo_test state_test resultqueue_test tcp_test dispatch_test udp_test buffer_test"
+
+default: check
+
+# ---------------------------------------------------------------------------
+# builds
+
+[private]
+build tag flags suites=SUITES:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out='{{BUILD}}/{{tag}}'
+    mkdir -p "$out"
+    for s in {{suites}}; do
+        {{LUA}} '{{ROOT}}/misc/gen_entries.lua' \
+            "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc" {{flags}} {{GEN_DEFS}}
+        {{CC}} {{BASE}} {{SAN}} {{flags}} -o "$out/$s" "{{SRC}}/$s.c"
+    done
+
+[private]
+run tag suites=SUITES:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    failfile='{{BUILD}}/{{tag}}.failures'
+    : > "$failfile"
+    for s in {{suites}}; do
+        bin='{{BUILD}}/{{tag}}/'"$s"
+        echo "=== {{tag}}/$s ==="
+        for t in $("$bin" --list); do
+            if "$bin" "@$t"; then
+                :
+            else
+                echo "*** FAILED: $s::$t" >&2
+                echo "$s::$t" >> "$failfile"
+            fi
+        done
+    done
+    # do not fail here: check must still run the other backend(s)
+    exit 0
+
+# fail if any recorded test failed; `tags` is a space separated list
+[private]
+verify tags:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    nfail=0
+    for tag in {{tags}}; do
+        f='{{BUILD}}/'"$tag"'.failures'
+        [ -f "$f" ] || continue
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            echo "FAILED: $tag/$line" >&2
+            nfail=$((nfail + 1))
+        done < "$f"
+    done
+    if [ "$nfail" -ne 0 ]; then
+        echo "" >&2
+        echo "$nfail test(s) failed (see the FAIL lines above)" >&2
+        exit 1
+    fi
+    echo "all suites passed"
+
+# ---------------------------------------------------------------------------
+# checks
+
+# build + run every suite on the native backend and on select
+check: (build "native" "") (run "native") (build "select" "-DZN_USE_SELECT") (run "select") (verify "native select")
+
+# native backend only
+check-native: (build "native" "") (run "native") (verify "native")
+
+# select backend only
+check-select: (build "select" "-DZN_USE_SELECT") (run "select") (verify "select")
+
+# alias: ASan+UBSan is the default for `check`
+check-asan: check
+
+# timers with the opt-in 64-bit zn_Time (T1/T2 regressions)
+check-64bit-timer: (build "timer64" "-DZN_USE_64BIT_TIMER" "timer_test") (run "timer64" "timer_test") (verify "timer64")
+
+# one suite, native backend: `just test tcp`, `just test tcp tcp_connect`
+test name *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    suite='{{name}}'
+    case "$suite" in
+        *_test) ;;
+        *) suite="${suite}_test" ;;
+    esac
+    out='{{BUILD}}/native'
+    mkdir -p "$out"
+    {{LUA}} '{{ROOT}}/misc/gen_entries.lua' \
+        "{{SRC}}/$suite.c" "{{SRC}}/$suite.gen.inc" {{GEN_DEFS}}
+    {{CC}} {{BASE}} {{SAN}} -o "$out/$suite" "{{SRC}}/$suite.c"
+    "$out/$suite" {{args}}
+
+# one suite, select backend
+test-select name *args='':
+    #!/usr/bin/env bash
+    set -euo pipefail
+    suite='{{name}}'
+    case "$suite" in
+        *_test) ;;
+        *) suite="${suite}_test" ;;
+    esac
+    out='{{BUILD}}/select'
+    mkdir -p "$out"
+    {{LUA}} '{{ROOT}}/misc/gen_entries.lua' \
+        "{{SRC}}/$suite.c" "{{SRC}}/$suite.gen.inc" -DZN_USE_SELECT {{GEN_DEFS}}
+    {{CC}} {{BASE}} {{SAN}} -DZN_USE_SELECT -o "$out/$suite" "{{SRC}}/$suite.c"
+    "$out/$suite" {{args}}
+
+# strict Clean C compile check (no run).  Expected to fail until TODO C1/C4
+# are fixed: znet.h has an enum trailing comma, example.c/test.c mix
+# declarations and code.
+check-c89:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    fail=0
+    for s in {{SUITES}}; do
+        echo "--- c89 $s ---"
+        {{LUA}} '{{ROOT}}/misc/gen_entries.lua' \
+            "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc" {{GEN_DEFS}}
+        {{CC}} -std=c89 -pedantic-errors -Wno-variadic-macros \
+            -D_XOPEN_SOURCE=600 {{INC}} \
+            -c -o /dev/null "{{SRC}}/$s.c" || fail=1
+    done
+    for f in example test; do
+        echo "--- c89 $f.c ---"
+        {{CC}} -std=c89 -pedantic-errors -Wno-variadic-macros \
+            -D_XOPEN_SOURCE=600 {{INC}} \
+            -c -o /dev/null "{{ROOT}}/$f.c" || fail=1
+    done
+    exit $fail
+
+# strict C++03 compile check (no run)
+check-cpp03:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    fail=0
+    for s in {{SUITES}}; do
+        echo "--- c++03 $s ---"
+        {{LUA}} '{{ROOT}}/misc/gen_entries.lua' \
+            "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc" {{GEN_DEFS}}
+        {{CXX}} -std=c++03 -pedantic-errors -Wno-variadic-macros \
+            -D_XOPEN_SOURCE=600 {{INC}} \
+            -x c++ -c -o /dev/null "{{SRC}}/$s.c" || fail=1
+    done
+    for f in example test; do
+        echo "--- c++03 $f.c ---"
+        {{CXX}} -std=c++03 -pedantic-errors -Wno-variadic-macros \
+            -D_XOPEN_SOURCE=600 {{INC}} \
+            -x c++ -c -o /dev/null "{{ROOT}}/$f.c" || fail=1
+    done
+    exit $fail
+
+# MSVC /W4 /WX is a Windows-only check; do not silently pass elsewhere.
+check-msvc:
+    #!/usr/bin/env bash
+    echo "check-msvc: cl /W4 /WX requires Windows + MSVC." >&2
+    echo "Not verified on this host; run this target on the Windows CI job." >&2
+    exit 2
+
+# ---------------------------------------------------------------------------
+# coverage (lcov)
+
+[private]
+cov-build tag flags:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    out='{{BUILD}}/{{tag}}'
+    # macOS and the Linux VM share this directory: a .gcda written by the
+    # other platform's compiler makes lcov abort on a version mismatch
+    rm -rf "$out"
+    mkdir -p "$out"
+    nfail=0
+    for s in {{SUITES}}; do
+        {{LUA}} '{{ROOT}}/misc/gen_entries.lua' \
+            "{{SRC}}/$s.c" "{{SRC}}/$s.gen.inc" {{flags}} {{GEN_DEFS}}
+        {{CC}} {{BASE}} {{flags}} -g -O0 --coverage \
+            -o "$out/$s" "{{SRC}}/$s.c"
+        # one process per test: a failing test loses only its own coverage
+        for t in $("$out/$s" --list); do
+            ( cd "$out" && ./"$s" "@$t" ) || {
+                echo "COV: $s::$t FAILED (assert or known library bug)" >&2
+                nfail=$((nfail + 1))
+            }
+        done
+    done
+    echo "COV: $nfail test(s) failed; coverage still collected"
+    exit 0
+
+# build + run everything with --coverage, then merge into one report
+cov: (cov-build "cov-native" "") (cov-build "cov-select" "-DZN_USE_SELECT") cov-report
+
+[private]
+cov-report:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd '{{BUILD}}'
+    lcov --capture --directory cov-native --rc branch_coverage=1 \
+        --ignore-errors inconsistent,unsupported,empty,corrupt \
+        --output-file native.info
+    lcov --capture --directory cov-select --rc branch_coverage=1 \
+        --ignore-errors inconsistent,unsupported,empty,corrupt \
+        --output-file select.info
+    lcov --extract native.info '*/znet.h' --rc branch_coverage=1 \
+        --ignore-errors inconsistent,unused,corrupt --output-file znet-native.info
+    lcov --extract select.info '*/znet.h' --rc branch_coverage=1 \
+        --ignore-errors inconsistent,unused,corrupt --output-file znet-select.info
+    echo "=== znet.h coverage (native backend) ==="
+    lcov --list znet-native.info --rc branch_coverage=1 \
+        --ignore-errors inconsistent,corrupt || true
+    echo "=== znet.h coverage (select backend) ==="
+    lcov --list znet-select.info --rc branch_coverage=1 \
+        --ignore-errors inconsistent,corrupt || true
+    lcov --add-tracefile native.info --add-tracefile select.info \
+        --rc branch_coverage=1 --ignore-errors inconsistent,corrupt \
+        --output-file coverage.info
+    lcov --extract coverage.info '*/znet.h' '*/znet.hpp' '*/zn_buffer.h' \
+        --rc branch_coverage=1 --ignore-errors inconsistent,unused,corrupt \
+        --output-file znet.info
+    echo "=== znet.h coverage (kqueue/epoll + select merged) ==="
+    lcov --list znet.info --rc branch_coverage=1 \
+        --ignore-errors inconsistent,corrupt || true
+
+# lines with zero coverage in znet.h
+cov-lines:
+    @awk '/^DA:/ && /,0$/ {gsub(/DA:|,0/,""); print $0}' \
+        '{{BUILD}}/znet.info' | sort -n | while read -r ln; do \
+        src=$(sed -n "${ln}p" '{{ROOT}}/znet.h' 2>/dev/null); \
+        case "$src" in *assert*) ;; *) echo "L$ln: $src";; esac; \
+    done
+
+# branches taken zero times in znet.h
+cov-unbranched:
+    @awk -F'[:,]' '/^BRDA:/ && $5==0 {print $2}' \
+        '{{BUILD}}/znet.info' | sort -n -u | while read -r ln; do \
+        src=$(sed -n "${ln}p" '{{ROOT}}/znet.h' 2>/dev/null); \
+        case "$src" in *assert*) ;; *) printf "L%-5d %s\n" "$ln" "$src";; esac; \
+    done
+
+# ---------------------------------------------------------------------------
+# cleanup
+
+# remove the coverage data and reports, keep the compiled binaries
+clean-cov:
+    rm -rf '{{BUILD}}'/cov-*
+    rm -f '{{BUILD}}'/*.info '{{BUILD}}'/coverage.info
+
+clean:
+    rm -rf '{{BUILD}}'
+    rm -f '{{SRC}}'/*.gen.inc

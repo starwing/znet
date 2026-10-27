@@ -50,11 +50,13 @@ static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) 
             on_client_recv, ud);
 }
 
+/* the header handler returns the whole frame (prefix + payload), and the
+ * packet handler sees the frame including its prefix */
 static size_t on_header(void *ud, const char *buff, size_t len) {
     unsigned short packet_len;
     if (len < 2) return 0;
     memcpy(&packet_len, buff, 2);
-    return (size_t)ntohs(packet_len);
+    return (size_t)ntohs(packet_len) + 2;
 }
 
 static void on_client_packet(void *ud, const char *buff, size_t len) {
@@ -62,24 +64,24 @@ static void on_client_packet(void *ud, const char *buff, size_t len) {
     if (zn_sendprepare(&data->send, buff, len)
             && zn_send(data->tcp, zn_sendbuff(&data->send), zn_sendsize(&data->send),
                 on_client_send, ud) != ZN_OK)
-        client_error(data->tcp, ud);
+        client_error(data->tcp, data);
 }
 
 static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode*)ud;
 
     if (err != ZN_OK) {
-        client_error(tcp, ud);
+        client_error(tcp, data);
         return;
     }
 
     if (zn_recv(tcp, zn_recvbuff(&data->recv), zn_recvsize(&data->recv),
                 on_client_recv, ud) != ZN_OK)
-        client_error(tcp, ud);
+        client_error(tcp, data);
     else if (zn_sendprepare(&data->send, send_data, BLOCK_SIZE)
             && zn_send(tcp, zn_sendbuff(&data->send), zn_sendsize(&data->send),
                 on_client_send, ud) != ZN_OK)
-        client_error(tcp, ud);
+        client_error(tcp, data);
 }
 
 static void new_connection(void *ud, zn_State *S) {
@@ -87,7 +89,7 @@ static void new_connection(void *ud, zn_State *S) {
     zn_recvonheader(&data->recv, on_header, data);
     zn_recvonpacket(&data->recv, on_client_packet, data);
     data->tcp = zn_newtcp(S);
-    if (zn_connect(data->tcp, addr, port, on_connect, data) != ZN_OK)
+    if (zn_connect(data->tcp, addr, port, 0, on_connect, data) != ZN_OK)
         zn_post(S, new_connection, NULL);
 }
 
@@ -223,6 +225,7 @@ static void register_interrupted(void) {
 
 int main(int argc, const char **argv) {
     int i, client_count = 1;
+    setvbuf(stdout, NULL, _IOLBF, 0); /* line-buffered: run under just/CI */
     if (argc == 2 && strcmp(argv[1], "-h") == 0) {
         printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
         exit(0);
@@ -260,7 +263,7 @@ int main(int argc, const char **argv) {
     }
     else {
         zn_Accept *accept;
-        if ((accept = zn_newaccept(S)) == NULL) return 2;
+        if ((accept = zn_newaccept(S, 0)) == NULL) return 2;
         zn_listen(accept, addr, port);
         zn_accept(accept, on_accept, NULL);
         printf("listening at %s:%d ...\n", addr, port);

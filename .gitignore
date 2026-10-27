@@ -1,5 +1,7 @@
 deprecated
 .vscode
+AGENTS.md
+notes/
 *.exe
 *.dll
 *.so
@@ -9,3 +11,10 @@ deprecated
 *.obj
 *.iobj
 *.ipdb
+tests/build/
+tests/*.gen.inc
+bench/build/
+*.gcda
+*.gcno
+*.gcov
+*.info

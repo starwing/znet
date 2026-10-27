@@ -1,0 +1,80 @@
+# znet benchmarks.
+#
+# Driven from the repo root as a module:
+#
+#   just bench              build every program (module default)
+#   just bench echo 5       echo benchmark, 5 seconds
+#   just bench flood 5      flood benchmark
+#   just bench echo-buffer 5  echo through zn_buffer.h framing
+#   just bench clean
+#
+# Direct use: `just --justfile bench/justfile echo 5`.
+#
+# The run recipes start a server and a client from the same binary and kill
+# both after N seconds (the SIGINT handlers call zn_close from a signal
+# handler, which is not async-signal-safe).  The programs set stdout
+# line-buffered so the per-second counters show up under just/CI.
+
+SRC   := source_directory()
+ROOT  := source_directory() / ".."
+BUILD := source_directory() / "build"
+
+CC := env("CC", "cc")
+CFLAGS := "-std=c99 -D_XOPEN_SOURCE=600 -O2 -g -pedantic -Wall -Wextra -Wno-unused-parameter"
+PORT := env("ZNET_BENCH_PORT", "18581")
+
+# build every program in bench/ (default)
+default: build
+
+build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out='{{BUILD}}'
+    mkdir -p "$out"
+    for f in '{{SRC}}'/*.c; do
+        {{CC}} {{CFLAGS}} -I'{{ROOT}}' -I'{{SRC}}' \
+            -o "$out/$(basename "$f" .c)" "$f" -pthread
+    done
+    echo "built:"
+    ls -1 "$out" | grep -v '\.dSYM$' || true
+
+# run the echo benchmark for N seconds
+echo secs="5": (pair "bench_echo" secs)
+
+# run the flood benchmark for N seconds
+flood secs="5": (pair "bench_flood" secs)
+
+# run the buffered-echo benchmark for N seconds
+echo-buffer secs="5": (pair "bench_echo_buffer" secs)
+
+# one server+client pair from the same binary, killed after N seconds
+[private]
+pair bin secs:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    exe='{{BUILD}}/{{bin}}'
+    port='{{PORT}}'
+    if [ ! -x "$exe" ]; then
+        echo "missing $exe: run 'just bench' first" >&2
+        exit 2
+    fi
+    "$exe" server 127.0.0.1 "$port" &
+    srv=$!
+    trap 'kill -9 "$srv" 2>/dev/null || true' EXIT
+    sleep 0.4
+    "$exe" client 127.0.0.1 "$port" &
+    cli=$!
+    sleep '{{secs}}'
+    kill -9 "$srv" "$cli" 2>/dev/null || true
+    disown -a 2>/dev/null || true   # no "Killed" noise from the job table
+
+# programs without a server+client split are meant to be run by hand
+list:
+    @echo "binaries:"
+    @ls -1 '{{BUILD}}' 2>/dev/null | grep -v '\.dSYM$' || echo "  (none; run 'just bench')"
+    @echo ""
+    @echo "split pair:   bench_server [port]  +  bench_client [ip [port]]"
+    @echo "echo server:  echo_server [ip [port]]"
+
+clean:
+    rm -rf '{{BUILD}}'

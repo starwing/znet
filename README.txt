@@ -10,7 +10,18 @@ The ZNet library itself is a single-header library[2], and have some utils
 single-header libraries for common usages. all liraries are standalone and can
 used without other headers.
 
-See test.c for examples, and you can see more things in examples folder.
+See test.c for examples, and tests/ plus bench/ for the suite and benchmarks.
+
+Build and test (just is the only build driver; there is no make wrapper):
+
+    just check      full suite: native backend + select (ASan/UBSan)
+    just test tcp   one suite, native backend
+    just smoke      build and run example.c and test.c
+    just cov        lcov coverage report for znet.h
+    just bench      build the benchmark programs in bench/
+    just bench echo 5   run the echo benchmark for 5 seconds
+
+tests/README.md documents the suite, bench/README.md the benchmarks.
 
 Utils:
 
