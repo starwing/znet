@@ -253,6 +253,7 @@ ZN_API int zn_prepbuffcache(zn_BufferCache *bc, size_t sz, size_t count) {
         if (ptr) {
             *(void**)ptr = bc->buffs[pos];
             bc->buffs[pos] = ptr;
+            ++ret;
         }
     }
     return ret;
@@ -367,14 +368,14 @@ ZN_API void zn_recvonpacket(zn_RecvBuffer *b, zn_PacketHandler *h, void *ud)
 
 ZN_API void zn_initrecvbuffer(zn_RecvBuffer *b, zn_BufferCache *bc) {
     b->header_handler = znRB_onheader; b->header_ud = NULL;
-    b->packet_handler = znRB_onpacket; b->packet_handler = NULL;
+    b->packet_handler = NULL; b->packet_ud = NULL;
     b->expected = 0;
     zn_initbuffer(&b->readed, bc);
 }
 
 ZN_API void zn_resetrecvbuffer(zn_RecvBuffer *b) {
     b->header_handler = znRB_onheader; b->header_ud = NULL;
-    b->packet_handler = znRB_onpacket; b->packet_handler = NULL;
+    b->packet_handler = NULL; b->packet_ud = NULL;
     b->expected = 0;
     zn_resetbuffer(&b->readed);
 }

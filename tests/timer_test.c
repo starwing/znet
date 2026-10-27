@@ -2,17 +2,19 @@
  *
  * Covers: ordering, 0 delay, same deadline, re-arm from the handler, delete
  * from the handler, cancel root/middle/last, cancel twice, cancel unarmed,
- * restart armed/after fire, nexttime/timeout accounting, and the 64-bit timer
- * option (zn_Time truncation regressions T1/T2).
+ * restart armed/after fire, nexttime/timeout accounting (T3/T4), the epoll
+ * integer timeout clamp (B6), and the 64-bit timer option (zn_Time
+ * truncation regressions T1/T2).
  *
  * Timer callbacks do not retain the state, so the tests drive the loop with
- * zt_begin/ZT_WAIT: the hidden 20 ms tick keeps every poll bounded.  Using
- * zn_run(LOOP) with a timer that is already due would block instead of
- * returning (empty heap timeout, TODO T3), so only timer_loop_exits_after_fire
+ * zt_begin/ZT_WAIT: the hidden 20 ms tick keeps every poll bounded.  zn_run()
+ * blocks in poll when nothing is pending, so only timer_loop_exits_after_fire
  * uses zt_run() and it arms a far deadline first.
  */
 
 #include "ztest.h"
+
+#include <limits.h>
 
 /* ---- recorder ---- */
 
@@ -359,15 +361,14 @@ TEST(timer_deltimer_armed) {
 
 TEST(timer_nexttime_and_timeout) {
     zn_State *S = zt_open();
-    zn_Time   empty_timeout;
 
     asserteq(S->ts.used, 0);
     asserteq(S->ts.nexttime, ZN_FOREVER);
 
-    /* empty heap: znT_gettimeout returns ZN_FOREVER - now, not ZN_FOREVER
-     * (TODO T3).  Assert the useful property: it is effectively forever. */
-    empty_timeout = znT_gettimeout(&S->ts, 0);
-    assertok(empty_timeout > 1000000000u);
+    /* empty heap: gettimeout must report ZN_FOREVER, so every backend waits
+     * without a timeout instead of blocking for ~49.7 days (TODO T3). */
+    asserteq(znT_gettimeout(&S->ts, 0), ZN_FOREVER);
+    asserteq(znT_gettimeout(&S->ts, 12345), ZN_FOREVER);
 
     {
         zn_Timer *t = zn_newtimer(S, cb_record, NULL);
@@ -384,6 +385,45 @@ TEST(timer_nexttime_and_timeout) {
     }
     zt_close(S);
 }
+
+/* Cancelling the root must move nexttime to the new root: a stale nexttime
+ * wakes the loop on every poll until the cancelled deadline (TODO T4). */
+TEST(timer_cancel_updates_nexttime) {
+    zn_State *S = zt_open();
+    zn_Timer *a = zn_newtimer(S, cb_record, NULL);
+    zn_Timer *b = zn_newtimer(S, cb_record, NULL);
+
+    assertok(a != NULL && b != NULL);
+    asserteq(zn_starttimer(a, 40), ZN_OK);
+    asserteq(zn_starttimer(b, 80), ZN_OK);
+    asserteq(S->ts.nexttime, a->emit);
+
+    zn_canceltimer(a);
+    asserteq(S->ts.used, 1);
+    asserteq(S->ts.nexttime, b->emit);
+    asserteq(znT_gettimeout(&S->ts, b->emit - 5), 5);
+
+    zn_canceltimer(b);
+    asserteq(S->ts.used, 0);
+    asserteq(S->ts.nexttime, ZN_FOREVER);
+
+    zn_deltimer(a);
+    zn_deltimer(b);
+    zt_close(S);
+}
+
+/* epoll_wait takes an int; a plain cast turned a timeout above INT_MAX into a
+ * negative number, i.e. "wait forever" (TODO B6). */
+#if defined(__linux__) && !defined(ZN_USE_SELECT)
+TEST(epoll_timeout_clamp) {
+    asserteq(znP_timeoutms(ZN_FOREVER), -1);
+    asserteq(znP_timeoutms(0), 0);
+    asserteq(znP_timeoutms(25), 25);
+    asserteq(znP_timeoutms((zn_Time)INT_MAX), INT_MAX);
+    asserteq(znP_timeoutms((zn_Time)INT_MAX + 1), INT_MAX);
+    asserteq(znP_timeoutms(ZN_FOREVER - 1), INT_MAX);
+}
+#endif /* __linux__ && !ZN_USE_SELECT */
 
 /* A fired one-shot timer must leave the loop with nothing to do; this is the
  * path that makes zn_run(LOOP) return normally. */

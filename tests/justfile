@@ -173,12 +173,13 @@ test-lua:
     LUA_CPATH_5_3="$out/?.so" \
         {{LUA}} '{{SRC}}/test.lua'
 
-# strict Clean C compile check (no run).  Expected to fail until TODO C4 is
-# fixed: example.c still mixes declarations and code.
+# strict Clean C compile check (no run).  Covers the suites, example.c and the
+# optional headers that carry their own implementation.
 check-c89:
     #!/usr/bin/env bash
     set -uo pipefail
     fail=0
+    mkdir -p '{{BUILD}}'
     for s in {{SUITES}}; do
         echo "--- c89 $s ---"
         {{LUA}} '{{ROOT}}/misc/gen_entries.lua' \
@@ -192,6 +193,13 @@ check-c89:
         {{CC}} -std=c89 -pedantic-errors -Wno-variadic-macros \
             -D_XOPEN_SOURCE=600 {{INC}} \
             -c -o /dev/null "{{ROOT}}/$f.c" || fail=1
+    done
+    for h in zn_task; do
+        echo "--- c89 $h.h ---"
+        printf '#define ZN_IMPLEMENTATION\n#include "%s.h"\n' "$h" \
+            > '{{BUILD}}/check_'"$h"'.c'
+        {{CC}} -std=c89 -pedantic-errors -D_XOPEN_SOURCE=600 {{INC}} \
+            -pthread -c -o /dev/null '{{BUILD}}/check_'"$h"'.c' || fail=1
     done
     exit $fail
 
@@ -213,6 +221,13 @@ check-cpp03:
         {{CXX}} -std=c++03 -pedantic-errors -Wno-variadic-macros \
             -D_XOPEN_SOURCE=600 {{INC}} \
             -x c++ -c -o /dev/null "{{ROOT}}/$f.c" || fail=1
+    done
+    for h in zn_task; do
+        echo "--- c++03 $h.h ---"
+        printf '#define ZN_IMPLEMENTATION\n#include "%s.h"\n' "$h" \
+            > '{{BUILD}}/check_'"$h"'.c'
+        {{CXX}} -std=c++03 -pedantic-errors -D_XOPEN_SOURCE=600 {{INC}} \
+            -pthread -x c++ -c -o /dev/null '{{BUILD}}/check_'"$h"'.c' || fail=1
     done
     exit $fail
 
@@ -293,6 +308,24 @@ cov-lines:
         src=$(sed -n "${ln}p" '{{ROOT}}/znet.h' 2>/dev/null); \
         case "$src" in *assert*) ;; *) echo "L$ln: $src";; esac; \
     done
+
+# uncovered lines from the last `just cov`, grouped by function (znet.h +
+# zn_buffer.h).  Reads the functions' hit counts (FNA/FNDA) for the headers.
+uncovered:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    info='{{BUILD}}/znet.info'
+    if [ ! -f "$info" ]; then
+        echo "no coverage data at $info" >&2
+        echo "run 'just cov' first" >&2
+        exit 1
+    fi
+    for f in '{{ROOT}}/znet.h' '{{ROOT}}/zn_buffer.h'; do
+        if [ "$f" -nt "$info" ]; then
+            echo "warning: $f is newer than $info; line numbers are stale" >&2
+        fi
+    done
+    {{LUA}} '{{ROOT}}/misc/uncovered.lua' "$info"
 
 # branches taken zero times in znet.h
 cov-unbranched:

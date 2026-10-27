@@ -97,7 +97,7 @@ int main(void) {
 
     /* this server listen to port */
     if (zn_listen(accept, "127.0.0.1", PORT) == ZN_OK) {
-        printf("[%p] accept listening to %d ...\n", accept, PORT);
+        printf("[%p] accept listening to %d ...\n", (void*)accept, PORT);
     }
 
     /* this server and when new connection coming, on_accept()
@@ -170,7 +170,7 @@ int main(void) {
 zn_Time on_timer(void *ud, zn_Timer *timer, zn_Time elapsed) {
     zn_Accept *accept = (zn_Accept*)ud;
     (void)timer;
-    printf("close accept(%p) after 3s (elapsed: %d)\nexit...\n", accept, (int)elapsed);
+    printf("close accept(%p) after 3s (elapsed: %d)\nexit...\n", (void*)accept, (int)elapsed);
     zn_delaccept(accept);
     /* return value is the next time the timer callback function
      * called, return 0 means we want delete this timer and don't
@@ -183,22 +183,24 @@ zn_Time on_timer(void *ud, zn_Timer *timer, zn_Time elapsed) {
  * you are done with this connection and ready to accept another
  * connection.  */
 void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
+    MyData *data;
+
     (void)ud;
 
     /* if err is not ZN_OK, we meet errors. simple return. */
     if (err != ZN_OK) {
         fprintf(stderr, "[%p] some bad thing happens to server\n"
-                "  when accept connection: %sn", accept, zn_strerror(err));
+                "  when accept connection: %s\n", (void*)accept, zn_strerror(err));
         return;
     }
 
-    printf("[%p] a new connection(%p) is comming :-)\n", accept, tcp);
+    printf("[%p] a new connection(%p) is comming :-)\n", (void*)accept, (void*)tcp);
 
     /* Now we sure a real connection comes. when a connection comes,
      * we receive messages from connection.
      * first, we receive something from client, so we need a buffer to
      * hold result: */
-    MyData *data = (MyData*)malloc(sizeof(MyData));
+    data = (MyData*)malloc(sizeof(MyData));
     /* OK, send recv request to znet, and when receive done, our
      * on_server_recv() function will be called, with our data
      * pointer. */
@@ -217,7 +219,7 @@ void on_server_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     /* send work may error out, we first check the result code: */
     if (err != ZN_OK) {
         fprintf(stderr, "[%p] server meed problems when send something: %s\n",
-                tcp, zn_strerror(err));
+                (void*)tcp, zn_strerror(err));
         return;
     }
 
@@ -228,12 +230,12 @@ void on_server_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
      * the times we done the send work.  */
 
     if (ud == NULL) { /* the first time? */
-        printf("[%p] first send to client done\n", tcp);
+        printf("[%p] first send to client done\n", (void*)tcp);
         zn_send(tcp, send_string("this is our second message."),
                 on_server_sent, (void*)1);
     } else { /* not the first time? */
         /* do nothing. but a log. */
-        printf("[%p] second send to client done (%u bytes)\n", tcp, count);
+        printf("[%p] second send to client done (%u bytes)\n", (void*)tcp, count);
     }
 }
 
@@ -250,7 +252,7 @@ void on_server_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
      * safely. */
     if (err != ZN_OK) {
         fprintf(stderr, "[%p] error when receiving from client: %s\n",
-                tcp, zn_strerror(err));
+                (void*)tcp, zn_strerror(err));
         /* after error, tcp object will be closed. but you still could
          * use it to do other things, e.g. to connect to other server.
          * but we don't wanna do that now, so put it back to znet.
@@ -262,12 +264,12 @@ void on_server_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     }
 
     printf("[%p] server receive something from client(%d bytes):"
-            " %.*s\n", tcp, (int)count, (int)count, data->buffer);
+            " %.*s\n", (void*)tcp, (int)count, (int)count, data->buffer);
 
     /* make another receive process... */
     err = zn_recv(tcp, data->buffer, MYDATA_BUFLEN, on_server_recv, data);
     if (err != ZN_OK) {
-        printf("[%p] prepare to receive error: %s\n", tcp, zn_strerror(err));
+        printf("[%p] prepare to receive error: %s\n", (void*)tcp, zn_strerror(err));
         zn_deltcp(tcp);
         free(data);
     }
@@ -280,22 +282,22 @@ void on_connection(void *ud, zn_Tcp *tcp, unsigned err) {
     if (err != ZN_OK) { /* no lucky? let's try again. */
         /* we use ud to find out which time we tried. */
         fprintf(stderr, "[%p] client%d can not connect to server now: %s\n",
-                tcp, data->idx, zn_strerror(err));
+                (void*)tcp, data->idx, zn_strerror(err));
         if (++data->count < 10) {
             fprintf(stderr, "[%p client%d just try again (%d times)! :-/ \n",
-                    tcp, data->idx, data->count);
+                    (void*)tcp, data->idx, data->count);
             zn_connect(tcp, "127.0.0.1", PORT, 0, on_connection, data);
         }
         else {
             fprintf(stderr, "[%p] client%d just give up to connect :-( \n",
-                    tcp, data->idx);
+                    (void*)tcp, data->idx);
             zn_deltcp(tcp);
             free(data);
         }
         return;
     }
 
-    printf("[%p] client%d connected to server now!\n", tcp, data->idx);
+    printf("[%p] client%d connected to server now!\n", (void*)tcp, data->idx);
 
     /* now we connect to the server, send something to server.
      * when send done, on_send() is called.  */
@@ -321,23 +323,23 @@ void on_client_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     /* send work may error out, we first check the result code: */
     if (err != ZN_OK) {
         fprintf(stderr, "[%p] client%d meet problem when send something: %s\n",
-                tcp, data->idx, zn_strerror(err));
+                (void*)tcp, data->idx, zn_strerror(err));
         zn_deltcp(tcp); /* and we close connection. */
         free(data);
         return;
     }
 
     printf("[%p] client%d send message%d success! (%u bytes)\n",
-            tcp, data->idx, data->count, count);
+            (void*)tcp, data->idx, data->count, count);
     if (++data->count > 5) {
-        printf("[%p] client%d ok, closed!\n", tcp, data->idx);
+        printf("[%p] client%d ok, closed!\n", (void*)tcp, data->idx);
         zn_deltcp(tcp); /* and we close connection. */
         free(data);
         return;
     }
 
     printf("[%p] client%d send message%d to server ...\n",
-            tcp, data->idx, data->count);
+            (void*)tcp, data->idx, data->count);
     zn_send(tcp, send_string("message from client..."),
             on_client_sent, data);
 }
@@ -347,12 +349,12 @@ void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 
     if (err != ZN_OK) {
         fprintf(stderr, "[%p] client%d meet error when receiving: %s",
-                tcp, data->idx, zn_strerror(err));
+                (void*)tcp, data->idx, zn_strerror(err));
         return;
     }
 
     fprintf(stderr, "[%p] client%d received from server(%d bytes): %.*s\n",
-            tcp, data->idx, (int)count, (int)count, data->buffer);
+            (void*)tcp, data->idx, (int)count, (int)count, data->buffer);
 }
 
 /* we received messages from other udp ports. */
@@ -362,14 +364,14 @@ void on_udp_recv(void *ud, zn_Udp *udp, unsigned err, unsigned count,
 
     if (err != ZN_OK) {
         fprintf(stderr, "[%p] udp meet error when receiving message: %s\n",
-                udp, zn_strerror(err));
+                (void*)udp, zn_strerror(err));
         zn_deludp(udp);
         return;
     }
 
     ++data->count;
     printf("[%p] udp received message%d from %s:%d(%d bytes): %.*s\n",
-            udp, data->count, addr, port, (int)count, (int)count, data->buffer);
+            (void*)udp, data->count, addr, port, (int)count, (int)count, data->buffer);
 
     if (data->count >= 5) {
         zn_deludp(udp);

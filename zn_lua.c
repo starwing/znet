@@ -72,6 +72,7 @@ static zn_Time lzn_ontimer(void *ud, zn_Timer *timer, zn_Time elapsed) {
     }
     else if (lua_isinteger(L, -1)) {
         lua_Integer ret = lua_tointeger(L, -1);
+        lua_pop(L, 1);
         return ret >= 0 ? (zn_Time)ret : 0;
     }
     else if (lua_toboolean(L, -1))

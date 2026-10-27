@@ -126,7 +126,7 @@ typedef struct zn_Task {
     zn_TaskHandler *h;
 } zn_Task;
 
-typedef struct zn_TaskPool {
+struct zn_TaskPool {
     HANDLE threads[ZN_MAX_THREAD_COUNT];
     HANDLE event;
     CRITICAL_SECTION lock;
@@ -134,7 +134,7 @@ typedef struct zn_TaskPool {
     int nthread;
     int ntask;
     int status;
-} zn_TaskPool;
+};
 
 static DWORD WINAPI zn_tasker(LPVOID lpParameter) {
     zn_TaskPool *ws = (zn_TaskPool*)lpParameter;
@@ -269,7 +269,7 @@ typedef struct zn_Task {
     zn_TaskHandler *h;
 } zn_Task;
 
-typedef struct zn_TaskPool {
+struct zn_TaskPool {
     pthread_t threads[ZN_MAX_THREAD_COUNT];
     pthread_cond_t event;
     pthread_mutex_t lock;
@@ -278,7 +278,7 @@ typedef struct zn_TaskPool {
     int ntask;
     int idle_threads;
     int status;
-} zn_TaskPool;
+};
 
 static void *zn_tasker(void *ud) {
     zn_TaskPool *ws = (zn_TaskPool*)ud;

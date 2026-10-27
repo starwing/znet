@@ -28,11 +28,30 @@ znet:getaddrinfo("localhost", "http", function(addrs, err)
     end
 end)
 
--- 2. loopback echo: accept -> recv -> send, client -> send -> recv
+-- 2. timer re-arm vector: a numeric return re-arms with that delay, until the
+-- callback returns false.  Exercises the integer branch of lzn_ontimer, which
+-- used to return without popping its Lua stack slot (U9).  Nothing else is
+-- registered here, so the loop ends when the timer stops.
 local listener
 local timer
 local client
 local port
+
+-- 3. loopback echo: accept -> recv -> send, client -> send -> recv
+local ticks = 0
+local ticktimer = znet:timer(function(self)
+    ticks = ticks + 1
+    if ticks < 3 then
+        return 5                    -- numeric return: re-arm in 5 ms
+    end
+    return false
+end)
+ticktimer:start(5)
+znet:run()
+ticktimer:delete()
+if ticks ~= 3 then
+    fail("timer numeric re-arm: expected 3 ticks, got " .. tostring(ticks))
+end
 
 local function on_accept(self, tcp)
     tcp:receive(function(_, data)

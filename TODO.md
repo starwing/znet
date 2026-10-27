@@ -16,9 +16,9 @@
 | 优先级 | 内容 | 理由 |
 | --- | --- | --- |
 | **P0** | L8：epoll/kqueue 事件批保存裸 `zn_SocketInfo *`，同批回调删除另一个对象后可能 UAF | 是唯一剩下的崩溃/内存安全项；测试套件目前只覆盖“另一个 fd 不在本批”的情况 |
-| **P1** | L6/L7/L9、B3/B4/B6/B7/B13、T2、C1（64 位 timer）/C2/C3/C4、U1/U4/U9/U10 | 正确性、平台差异、Clean C / MSVC / 签名硬约束 |
-| **P2** | L10/L11、B8/B9/B11/B12、T3–T6、U6–U8/U11、F1/F3 | 健壮性、可维护性、资源边界 |
-| **P3** | L13、B10、T7/T8、U13/U14、M4（timer 四叉堆）、M5（收尾） | 清理和性能优化；必须先有基准/测试 |
+| **P1** | L6/L7/L9、B3/B4/B13、T2、C1（64 位 timer）/C2/C3、U1/U10、C4（`zn_lua.c` 审计） | 正确性、平台差异、Clean C / MSVC / 签名硬约束 |
+| **P2** | L10/L11、B8/B9、T5/T6、U7/U8/U11、F1/F3 | 健壮性、可维护性、资源边界 |
+| **P3** | L13、T7、M4（timer 四叉堆）、M5（收尾） | 清理和性能优化；必须先有基准/测试 |
 
 **建议执行顺序**：L8 → P1 正确性与平台修复 → Clean C/MSVC/签名（C1–C4）→ M3 全量
 格式化 → M4 timer 四叉堆 → M5 文档/示例收尾。CI（至少 Linux/macOS + Windows
@@ -68,7 +68,46 @@
 | 覆盖率结果 | macOS：`znet.h` 93.9% 行 / 100% 函数，`zn_buffer.h` 99.2% 行；Linux：93.6% / 99.1%；POSIX 并集：93.3% / 99.2%。未覆盖行分类见 `tests/COVERAGE.md` |
 | 文档 | `AGENTS.md`、`README.txt`、`tests/README.md` 已去掉 `test.c` 引用，补上 `test-lua`、`tests/test.lua` 和覆盖率报告入口 |
 
-### 1.3 已消除、不要重新引入
+### 1.3 本轮一行修复（2026-10-28）
+
+判定标准：一处局部改动、不动公共 API/ABI、不引入新语义决策。T3/T4/U4/U6/B7 的新断言
+都在 HEAD 上逐条复现过失败；B6 的可测点来自本轮新增的辅助函数，无法在 HEAD 上跑同一断言；
+其余项的验证方式在表里注明。
+
+| ID | 修复 | 回归 / 验证 |
+| --- | --- | --- |
+| T3 | 空堆时 `znT_gettimeout` 返回 `ZN_FOREVER`，不再返回 `ZN_FOREVER - now` | `timer_nexttime_and_timeout` |
+| T4 | 取消根节点/最后一个 timer 时同步 `nexttime`，不再提前唤醒 | `timer_cancel_updates_nexttime` |
+| T8 | 删掉 `zn_MemPool timers;` 行末多余的 `\` | 编译 |
+| B6 | epoll 超时经 `znP_timeoutms` 钳到 `INT_MAX`，>24.8 天不再回绕成“永久等待” | `epoll_timeout_clamp`（Linux） |
+| B7 | select/reactive 的 `znP_initudp` 对 UDP socket 调用 `znU_set_nonblock` | `udp_socket_is_nonblocking`（POSIX） |
+| B10 | select 的 `select()` 出错（含 `EINTR`）直接返回 0，不再遍历未定义的 `fd_set` | 无回归：旧代码在 Linux/macOS 上恰好也无害，只有 MSan 能发现；改动本身是严格安全的 |
+| B11 | IOCP 把 0 字节 UDP 数据报按成功接收投递 | 无回归；仅代码审查，**未在 Windows 验证** |
+| B12 | epoll `EPOLL_CTL_DEL` 前清零 `struct epoll_event` | 无回归；纯加固（当前内核只读 `events`） |
+| U4 | `zn_initrecvbuffer`/`zn_resetrecvbuffer` 清零 `packet_ud`，去掉重复赋值 | `recv_default_handlers` |
+| U6 | `zn_prepbuffcache` 返回实际缓存的块数 | `buffcache_alloc_free` |
+| U9 | Lua timer 的整数返回值分支先 `lua_pop` 再 return | `tests/test.lua` 数字返回值用例（覆盖分支；栈槽泄漏在 Lua 侧不可观测） |
+| U13/U14/C4 | `example.c` 修 `"%sn"`、`MyData *data` 移到块首、23 处 `%p` 配 `(void*)p`；`zn_task.h` 去掉 C89 非法的 typedef 重定义 | `just check-c89` / `just check-cpp03` 全绿（recipe 现在也编译 `zn_task.h`） |
+
+`check-c89`/`check-cpp03` 因此首次全绿；Linux VM 没有 C++ 编译器，cpp03 只在 macOS
+验证过。C4 只剩 `zn_lua.c` 的严格 C89 审计。
+
+### 1.4 覆盖报告里的“死代码”复核（2026-10-28）
+
+- 三个 `znP_dispatch` 的 `default: ;`（select/epoll/kqueue）删除；`zn_SocketInfo.type`
+  改为 `zn_SocketType`，这样以后新增 socket 类型时 `-Wswitch` 会报错（保留 `default`
+  恰好会压掉这个保护）。IOCP 的同名 `default` 未动（本机不能编译 IOCP）。
+- select `zn_tcpfromfd` 的 `fd >= FD_SETSIZE` 分支不可达（唯一调用者 `zn_onaccept`
+  已经先关闭这种 fd），改成 `assert(fd < FD_SETSIZE)`：不变式来自调用者，assert 行
+  在每次 accept 时都会执行，不再是一条永远为 0 的覆盖记录。
+- select 的 except 派发 send 错误分支不是死代码：`tcp_select_except_send_error` 直接
+  派发 except 集，证明 `zn_onsend(tcp, err=1)` 可达并完成 `ZN_ERROR`。
+- `zn_buffer.h` 的两行刻意保留：快路径 OOM 的 `-1`（数据路径上唯一的错误返回）和
+  `znBC_putcache` 的 >2 GiB 回退（真实可达）。理由见 `tests/COVERAGE.md` §C。
+- 新增 `just uncovered`（= `just test uncovered`）：按函数分组列出上次 `just cov` 的
+  未覆盖行；函数边界来自源码扫描，因为双后端合并后的 lcov FN 区间不可用。
+
+### 1.5 已消除、不要重新引入
 
 - kqueue 的 `znP_poll` 在结果队列有积压时必须返回 `1`（`znet.h:2762`）。之前的本地
   `return 0` 已经还原；`rq_poll_returns_one_when_backlog` 覆盖该场景。
@@ -76,13 +115,14 @@
 - UDP close 后必须保留 `INVALID_SOCKET` 哨兵；否则会 double close 或让关闭后的
   `sendto` 通过状态守卫。
 
-### 1.4 当前验证基线
+### 1.6 当前验证基线
 
 - 本机 macOS：`just check`（kqueue + select）全绿；`just smoke` 退出码 0；
   `just test-lua` 输出 `test.lua: OK`。
 - Linux（OrbStack）：`orb just check`（epoll + select）全绿。
-- `znet.h`、`zn_buffer.h` 通过严格 C89/C++03；`tests/*.c` 也通过（`TEST` 变参宏豁免），
-  但 `example.c` 仍因 C4 的混合声明和 `%p` 警告无法通过 `-pedantic-errors`。
+- `znet.h`、`zn_buffer.h`、`zn_task.h`、`example.c` 与 `tests/*.c` 都通过严格
+  C89/C++03（`TEST` 变参宏豁免）；`just check-c89` / `just check-cpp03` 全绿（cpp03
+  只在 macOS 验证，Linux VM 没有 C++ 编译器）。
 - `znet.h` 仍有超过 80 列的函数签名和已折行的签名（C3），尚未做签名重构。
 - MSVC `/W4` 未在本机验证；clang `-Wconversion -Wsign-conversion` 仍是近似检查（C2）。
 - IOCP/Windows 无法在本机构建；相关条目只能标“代码审查 + 待 CI”，不能声称已验证。
@@ -109,8 +149,6 @@
 | L9 | `znet.h:1337,1528,1538` | IOCP：`znP_connect` 在 `zn_getextension` 失败时不关闭 socket；`zn_onaccept` 不检查 `zn_newtcp` 返回 NULL；`GetAcceptExSockaddrs` 失败时泄漏 client；完成端口关联失败时静默丢弃 accepted socket 且不回调。 |
 | B3 | `znet.h:1582,2015,2393` | 四个后端的 `znP_sendto` 忽略 `sendto` 返回值；UDP 发送失败不可见，仍返回 `ZN_OK`。 |
 | B4 | `znet.h:724` | `zn_sendto` 无条件拒绝 `len > 1200`，与路径 MTU 无关。 |
-| B6 | `znet.h:2560` | epoll 把 `zn_Time` 超时直接转成 `int`；超过 `INT_MAX` 毫秒（约 24.8 天）变负数，`epoll_wait` 视为无限等待。 |
-| B7 | `znet.h:1995,2371` | select/reactive 的 `znP_initudp` 没有把 UDP socket 设为非阻塞；`recvfrom`/`sendto` 可能阻塞整个事件循环。 |
 | B13 | `znet.h:895,936` | **新增（写覆盖率测试时发现）**：在项目统一选项 `-D_XOPEN_SOURCE=600` 下，macOS 既不定义 `MSG_NOSIGNAL` 也不定义 `SO_NOSIGPIPE`，于是 `ZN_NOSIGNAL` 变成 0、`znU_set_nosigpipe` 编译为空。向已断开的 TCP `send` 会触发 SIGPIPE 杀死进程。`tcp_send_error` 只能在测试里临时忽略 SIGPIPE；Linux 上 `MSG_NOSIGNAL` 可见，所以问题只在 macOS。修法：在平台段显式启用 `_DARWIN_C_SOURCE`，或提供可选的 `SIGPIPE` 忽略入口；需评估库是否应改全局信号处理。 |
 
 **定时器**
@@ -126,15 +164,13 @@
 | C1（64 位部分） | `znet.h:45` | `ZN_USE_64BIT_TIMER` 仍依赖 `unsigned long long`，默认配置不启用；若要求该选项也 Clean C，需改成可移植的 64 位表示。 |
 | C2 | `znet.h` 多处 | MSVC `/W4` 收窄/符号性风险未分类完成：收窄点（`ssize_t`→`int`、`size_t`→`unsigned`、`uintptr_t`→`int`、timer `zn_Time`→`int`）需显式 cast + 值域检查；同宽 signedness 优先改类型/比较/printf 格式。clang `-Wconversion -Wsign-conversion` 只是近似，实际清单需 Windows CI。 |
 | C3 | `znet.h:103,107,417,486,640,660,678,722,730,791,1582,2015,2393` | 签名 <80 且不换行：`zn_connect` 114 列、`zn_send` 95、`zn_sendto` 100、`zn_recvfrom` 97、`zn_recv` 89、`zn_closeaccept` 81；回调 typedef 也超。`zn_connect` 必须改 API（参数结构体/去掉 `packet`/新入口），不能只折行。 |
-| C4 | `example.c:201`、`zn_task.h:281`、`zn_lua.c` | 剩余 Clean C 问题：`example.c` 的混合声明和 `%p`；`zn_task.h` 的 typedef 重定义；`zn_lua.c` 尚未按严格 C89 审计（依赖 Lua 头）。`zn_buffer.h` 已随 suite 的 `check-c89`/`check-cpp03` 验证通过；`test.c` 已删除，原 C4 中的这两项关闭。 |
+| C4 | `zn_lua.c` | 剩余 Clean C 审计项：`zn_lua.c` 尚未按严格 C89 审计（依赖 Lua 头）。`example.c`、`zn_task.h` 已在本轮通过 `check-c89`/`check-cpp03`（见 1.3）。 |
 
 **工具 / Lua**
 
 | ID | 位置 | 缺陷与影响 |
 | --- | --- | --- |
 | U1 | `zn_deque.h:302,245-261,279` | 不能编译（`znD_frontU`/`znD_backU` 先用后定义）；POSIX `zn_deldeque` 二次 unlock 未加锁的 mutex；`pthread_cond_timedwait` 收到相对 `timespec`，正 `waitms` 会立即超时。 |
-| U4 | `zn_buffer.h:324,331` | `zn_initrecvbuffer`/`zn_resetrecvbuffer` 给 `packet_handler` 赋值两次，第二次是 NULL；默认行为变成“完整包被丢弃”，`znRB_onpacket` 只在显式 `zn_recvonpacket(NULL)` 时恢复。`packet_ud` 未初始化。 |
-| U9 | `zn_lua.c:73` | `lzn_ontimer` 在 `lua_isinteger` 分支里、共享 `lua_pop` 之前 return；每个 tick 泄漏一个 Lua 栈槽。 |
 | U10 | `zn_lua.c:441` | `lzn_onaccept` 只在 Lua 回调返回真值时重新 `zn_accept`；否则监听器处于“已发起但无 handler”状态，水平触发下可能空转。 |
 
 ### 2.3 P2 — 健壮性与可维护性
@@ -145,13 +181,8 @@
 | L11 | `zn_addrinfo.h:146` | 不在 `zn_close` 前调用 `zn_closeaddrinfo` 时，迟到的 post 可能触碰已释放 state；`znA_clearreq` 忽略 `zn_post` 失败，请求和 retain 会泄漏。 |
 | B8 | `znet.h:2352` | reactive 的 `znP_listen` 先注册 fd 再 bind/listen；失败时不注销，留下 stale `S->infos[fd]`/epoll 注册。 |
 | B9 | `znet.h:1872,1898` | select 的 `zn_onsend`/`zn_onrecv` 在就绪后遇到 `EAGAIN` 会清 handler、release，却不回调，操作被静默丢弃。 |
-| B11 | `znet.h:1600` | IOCP 把 0 字节 UDP 数据报（`bSuccess && dwBytes == 0`）当成错误。 |
-| B12 | `znet.h:2423` | epoll 的 `znF_unregister` 把未初始化的 `struct epoll_event` 传给 `EPOLL_CTL_DEL`；当前内核只读 `events`，属于脆弱点而非 bug。 |
-| T3 | `znet.h:398` | 空堆时 `nexttime == ZN_FOREVER`，`znT_gettimeout` 返回 `ZN_FOREVER - now`，kqueue/select 会阻塞约 49.7 天而不是“永久”，后端语义不一致。 |
-| T4 | `znet.h:451` | 取消根节点时不更新 `nexttime`，造成提前唤醒；无害但浪费 CPU。 |
 | T5 | `znet.h:57` | 定时器堆只增长、不收缩；`ZN_MAX_TIMERPOOL` 声明未使用；没有数量上限。 |
 | T6 | `znet.h:443` | `start + delayms` 没有溢出检查；回绕后 `emit` 顺序错误。 |
-| U6 | `zn_buffer.h:222` | `zn_prepbuffcache` 的 `ret` 从未赋值，成功也返回 0。 |
 | U7 | `bench/zn_bufferpool.h` | `zn_putbuffer` 回收节点时没有 `zn_resetrecvbuffer`/`zn_resetsendbuffer`；下一个连接继承旧分帧状态。 |
 | U8 | `znet.hpp` | `TcpAccept` 把 client 存在 accept 对象里，连续 accept 会修改同一个 `TcpSocket`；handler 运行一次即被消费，容易误用。 |
 | U11 | `zn_task.h` | `zn_deltaskpool` 遇到永久阻塞的任务会永久阻塞；需要文档化或提供超时/取消语义。 |
@@ -163,11 +194,7 @@
 | ID | 位置 | 缺陷与影响 |
 | --- | --- | --- |
 | L13 | `znet.h:256` | `znL_empty(h)` 展开成 `(h)->prev == &(h)`：传头指针或头变量都编不过。当前无人使用；要用先改成 `(void*)(h)->next == (void*)(h)`。 |
-| B10 | `znet.h:2109` | select 的 `znP_poll` 在 `EINTR` 后继续遍历未定义的 `fd_set` 内容。 |
 | T7 | `znet.h:390` | 相同 deadline 不保证 FIFO（严格 `>` 比较）；要么文档化，要么改成稳定顺序。 |
-| T8 | `znet.h:358` | `zn_MemPool timers;` 行末有多余反斜杠，是格式化残留。 |
-| U13 | `example.c:191` | 打印 `"%sn"`，应为 `"%s\n"`。 |
-| U14 | `example.c` | 23 个 `%p` 配类型化指针的 `-Wformat-pedantic` 警告；新代码用 `(void*)p`。 |
 | M4 | `znet.h` timer | 四叉堆（4-ary heap）优化；前置条件是 T1/T2 已修、timer 测试齐全、M3 完成；先写基准，收益不足就回退。 |
 | M5 | 文档/示例 | 更新 `README.txt` 的约束矩阵、校对 `notes/*` 行号、补 CI 脚本。`test.c` 的清理已完成，`just smoke` 现在只跑 `example.c`。 |
 
@@ -178,6 +205,20 @@
 - **覆盖率门槛**：当前报告解释了剩余行为什么不可覆盖；如果要把 100% 行覆盖作为硬门槛，
   应对结构性死代码使用 `LCOV_EXCL_LINE`，对资源错误做 fault-injection 构建，而不是靠
   fd 耗尽测试。详见 `tests/COVERAGE.md`。
+
+### 2.6 为什么这些不是“一行修复”
+
+按阻塞原因分组 —— 每组的共同点是：改一处会牵动契约、多个后端或外部验证。
+
+| 阻塞原因 | 条目 | 需要先定的事 |
+| --- | --- | --- |
+| 内存安全方案选择 | L8 | 延迟释放队列 vs 对象代际/活跃检查；还要先写出“两个 fd 同批就绪”的失败用例 |
+| 虚假就绪语义 | L6、L7、B9 | 自动重挂还是回调 `ZN_ERROR`（第 7.1 节）；自动重挂还要防水平触发忙等 |
+| 跨后端完成/资源语义 | B3、L9 | UDP 发送失败如何变成完成事件；IOCP 的 socket 所有权与失败清理 |
+| 公共 API/ABI 决策 | T2、C1、C3、B4、B13 | 64 位 `zn_Time` 是 ABI 变更；签名 <80 要重构 `zn_connect`；UDP 上限与 SIGPIPE 策略（第 7.2、7.10 节） |
+| 工具/绑定重构 | U1、U7、U8、U10、U11 | `zn_deque.h` 是修还是删（第 7.5 节）；Lua/pool 的语义要先写进文档 |
+| 记账与资源边界 | L10、L11、B8、T5、T6 | 非法参数/失败路径要引入错误码或上限，属契约改动 |
+| 机械但多站点或需外部环境 | M3/F1、F3、CI、`zn_lua.c` 的 C89 审计 | 单独提交（格式化）或需要 Windows/CI，不适合混进语义提交 |
 
 ---
 
@@ -190,7 +231,7 @@
 | 3. 跑 clang-format | **P2** | M3 | 必须等 P0/P1 功能修复稳定后单独提交；否则格式 diff 会淹没真正的 bug 修复。 |
 | 4. 修复函数签名折行 | **P1** | M3 | 新约束要求“单行 <80 且不能折行”；`zn_connect` 等需要 API 重构。 |
 | 5. 修复当前可能有的 bug | **P0/P1** | M1/M2 | 只剩 L8（P0）和 P1 清单；IOCP 相关仍需 Windows 验证。 |
-| 6. 其他文档缺陷修复 | **P0–P3** | 分散 | 纯文档/示例/过时测试放 P3；`test.c` 已删除。 |
+| 6. 其他文档缺陷修复 | **P0–P3** | 分散 | 纯文档/示例/过时测试放 P3；`test.c` 已删除，`example.c` 的 `"%sn"`/`%p` 已修（1.3）。 |
 
 C1/C2/C4（Clean C、MSVC `/W4`、其余文件）和 C3（签名 <80 不换行）都是 P1 硬约束；
 其中 C3 与第 4 项是同一件事：先重构签名（语义/API 改动），再做全量格式化（P2）。
@@ -219,17 +260,18 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 
 ### M2 — P1 正确性与平台修复（进行中）
 
-已完成：B2、B5、C1 的枚举尾逗号、C4 的 `test.c` 部分。
+已完成：B2、B5、C1 的枚举尾逗号、C4 的 `test.c`/`example.c`/`zn_task.h` 部分、
+B6/B7/U4/U6/U9/T3/T4（见 1.3）。
 
 剩余：
 
 1. C1 的 64 位 timer 可移植表示（或明确保持 opt-in）；
-2. C4 的 `example.c`/`zn_task.h`/`zn_lua.c`；
+2. C4 的 `zn_lua.c` 严格 C89 审计；
 3. C2 的 MSVC `/W4` 收窄分类与 Windows CI；
 4. L6/L7 的 EAGAIN 语义（推荐自动重挂）、L9 的 IOCP 资源泄漏；
-5. B3/B4/B6/B7/B13；
+5. B3/B4/B13；
 6. T2 的 32 位回绕文档/决策；
-7. U1/U4/U9/U10。
+7. U1/U10。
 
 ### M3 — 签名重构 + 全量 clang-format（未开始）
 
@@ -255,8 +297,9 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 
 ### M5 — 文档、示例、过时测试收尾（未开始）
 
-`test.c` 已删除并迁移；剩余：修 `example.c` 的 `"%sn"` 和 `%p`；处理 `zn_deque.h`；
-校对 `notes/*` 行号；更新 `README.txt`；加 CI/`scripts/check.sh` 并写明本机验证范围。
+`test.c` 已删除并迁移，`example.c` 的 `"%sn"`/`%p`/C89 问题已修（1.3）；剩余：处理
+`zn_deque.h`；校对 `notes/*` 行号；更新 `README.txt`；加 CI/`scripts/check.sh` 并写明
+本机验证范围。
 
 ---
 
@@ -274,6 +317,12 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 | T1 | `timer_64bit_handler_return` | handler 返回值不被截断 |
 | U2/U3 | `buffcache_boundaries` / `buffer_append_oom` | 越界档位拒绝；OOM 不写坏内存 |
 | U5 | `recv_split_header` | 跨读 header 正确解码 |
+| T3 | `timer_nexttime_and_timeout` | 空堆时 `znT_gettimeout` 恰好返回 `ZN_FOREVER` |
+| T4 | `timer_cancel_updates_nexttime` | 取消根后 `nexttime` 指向新根；清空后为 `ZN_FOREVER` |
+| B6 | `epoll_timeout_clamp`（Linux） | 超时 > `INT_MAX` 被钳位，不回绕成负数 |
+| B7 | `udp_socket_is_nonblocking`（POSIX） | UDP fd 带 `O_NONBLOCK` |
+| U4/U6 | `recv_default_handlers` / `buffcache_alloc_free` | `packet_ud` 初始化；预分配返回实际块数 |
+| 死代码复核 | `tcp_select_except_send_error` | except 集上的 pending send 以 `ZN_ERROR` 完成（不是死分支） |
 | L8 | 待补 | 两个 fd 同批就绪、回调删除另一个，ASan 干净 |
 | B13 | `tcp_send_error` | 对端断开后 send 回调收到错误；测试临时忽略 SIGPIPE，库侧修复待做 |
 

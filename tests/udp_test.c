@@ -450,4 +450,26 @@ TEST(udp_close_reused_fd) {
 
 #endif /* _WIN32 */
 
+/* ---- B7 (POSIX): a UDP socket must not block the event loop ----
+ * Both POSIX backends only poll for readiness; a spurious readiness followed
+ * by a blocking recvfrom() would stall every other socket in the state. */
+
+#ifndef _WIN32
+
+TEST(udp_socket_is_nonblocking) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    int       flags;
+
+    assertok(u != NULL);
+    flags = fcntl(u->socket, F_GETFL);
+    assertok(flags != -1);
+    assertok((flags & O_NONBLOCK) != 0);
+
+    zn_deludp(u);
+    zt_close(S);
+}
+
+#endif /* _WIN32 */
+
 #include "udp_test.gen.inc"

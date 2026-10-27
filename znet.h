@@ -355,7 +355,7 @@ static void *znM_getobject(zn_MemPool *pool) {
 #include <string.h>
 
 typedef struct zn_TimerState {
-    zn_MemPool timers;                                         \
+    zn_MemPool timers;
     zn_Timer **heap;
     zn_Time nexttime;
     unsigned used;
@@ -397,6 +397,7 @@ static void znT_updatetimers(zn_TimerState *ts, zn_Time current) {
 
 static zn_Time znT_gettimeout(zn_TimerState *ts, zn_Time current) {
     zn_Time emit = ts->nexttime;
+    if (ts->used == 0) return ZN_FOREVER;
     if (emit < current) return 0;
     return emit - current;
 }
@@ -453,8 +454,10 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
     unsigned i = timer->index, p, k;
     if (i == ZN_TIMER_NOINDEX) return;
     timer->index = ZN_TIMER_NOINDEX;
-    if (ts->used == 0 || timer == ts->heap[--ts->used])
+    if (ts->used == 0 || timer == ts->heap[--ts->used]) {
+        if (ts->used == 0) ts->nexttime = ZN_FOREVER;
         return;
+    }
     timer = ts->heap[ts->used];
     while (p = (i-1)>>1, i > 0 && ts->heap[p]->emit > timer->emit)
         (ts->heap[i] = ts->heap[p])->index = i, i = p;
@@ -464,6 +467,7 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
             ]->emit)
         (ts->heap[i] = ts->heap[k])->index = i, i = k;
     (ts->heap[i] = timer)->index = i;
+    ts->nexttime = ts->heap[0]->emit;
 }
 
 #endif /* zn_use_timer */
@@ -907,7 +911,7 @@ typedef enum zn_SocketType {
 } zn_SocketType;
 
 typedef struct zn_SocketInfo {
-    int type;
+    zn_SocketType type;
     void *head;
 } zn_SocketInfo;
 
@@ -1616,7 +1620,7 @@ static void zn_onrecvfrom(zn_Udp *udp, BOOL bSuccess, DWORD dwBytes) {
         ZN_PUTOBJECT(udp);
         return;
     }
-    if (bSuccess && dwBytes > 0) {
+    if (bSuccess) { /* a zero-byte datagram is a successful receive too */
         zn_PeerInfo info;
         znU_setinfo(&udp->recv_from, &info);
         cb(udp->recv_ud, udp, ZN_OK, dwBytes, info.addr, info.port);
@@ -1804,10 +1808,7 @@ static int znP_recv(zn_Tcp *tcp)
 
 static zn_Tcp *zn_tcpfromfd(zn_State *S, int fd, zn_SockAddr *remote_addr) {
     zn_Tcp *tcp;
-    if (fd >= FD_SETSIZE) {
-        close(fd);
-        return NULL;
-    }
+    assert(fd < FD_SETSIZE); /* the caller closes anything larger */
     znU_set_nosigpipe(fd);
     znU_set_nonblock(fd);
     znU_set_nodelay(fd);
@@ -2018,6 +2019,7 @@ static int znP_initudp(zn_Udp *udp, zn_SockAddr *addr) {
     int fd = socket(znU_family(addr), SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) return ZN_ESOCKET;
 
+    znU_set_nonblock(fd);
     if (bind(fd, &addr->addr, znU_size(addr)) != 0) {
         close(fd);
         return ZN_EBIND;
@@ -2110,7 +2112,6 @@ static void znP_dispatch(zn_State *S, int fd, int setno) {
     case ZN_SOCK_UDP:
         zn_onrecvfrom((zn_Udp*)info->head, err);
         break;
-    default: ;
     }
 }
 
@@ -2126,7 +2127,7 @@ static int znP_poll(zn_State *S, zn_Time timeout) {
         ptv = &tv;
     }
     ret = select(S->nfds+1, &readfds, &writefds, &exceptfds, ptv);
-    if (ret < 0 && errno != EINTR) /* error out */
+    if (ret < 0) /* error out; an interrupted select leaves the sets undefined */
         return 0;
     for (i = 0; i <= S->nfds; ++i) {
         if (FD_ISSET(i, &readfds))
@@ -2433,6 +2434,7 @@ static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
 static int znP_initudp(zn_Udp *udp, zn_SockAddr *addr) {
     int fd = socket(znU_family(addr), SOCK_DGRAM, IPPROTO_UDP);
     if (fd < 0) return ZN_ESOCKET;
+    znU_set_nonblock(fd);
     if (bind(fd, &addr->addr, znU_size(addr)) != 0) {
         close(fd);
         return ZN_EBIND;
@@ -2487,6 +2489,7 @@ static int znF_register_all(zn_State *S, int fd, zn_SocketInfo *info) {
 
 static int znF_unregister(zn_State *S, int fd) {
     struct epoll_event event;
+    memset(&event, 0, sizeof(event)); /* DEL ignores it; never pass stack garbage */
     return epoll_ctl(S->epoll, EPOLL_CTL_DEL, fd, &event) == 0;
 }
 
@@ -2602,13 +2605,18 @@ static void znP_dispatch(zn_State *S, struct epoll_event *evt) {
     case ZN_SOCK_UDP:
         zn_onrecvfrom((zn_Udp*)info->head, eventmask);
         break;
-    default: ;
     }
+}
+
+static int znP_timeoutms(zn_Time timeout) {
+    if (timeout >= ZN_FOREVER) return -1;
+    /* epoll takes an int: a plain cast wraps past INT_MAX into "forever" */
+    return timeout > (zn_Time)INT_MAX ? INT_MAX : (int)timeout;
 }
 
 static int znP_poll(zn_State *S, zn_Time timeout) {
     int i, ret;
-    int ms = timeout >= ZN_FOREVER ? -1 : (int)timeout;
+    int ms = znP_timeoutms(timeout);
     if (znR_process(S, 0))
         return 1;
     ret = epoll_wait(S->epoll, S->events, ZN_MAX_EVENTS, ms);
@@ -2784,7 +2792,6 @@ static void znP_dispatch(zn_State *S, struct kevent *evt) {
     case ZN_SOCK_UDP:
         zn_onrecvfrom((zn_Udp*)info->head, evt->filter, evt->flags);
         break;
-    default: ;
     }
 }
 

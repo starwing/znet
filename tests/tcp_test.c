@@ -636,6 +636,51 @@ TEST(tcp_select_oob_recv_error) {
     ioerr_close(&c);
 }
 
+/* The same except set must also complete a pending *send* with an error.
+ * Reaching this through select() needs a full kernel send buffer plus urgent
+ * data (timing-dependent); dispatch the except set directly instead.  The
+ * transport half is already proven by tcp_select_oob_recv_error. */
+static void oobsend_accept(void *ud, zn_Accept *accept, unsigned err,
+                           zn_Tcp *tcp) {
+    ioerr_ctx *c = (ioerr_ctx *)ud;
+    (void)accept;
+    asserteq(err, ZN_OK);
+    assertok(tcp != NULL);
+    c->accepted = 1;
+    c->server = tcp;
+}
+
+static void oobsend_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned cnt) {
+    ioerr_ctx *c = (ioerr_ctx *)ud;
+    (void)cnt;
+    c->done = 1;
+    c->err = err;
+    c->server = NULL;
+    zn_deltcp(tcp);
+}
+
+TEST(tcp_select_except_send_error) {
+    ioerr_ctx c;
+    zt_Loop   L;
+
+    ioerr_open(&c, oobsend_accept, ioerr_connect);
+    zt_begin(&L, c.S, 2000);
+    ZT_WAIT(L, c.connected == 1 && c.accepted == 1);
+
+    asserteq(zn_send(c.server, "x", 1, oobsend_sent, &c), ZN_OK);
+    /* setno 2 == exceptfds: the send must fail loudly, not vanish */
+    znP_dispatch(c.S, c.server->socket, 2);
+
+    asserteq(c.done, 1);
+    test_log("  send dispatched from exceptfds: err=%u (%s)\n", c.err,
+             zn_strerror((int)c.err));
+    assertok(c.err != ZN_OK);
+    assertok(c.server == NULL);
+    asserteq(c.S->waitings, 0);
+    zt_end(&L);
+    ioerr_close(&c);
+}
+
 #endif /* ZN_USE_SELECT */
 
 #endif /* !_WIN32 */

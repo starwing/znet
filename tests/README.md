@@ -125,8 +125,15 @@ just check                 # everything, native+select
 just check-64bit-timer     # timer suite, 64-bit zn_Time
 just test-lua              # build znet.so + run tests/test.lua
 just cov                   # lcov report for znet.h
+just uncovered             # uncovered lines grouped by function (last cov)
 just clean-cov             # coverage data only
 ```
+
+`just uncovered` (also spelled `just test uncovered`) reads the tracefile left
+by the last `just cov` and lists every line with a zero hit count under the
+function that owns it, together with that function's call count.  The function
+boundaries come from scanning the source, not from lcov's FN ranges: `znet.h`
+is compiled into both backends, so its merged FN ranges span unrelated code.
 
 `just test-lua` is outside `check`: it links the optional Lua binding against
 the host Lua (>= 5.3, headers found via pkg-config or `$LUA_INC`) and runs a

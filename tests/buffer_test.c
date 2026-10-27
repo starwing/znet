@@ -196,10 +196,10 @@ TEST(buffcache_alloc_free) {
     zn_BufferCache *bc = zn_newbuffcache(NULL, NULL);
 
     assertok(bc != NULL);
-    /* U6: zn_prepbuffcache() always returns 0, so its result is not
-     * asserted here; the blocks have to be freed without ASan noise. */
-    (void)zn_prepbuffcache(bc, 4096, 2);
-    (void)zn_prepbuffcache(bc, 10000, 1);
+    /* U6: the result counts the buffers actually cached */
+    asserteq(zn_prepbuffcache(bc, 4096, 2), 2);
+    asserteq(zn_prepbuffcache(bc, 10000, 1), 1);
+    asserteq(zn_prepbuffcache(NULL, 4096, 2), 0);
     zn_delbuffcache(bc);
     zn_delbuffcache(NULL); /* documented no-op */
 }
@@ -388,11 +388,12 @@ TEST(recv_default_handlers) {
     rec_reset(&rec);
     zn_initrecvbuffer(&rb, NULL);
     assertok(rb.header_handler != NULL);
-    /* TODO U4 + section 7.4: init leaves packet_handler NULL.  Whether the
-     * default should discard or deliver is a product decision, so the
-     * default policy is not asserted; a recording handler is installed
-     * instead, which lets the default *header* be observed. */
+    /* TODO U4 + section 7.4: init leaves packet_handler NULL (frames are
+     * dropped) until the default-delivery policy is decided.  The user-data
+     * pointer must be cleared even so: it used to be uninitialised. */
+    assertok(rb.packet_ud == NULL);
     zn_recvonpacket(&rb, rec_packet, &rec);
+    assertok(rb.packet_ud == &rec);
 
     /* a NULL handler restores the built-in one */
     zn_recvonheader(&rb, NULL, NULL);
@@ -428,6 +429,12 @@ TEST(recv_default_handlers) {
     asserteq(rec.len[1], 2);
     assertok(memcmp(rec.data[1], "de", 2) == 0);
     asserteq(rb.readed.used, 0);
+
+    /* reset must drop the handler data the buffer carried (U4) */
+    zn_resetrecvbuffer(&rb);
+    assertok(rb.packet_ud == NULL);
+    assertok(rb.header_handler == znRB_onheader);
+    asserteq(rb.expected, 0);
 }
 
 TEST(recv_lenprefix) {

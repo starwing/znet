@@ -48,7 +48,7 @@ check-asan: (tests::check-asan)
 # timer suite with the opt-in 64-bit zn_Time
 check-64bit-timer: (tests::check-64bit-timer)
 
-# strict C89 compile check (no run; TODO C1/C4 still red)
+# strict C89 compile check (no run): suites + example.c + zn_task.h
 check-c89: (tests::check-c89)
 
 # strict C++03 compile check (no run)
@@ -57,9 +57,15 @@ check-cpp03: (tests::check-cpp03)
 # Windows/MSVC only; fails clearly elsewhere
 check-msvc: (tests::check-msvc)
 
+# (`just test uncovered` is the coverage report, not a suite)
 # one suite, native backend: just test tcp [name-prefix]
 test suite="tcp" *args="":
-    @just --justfile tests/justfile test {{suite}} {{args}}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ '{{suite}}' = uncovered ]; then
+        exec just --justfile tests/justfile uncovered
+    fi
+    exec just --justfile tests/justfile test '{{suite}}' {{args}}
 
 # one suite, select backend
 test-select suite="tcp" *args="":
@@ -76,6 +82,9 @@ cov-lines: (tests::cov-lines)
 
 # branches of znet.h never taken
 cov-unbranched: (tests::cov-unbranched)
+
+# uncovered lines from the last `just cov`, grouped by function
+uncovered: (tests::uncovered)
 
 # ---------------------------------------------------------------------------
 # smoke program
