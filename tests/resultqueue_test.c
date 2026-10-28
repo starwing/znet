@@ -114,8 +114,8 @@ static void rq_on_send_chain(void *ud, zn_Tcp *tcp, unsigned err,
 TEST(rq_empty) {
     zn_State *S = zt_open();
     assertok(znQ_empty(&S->result_queue));
-    asserteq(znR_process(S, 0), 0);
-    asserteq(znR_process(S, 1), 0);
+    asserteq(znR_process(S, ZN_MAX_RESULT_LOOPS), 0);
+    asserteq(znR_process(S, INT_MAX), 0);
     asserteq(S->waitings, 0);
     zt_close(S);
 }
@@ -130,7 +130,7 @@ TEST(rq_one) {
     rq_queue(S, tcp, ZN_OK);
     asserteq(S->waitings, 1);
 
-    asserteq(znR_process(S, 0), 0);
+    asserteq(znR_process(S, ZN_MAX_RESULT_LOOPS), 0);
     asserteq(g_calls, 1);
     asserteq(g_last_tcp, tcp);
     asserteq(g_last_err, ZN_OK);
@@ -169,13 +169,13 @@ TEST(rq_batch_limit) {
     }
     asserteq(S->waitings, RQ_BATCH);
 
-    r = znR_process(S, 0);
+    r = znR_process(S, ZN_MAX_RESULT_LOOPS);
     queued = rq_count_queued(S);
     asserteq(g_calls + queued, RQ_BATCH);
     asserteq(r, queued != 0);
     asserteq(S->waitings, (unsigned)queued);
 
-    asserteq(znR_process(S, 0), 0);
+    asserteq(znR_process(S, ZN_MAX_RESULT_LOOPS), 0);
     asserteq(g_calls, RQ_BATCH);
     asserteq(rq_count_queued(S), 0);
     asserteq(S->waitings, 0);
@@ -201,7 +201,7 @@ TEST(rq_process_all) {
     }
     asserteq(S->waitings, RQ_BATCH);
 
-    asserteq(znR_process(S, 1), 0); /* all=1 ignores the loop cap */
+    asserteq(znR_process(S, INT_MAX), 0); /* INT_MAX ignores the loop cap */
     asserteq(g_calls, RQ_BATCH);
     asserteq(rq_count_queued(S), 0);
     asserteq(S->waitings, 0);
@@ -221,7 +221,7 @@ TEST(rq_err_result) {
     assertok(tcp != NULL);
     rq_queue(S, tcp, ZN_ERROR);
 
-    asserteq(znR_process(S, 0), 0);
+    asserteq(znR_process(S, ZN_MAX_RESULT_LOOPS), 0);
     asserteq(g_calls, 1);
     asserteq(g_last_err, ZN_ERROR);
     asserteq(g_last_count, 0);
@@ -233,9 +233,9 @@ TEST(rq_err_result) {
     zt_close(S);
 }
 
-/* zn_close() must drain the result queue (znB_close calls znR_process(S, 1)
- * and asserts the queue is empty) without running a user handler for a socket
- * it just closed.  Do not touch S afterwards: it is freed. */
+/* zn_close() must drain the result queue (znB_close calls znR_process(S,
+ * INT_MAX) and asserts the queue is empty) without running a user handler for a
+ * socket it just closed.  Do not touch S afterwards: it is freed. */
 TEST(rq_close_with_queued) {
     zn_State *S = zt_open();
     zn_Tcp   *tcp;
@@ -313,7 +313,7 @@ TEST(rq_poll_returns_one_when_backlog) {
     asserteq(S->waitings, (unsigned)queued);
 
     /* the loop would call znB_poll again; drain explicitly before closing */
-    asserteq(znR_process(S, 1), 0);
+    asserteq(znR_process(S, INT_MAX), 0);
     asserteq(g_calls, RQ_BATCH);
     asserteq(rq_count_queued(S), 0);
     asserteq(S->waitings, 0);

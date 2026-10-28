@@ -567,7 +567,7 @@ TEST(timer_64bit_handler_return) {
     zt_close(S);
 }
 
-/* More than ZN_MAX_TIMERHEAP (512) armed timers forces znT_resize() to
+/* More than ZN_MIN_TIMERHEAP (512) armed timers forces znT_resize() to
  * double the array, covering the growth path. */
 TEST(timer_resize_heap) {
     zn_State *S = zt_open();

@@ -91,7 +91,7 @@ int main(void) {
     }
 
     /* create a znet tcp server */
-    accept = zn_newaccept(S, 0);
+    accept = zn_newaccept(S, SOCK_STREAM);
 
     /* this server listen to port */
     if (zn_listen(accept, "127.0.0.1", PORT) == ZN_OK) {
@@ -117,14 +117,14 @@ int main(void) {
     data->idx = 1;
     data->count = 0;
     tcp = zn_newtcp(S);
-    zn_connect(tcp, "127.0.0.1", PORT, 0, on_connection, data);
+    zn_connect(tcp, "127.0.0.1", PORT, SOCK_STREAM, on_connection, data);
 
     /* ..., and another one */
     data = (MyData *)malloc(sizeof(MyData));
     data->idx = 2;
     data->count = 0;
     tcp = zn_newtcp(S);
-    zn_connect(tcp, "127.0.0.1", PORT, 0, on_connection, data);
+    zn_connect(tcp, "127.0.0.1", PORT, SOCK_STREAM, on_connection, data);
 
     udpserver = zn_newudp(S, "127.0.0.1", 8088);
     udpclient = zn_newudp(S, "127.0.0.1", 0);
@@ -294,7 +294,8 @@ void on_connection(void *ud, zn_Tcp *tcp, unsigned err) {
         if (++data->count < 10) {
             fprintf(stderr, "[%p client%d just try again (%d times)! :-/ \n",
                     (void *)tcp, data->idx, data->count);
-            zn_connect(tcp, "127.0.0.1", PORT, 0, on_connection, data);
+            zn_connect(tcp, "127.0.0.1", PORT, SOCK_STREAM, on_connection,
+                       data);
         } else {
             fprintf(stderr, "[%p] client%d just give up to connect :-( \n",
                     (void *)tcp, data->idx);

@@ -290,8 +290,9 @@ static void lzn_ongetaddr(void *ud, unsigned err, unsigned count,
     lzn_Tcp *obj = (lzn_Tcp *)ud;
     (void)count;
     if (err == ZN_OK)
-        err = zn_connect(obj->tcp, peers[0].addr, peers[0].port, obj->packet,
-                         lzn_onconnect, obj);
+        err = zn_connect(obj->tcp, peers[0].addr, peers[0].port,
+                         obj->packet ? SOCK_DGRAM : SOCK_STREAM, lzn_onconnect,
+                         obj);
     else
         err += ZN_ERROR_COUNT;
     if (err != ZN_OK) lzn_onconnect(ud, obj->tcp, err);
@@ -467,7 +468,7 @@ static int Laccept_new(lua_State *L) {
     obj = (lzn_Accept *)lbind_new(L, sizeof(lzn_Accept), &lbT_Accept);
     obj->S = S;
     obj->L = L;
-    obj->accept = zn_newaccept(S, packet);
+    obj->accept = zn_newaccept(S, packet ? SOCK_DGRAM : SOCK_STREAM);
     obj->onaccept_ref = LUA_NOREF;
     obj->ref = LUA_NOREF;
     if (obj->accept != NULL) {

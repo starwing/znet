@@ -1,13 +1,13 @@
 /* mempool_test.c -- zn_MemPool: pages, free list, pool reset.
  *
- * The pool is an intrusive free list over ZN_MAX_PAGESIZE-byte pages.  The
+ * The pool is an intrusive free list over ZN_PAGESIZE-byte pages.  The
  * last sizeof(void*) bytes of a page link the page list, and each page is
  * carved into `size`-byte objects; unused objects are chained through their
  * own first sizeof(void*) bytes.  These are pure memory tests -- no zn_State
  * is needed.
  *
  * znM_init asserts its precondition (size >= sizeof(void*),
- * size % sizeof(void*) == 0 and ZN_MAX_PAGESIZE / size > 2), so every size
+ * size % sizeof(void*) == 0 and ZN_PAGESIZE / size > 2), so every size
  * used here satisfies it: an invalid size aborts, and that abort path must
  * not be exercised here (TODO L10 wants a non-assert failure instead).
  */
@@ -15,14 +15,14 @@
 #include "ztest.h"
 
 /* one page holds (page size - link) / object size objects */
-#define PAGE_OBJS ((ZN_MAX_PAGESIZE - (size_t)sizeof(void*)) / sizeof(void*))
+#define PAGE_OBJS ((ZN_PAGESIZE - (size_t)sizeof(void*)) / sizeof(void*))
 
 /* more than one page worth of sizeof(void*)-sized objects */
-#define MAXOBJ ((size_t)3 * ((size_t)ZN_MAX_PAGESIZE / sizeof(void*)))
+#define MAXOBJ ((size_t)3 * ((size_t)ZN_PAGESIZE / sizeof(void*)))
 
 /* the page link lives in the last sizeof(void*) bytes of the page */
 static int mempool_pages(const zn_MemPool* pool) {
-    const size_t offset = (size_t)ZN_MAX_PAGESIZE - sizeof(void*);
+    const size_t offset = (size_t)ZN_PAGESIZE - sizeof(void*);
     void*        page = pool->pages;
     int          n = 0;
     while (page != NULL) {
@@ -184,7 +184,7 @@ TEST(mempool_independent) {
     znM_free(&p2);
 }
 
-/* ---- the ZN_MAX_PAGESIZE constraints znM_init asserts ---- */
+/* ---- the ZN_PAGESIZE constraints znM_init asserts ---- */
 
 TEST(mempool_pagesize_preconditions) {
     const size_t sizes[] = {sizeof(void*), 16, 32, 64, 1024};
@@ -196,8 +196,8 @@ TEST(mempool_pagesize_preconditions) {
         const size_t sz = sizes[i];
         assertok(sz >= sp);
         asserteq(sz % sp, 0);
-        asserteq((size_t)ZN_MAX_PAGESIZE % sz, 0);
-        assertok((size_t)ZN_MAX_PAGESIZE > 2 * sz);
+        asserteq((size_t)ZN_PAGESIZE % sz, 0);
+        assertok((size_t)ZN_PAGESIZE > 2 * sz);
     }
 }
 

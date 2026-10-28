@@ -141,7 +141,7 @@ static void dt_start(dt_Ctx *c, int max_accept) {
     memset(c, 0, sizeof(*c));
     c->S = zt_open();
     c->max_accept = max_accept;
-    c->a = zn_newaccept(c->S, 0);
+    c->a = zn_newaccept(c->S, SOCK_STREAM);
     assertok(c->a != NULL);
     asserteq(zn_listen(c->a, "127.0.0.1", 0), ZN_OK);
     c->port = zt_accept_port(c->a);
@@ -152,7 +152,8 @@ static void dt_start(dt_Ctx *c, int max_accept) {
 static void dt_newclient(dt_Ctx *c, zn_Tcp **out) {
     *out = zn_newtcp(c->S);
     assertok(*out != NULL);
-    asserteq(zn_connect(*out, "127.0.0.1", c->port, 0, dt_on_connect, c),
+    asserteq(zn_connect(*out, "127.0.0.1", c->port, SOCK_STREAM, dt_on_connect,
+                        c),
              ZN_OK);
 }
 
@@ -255,7 +256,7 @@ TEST(dispatch_delete_self_in_callback) {
 #if defined(ZN_USE_SELECT)
 
 /* L1: select's znB_dispatch() used to dereference S->infos[fd] without a NULL
- * check.  znF_unreg() sets S->infos[fd] = NULL, so when a callback closes
+ * check.  znF_unregister() sets S->infos[fd] = NULL, so when a callback closes
  * another fd that is ready in the *same* select batch, the next dispatch in
  * that batch crashed.  The fix skips NULL entries; the deleted connection must
  * also not deliver a second callback (nrecv == 1).
