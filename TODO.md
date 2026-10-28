@@ -17,7 +17,7 @@
 | --- | --- | --- |
 | **P0** | L8：epoll/kqueue 事件批保存裸 `zn_SocketInfo *`，同批回调删除另一个对象后可能 UAF | 是唯一剩下的崩溃/内存安全项；测试套件目前只覆盖“另一个 fd 不在本批”的情况 |
 | **P1** | B3/B4/B13、C2/C3、U1/U10、C4（`zn_lua.c` 审计） | 正确性、平台差异、Clean C / MSVC / 签名硬约束 |
-| **P2** | L10/L11、B8/B9、T5/T6、U7/U8/U11、F1/F3 | 健壮性、可维护性、资源边界 |
+| **P2** | L10/L11、B8、T5/T6、U7/U8/U11、F1/F3 | 健壮性、可维护性、资源边界 |
 | **P3** | L13、T7、M4（timer 四叉堆）、M5（收尾） | 清理和性能优化；必须先有基准/测试 |
 
 **建议执行顺序**：L8 → P1 正确性与平台修复 → Clean C/MSVC/签名（C1–C4）→ M3 全量
@@ -170,6 +170,24 @@
 | 测试 | 新增 6 个：nonblock 断言、accept/UDP 的假就绪、accept 的错误事件、accept/UDP 的错误事件回归（前 4 个在修复前失败/挂死），以及 RST 风暴守门（修复前也通过，用来否决"重试 N 次"设计） |
 | 验证 | macOS：`just check`、`just check-c89`、`just check-cpp03`、`just smoke`；Linux：`orb just check`。IOCP 只做代码审查，**未在 Windows 验证** |
 
+### 1.9 B9：select 的 send/recv 就绪语义（2026-10-28）
+
+`zn_onsend`/`zn_onrecv` 以前在系统调用之前就消费操作，`EAGAIN` 时静默丢弃（没有回调、
+retain 已经还了）。现在只有结果才消费：`EINTR`/`EAGAIN`/`EWOULDBLOCK` 保持 armed
+（fd 不注销，下一次就绪重试）；真错误或 EOF 才消费，并按不变量 6 关闭 TCP。
+
+第一版把 `EAGAIN` 当 accept 那样报错并关连接，这是错的：TCP 方向本来就有 park 状态
+（reactive 的 `can_*` 在边沿后遇到 `EAGAIN` 就是重新 park，不报错），而且 TCP 的可写
+是"半个 `SO_SNDBUF` 空着"这样的阈值条件、`SO_SNDBUF` 应用可改小，所以"可写后仍没
+空间"可能是真实瞬时状态。select 于是改成 park，与 reactive 一致；accept/UDP 仍报错
+（它们没有 park 语义）。规则见 `notes/backends.md` 的"就绪不是完成"。
+
+| 内容 | 结果 |
+| --- | --- |
+| 代码 | `znP_finishsend`/`znP_finishrecv` + 两个 handler 重写；只有结果才消费，`EAGAIN` 留在注册位等下次就绪 |
+| 测试 | `tcp_select_send_spurious_ready` / `tcp_select_recv_spurious_ready`；修复前都因 `send_handler == NULL` / `recv_handler == NULL` 失败，随后同样的就绪把 park 的操作完成（send 用填满的内核发送缓冲确定性触发 `EAGAIN`） |
+| 验证 | macOS `just check`、`just check-c89`/`check-cpp03`；Linux `orb just check`；覆盖率见 `tests/COVERAGE.md` |
+
 ---
 
 ## 2. 待做
@@ -217,7 +235,6 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | L10 | `znet.h:316` | mempool 的 `assert` 在 `NDEBUG` 下消失；非法 `size` 会静默破坏内存。 |
 | L11 | `zn_addrinfo.h:146` | 不在 `zn_close` 前调用 `zn_closeaddrinfo` 时，迟到的 post 可能触碰已释放 state；`znA_clearreq` 忽略 `zn_post` 失败，请求和 retain 会泄漏。 |
 | B8 | `znet.h:2352` | reactive 的 `znP_listen` 先注册 fd 再 bind/listen；失败时不注销，留下 stale `S->infos[fd]`/epoll 注册。 |
-| B9 | `znet.h:1872,1898` | select 的 `zn_onsend`/`zn_onrecv` 在就绪后遇到 `EAGAIN` 会清 handler、release，却不回调，操作被静默丢弃。 |
 | T5 | `znet.h:53` | 定时器堆只增长、不收缩；没有数量上限。 |
 | T6 | `znet.h:443` | `start + delayms` 没有溢出检查；回绕后 `emit` 顺序错误。 |
 | U7 | `bench/zn_bufferpool.h` | `zn_putbuffer` 回收节点时没有 `zn_resetrecvbuffer`/`zn_resetsendbuffer`；下一个连接继承旧分帧状态。 |
@@ -250,7 +267,6 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | 阻塞原因 | 条目 | 需要先定的事 |
 | --- | --- | --- |
 | 内存安全方案选择 | L8 | 延迟释放队列 vs 对象代际/活跃检查；还要先写出“两个 fd 同批就绪”的失败用例 |
-| select 的 TCP 就绪语义 | B9 | 与已定的 accept/recvfrom 规则对齐（第 7.1 节） |
 | 跨后端完成语义 | B3 | UDP 发送失败如何变成完成事件 |
 | 公共 API/ABI 决策 | C3、B4、B13 | 签名 <80 要重构 `zn_connect`；UDP 上限与 SIGPIPE 策略（第 7.2、7.10 节） |
 | 工具/绑定重构 | U1、U7、U8、U10、U11 | `zn_deque.h` 是修还是删（第 7.5 节）；Lua/pool 的语义要先写进文档 |
@@ -362,6 +378,7 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 | L6 | `tcp_accept_error_event` / `udp_recvfrom_error_event` | 错误事件只解除 armed、不关闭 socket，之后仍能 accept/recvfrom |
 | L7 | `tcp_listener_is_nonblocking` | 监听 socket 带 `O_NONBLOCK`，过期就绪不会卡住循环 |
 | L6/L7 | `tcp_accept_after_aborted_clients` | 20 个 RST 连接之后，健康客户端仍被 accept |
+| B9 | `tcp_select_send_spurious_ready` / `tcp_select_recv_spurious_ready` | 就绪后 `EAGAIN` 保持 armed（park），随后同样的就绪完成操作 |
 | L8 | 待补 | 两个 fd 同批就绪、回调删除另一个，ASan 干净 |
 | L9 | 待补（Windows） | 五处所有权修复仅代码审查，未在 Windows 验证（1.8） |
 | B13 | `tcp_send_error` | 对端断开后 send 回调收到错误；测试临时忽略 SIGPIPE，库侧修复待做 |
@@ -393,8 +410,9 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 
 ## 7. 待确认的设计取舍
 
-1. **虚假 `EAGAIN`**：已决策（1.8）：回调 `ZN_ERROR` 并解除 armed（socket 不关闭），
-   `ECONNABORTED`/`EINTR` 保持 armed；不设重试预算。理由见 `notes/backends.md`。
+1. **虚假 `EAGAIN`**：已决策（1.8/1.9）：`EAGAIN` 绝不静默消费操作 —— 有 park 状态的
+   TCP 方向保持 armed，没有 park 状态的 accept/recvfrom 报 `ZN_ERROR` 但不关 socket；
+   `ECONNABORTED`/`EINTR` 保持 armed。不设重试预算。理由见 `notes/backends.md`。
 2. **UDP `zn_sendto` 长度上限**：保留 1200 作为保守默认，还是改成 65507 并由调用者负责
    MTU？推荐保留可配置常量，默认 1200，文档说明分片风险。
 3. **`zn_buffer` 默认 packet handler**：默认丢弃（现状）还是默认收包？推荐默认收包，

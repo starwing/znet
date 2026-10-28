@@ -1918,4 +1918,108 @@ TEST(tcp_accept_after_aborted_clients) {
 
 #endif /* !_WIN32 */
 
+/* ---- B9: the select TCP directions must park, not drop -----------------
+ * zn_onsend/zn_onrecv consumed the operation before the syscall, so a
+ * readiness report with no room/data dropped the send/recv silently (no
+ * callback, retain gone).  TCP directions do have a park state -- the
+ * reactive backends use it for exactly this case (znP_retry_send -> znP_send
+ * -> EAGAIN -> can_write = 0), so select parks the same way instead of
+ * reporting an error that the other backends do not report. */
+
+#if defined(ZN_USE_SELECT)
+
+typedef struct b9_ctx {
+    int ok;
+    int err;
+} b9_ctx;
+
+static void b9_on_io(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+    b9_ctx *c = (b9_ctx *)ud;
+    (void)tcp;
+    (void)count;
+    if (err == ZN_OK) c->ok++;
+    else c->err++;
+}
+
+static void b9_socketpair(zn_Tcp *tcp, int sv[2]) {
+    assertok(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    znU_set_nonblock(sv[0]);
+    znU_set_nonblock(sv[1]);
+    tcp->socket = sv[0];
+}
+
+TEST(tcp_select_send_spurious_ready) {
+    zn_State *S = zt_open();
+    zn_Tcp   *tcp = zn_newtcp(S);
+    b9_ctx    c;
+    static char big[262144];
+    int       sv[2];
+
+    memset(&c, 0, sizeof(c));
+    assertok(tcp != NULL);
+    b9_socketpair(tcp, sv);
+
+    /* fill the kernel send buffer so the first send() has to return EAGAIN */
+    memset(big, 'x', sizeof(big));
+    while (write(sv[0], big, sizeof(big)) > 0)
+        ;
+    asserteq(zn_send(tcp, big, sizeof(big), b9_on_io, &c), ZN_OK);
+    asserteq(S->waitings, 1);
+
+    zn_onsend(tcp, 0); /* write-ready, but the send buffer is full */
+
+    /* parked, not dropped and not failed: the operation is still the
+     * caller's, the retain is still held, and no callback ran */
+    asserteq(c.ok, 0);
+    asserteq(c.err, 0);
+    assertok(tcp->send_handler != NULL);
+    asserteq(S->waitings, 1);
+
+    /* drain the peer: the same readiness now completes the parked send */
+    while (read(sv[1], big, sizeof(big)) > 0)
+        ;
+    zn_onsend(tcp, 0);
+    asserteq(c.ok, 1);
+    asserteq(c.err, 0);
+    asserteq(S->waitings, 0);
+
+    zn_deltcp(tcp);
+    close(sv[1]);
+    zt_close(S);
+}
+
+TEST(tcp_select_recv_spurious_ready) {
+    zn_State *S = zt_open();
+    zn_Tcp   *tcp = zn_newtcp(S);
+    b9_ctx    c;
+    char      buf[16];
+    int       sv[2];
+
+    memset(&c, 0, sizeof(c));
+    assertok(tcp != NULL);
+    b9_socketpair(tcp, sv);
+
+    asserteq(zn_recv(tcp, buf, (unsigned)sizeof(buf), b9_on_io, &c), ZN_OK);
+    asserteq(S->waitings, 1);
+
+    zn_onrecv(tcp, 0); /* read-ready, but nothing to read */
+
+    asserteq(c.ok, 0);
+    asserteq(c.err, 0);
+    assertok(tcp->recv_handler != NULL);
+    asserteq(S->waitings, 1);
+
+    assertok(write(sv[1], "x", 1) == 1);
+    zn_onrecv(tcp, 0); /* the next report completes the parked recv */
+    asserteq(c.ok, 1);
+    asserteq(c.err, 0);
+    asserteq(S->waitings, 0);
+
+    zn_deltcp(tcp);
+    close(sv[1]);
+    zt_close(S);
+}
+
+#endif /* ZN_USE_SELECT */
+
 #include "tcp_test.gen.inc"

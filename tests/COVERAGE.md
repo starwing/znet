@@ -6,13 +6,13 @@
 
 | 平台 / 后端 | `znet.h` 行 | `zn_buffer.h` 行 | 合计 |
 | --- | --- | --- | --- |
-| macOS：kqueue + select | 95.1%（1059/1113） | 99.2%（242/244） | 95.9%（1301/1357） |
-| Linux：epoll + select | 95.1%（983/1034） | 99.1%（217/219） | 95.8%（1200/1253） |
-| POSIX 合并：kqueue + epoll + select | 95.0%（1192/1255） | 99.2%（242/244） | 95.7%（1434/1499） |
+| macOS：kqueue + select | 95.2%（1069/1123） | 99.2%（242/244） | 95.9%（1311/1367） |
+| Linux：epoll + select | 95.1%（995/1046） | 99.1%（217/219） | 95.8%（1212/1265） |
+| POSIX 合并：kqueue + epoll + select | 95.0%（1202/1265） | 99.2%（242/244） | 95.7%（1444/1509） |
 
-macOS 明细：`znet.h` 函数 100%（95/95）、分支 78.3%（483/617）；
+macOS 明细：`znet.h` 函数 100%（97/97）、分支 78.6%（491/625）；
 `zn_buffer.h` 函数 100%（26/26）、分支 85.8%（115/134）。
-POSIX 合并的分支覆盖为 86.9%（679/781）。
+POSIX 合并的分支覆盖为 86.8%（685/789）。
 
 **没有达到 100% 行覆盖。** 以 macOS 的报告计，剩余未执行行是 `znet.h` 54 行、
 `zn_buffer.h` 2 行；把 Linux 的 epoll 行加进来做并集后是 `znet.h` 63 行、
@@ -27,8 +27,9 @@ POSIX 合并的分支覆盖为 86.9%（679/781）。
 `default: ;` 删除、select 的重复 `FD_SETSIZE` 检查改成 assert、select 的 except 派发
 send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 L6/L7 修复（TODO 1.8）
 把 accept/UDP 的 `EAGAIN`、监听器/UDP 的错误事件变成可测分支（4 个新测试），所以行覆盖
-从 93.9/94.2/94.6 升到 95.1/95.1/95.0；新增但不可确定覆盖的只剩 `EINTR`/`ECONNABORTED`
-和 `fd >= FD_SETSIZE`/`zn_tcpfromfd` 失败这几条（§B）。剩余两行都在 `zn_buffer.h`，
+从 93.9/94.2/94.6 升到 95.2/95.1/95.0；B9 覆盖了 select 的 send/recv park 路径。
+新增但不可确定覆盖的只剩 `EINTR`/`ECONNABORTED` 和 `fd >= FD_SETSIZE`/
+`zn_tcpfromfd` 失败这几条（§B）。剩余两行都在 `zn_buffer.h`，
 是刻意保留的（§C）。
 
 ## 统计口径
@@ -72,6 +73,7 @@ send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 
 | `udp_recvfrom_spurious_ready` | 三个后端的 `zn_onrecvfrom` 同上 |
 | `tcp_accept_after_aborted_clients` | 连续 RST 后监听器仍可用（`ECONNABORTED` 若出现则走“保持 armed”） |
 | `tcp_accept_error_event` / `udp_recvfrom_error_event` | 监听器/UDP 的错误事件（select exceptfds、`EPOLLERR`、`EV_ERROR`）只解除 armed，socket 不关闭 |
+| `tcp_select_send_spurious_ready` / `tcp_select_recv_spurious_ready` | select `zn_onsend`/`zn_onrecv` 的 `EAGAIN` park 路径，以及随后完成（B9） |
 
 ## 剩余未覆盖行与原因
 

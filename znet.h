@@ -1930,59 +1930,71 @@ static void zn_onconnect(zn_Tcp *tcp, int err) {
     cb(tcp->connect_ud, tcp, ZN_OK);
 }
 
-static void zn_onsend(zn_Tcp *tcp, int err) {
-    zn_SendHandler *cb = tcp->send_handler;
-    zn_DataBuffer buff = tcp->send_buffer;
-    int bytes;
+static void znP_finishsend(zn_Tcp *tcp) {
+    znF_unregister_out(tcp->S, tcp->socket);
     tcp->send_handler = NULL;
     tcp->send_buffer.buf = NULL;
     tcp->send_buffer.len = 0;
-    if (tcp->socket == -1) return;
     zn_release(tcp->S);
-    znF_unregister_out(tcp->S, tcp->socket);
+}
 
+static void znP_finishrecv(zn_Tcp *tcp) {
+    znF_unregister_in(tcp->S, tcp->socket);
+    tcp->recv_handler = NULL;
+    tcp->recv_buffer.buf = NULL;
+    tcp->recv_buffer.len = 0;
+    zn_release(tcp->S);
+}
+
+static void zn_onsend(zn_Tcp *tcp, int err) {
+    zn_SendHandler *cb = tcp->send_handler;
+    zn_DataBuffer buff = tcp->send_buffer;
+    int bytes, syserr = 0;
+
+    if (cb == NULL) return; /* closed by an earlier callback in this batch */
     if (err) {
+        znP_finishsend(tcp);
         zn_closetcp(tcp);
         cb(tcp->send_ud, tcp, ZN_ERROR, 0);
         return;
     }
-
-    if ((bytes = send(tcp->socket, buff.buf, buff.len, ZN_NOSIGNAL)) >= 0)
+    bytes = send(tcp->socket, buff.buf, buff.len, ZN_NOSIGNAL);
+    if (bytes < 0) syserr = errno;
+    /* no room yet: park like the reactive backends, the next report retries */
+    if (syserr == EINTR || syserr == EAGAIN || syserr == EWOULDBLOCK) return;
+    znP_finishsend(tcp);
+    if (bytes >= 0) {
         cb(tcp->send_ud, tcp, ZN_OK, bytes);
-    else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-        int err = znU_error(errno);
-        zn_closetcp(tcp);
-        cb(tcp->send_ud, tcp, err, 0);
+        return;
     }
+    zn_closetcp(tcp);
+    cb(tcp->send_ud, tcp, znU_error(syserr), 0);
 }
 
 static void zn_onrecv(zn_Tcp *tcp, int err) {
     zn_RecvHandler *cb = tcp->recv_handler;
     zn_DataBuffer buff = tcp->recv_buffer;
-    int bytes;
-    tcp->recv_handler = NULL;
-    tcp->recv_buffer.buf = NULL;
-    tcp->recv_buffer.len = 0;
-    if (tcp->socket == -1) return;
-    zn_release(tcp->S);
-    znF_unregister_in(tcp->S, tcp->socket);
+    int bytes, syserr = 0;
 
+    if (cb == NULL) return; /* closed by an earlier callback in this batch */
     if (err) {
+        znP_finishrecv(tcp);
         zn_closetcp(tcp);
         cb(tcp->recv_ud, tcp, ZN_ERROR, 0);
         return;
     }
-
-    if ((bytes = recv(tcp->socket, buff.buf, buff.len, 0)) > 0)
+    bytes = recv(tcp->socket, buff.buf, buff.len, 0);
+    if (bytes < 0) syserr = errno;
+    /* no data yet: park like the reactive backends, the next report retries */
+    if (syserr == EINTR || syserr == EAGAIN || syserr == EWOULDBLOCK) return;
+    znP_finishrecv(tcp);
+    if (bytes > 0) {
         cb(tcp->recv_ud, tcp, ZN_OK, bytes);
-    else if (bytes == 0) {
-        zn_closetcp(tcp);
-        cb(tcp->recv_ud, tcp, ZN_ECLOSED, bytes);
-    } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-        int err = znU_error(errno);
-        zn_closetcp(tcp);
-        cb(tcp->recv_ud, tcp, err, 0);
+        return;
     }
+    zn_closetcp(tcp);
+    if (bytes == 0) cb(tcp->recv_ud, tcp, ZN_ECLOSED, 0);
+    else cb(tcp->recv_ud, tcp, znU_error(syserr), 0);
 }
 
 /* accept */
