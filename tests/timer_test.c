@@ -84,24 +84,29 @@ TEST(timer_zero_delay) {
     zt_close(S);
 }
 
+/* Timers with the same deadline may fire in any order (T7); only the groups are
+ * ordered.  Four timers at 30 ms and one at 60 ms: the whole 30 ms group must
+ * come before the 60 ms one, and the 30 ms group must contain exactly 0..3. */
 TEST(timer_fire_same_deadline) {
     zn_State *S = zt_open();
     zt_Loop   L;
-    zn_Timer *t[4];
+    zn_Timer *t[5];
     int       i, seen[4];
 
     reset_events();
     memset(seen, 0, sizeof(seen));
-    for (i = 0; i < 4; ++i) {
+    for (i = 0; i < 5; ++i) {
         t[i] = zn_newtimer(S, cb_record, (void *)(size_t)i);
         assertok(t[i] != NULL);
-        asserteq(zn_starttimer(t[i], 30), ZN_OK);
+        asserteq(zn_starttimer(t[i], i < 4 ? 30 : 60), ZN_OK);
     }
     zt_begin(&L, S, 2000);
-    ZT_WAIT(L, g_fired == 4);
+    ZT_WAIT(L, g_fired == 5);
     zt_end(&L);
     for (i = 0; i < 4; ++i) seen[g_order[i]] = 1;
     for (i = 0; i < 4; ++i) asserteq(seen[i], 1);
+    /* the 60 ms group is strictly after the 30 ms one */
+    asserteq(g_order[4], 4);
     zt_close(S);
 }
 
