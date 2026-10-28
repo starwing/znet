@@ -21,8 +21,8 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
         return;
     }
     if (zn_sendfinish(&data->send, count))
-        zn_send(tcp, zn_sendbuff(&data->send), zn_sendsize(&data->send),
-                on_send, ud);
+        zn_send(tcp, zn_sendbuff(&data->send),
+                (unsigned)zn_sendsize(&data->send), on_send, ud);
 }
 
 static size_t on_header(void *ud, const char *buff, size_t len) {
@@ -31,7 +31,7 @@ static size_t on_header(void *ud, const char *buff, size_t len) {
     if (zn_sendprepare(&data->send, buff, len)
             && zn_send(data->tcp,
                 zn_sendbuff(&data->send),
-                zn_sendsize(&data->send), on_send, ud) != ZN_OK)
+                (unsigned)zn_sendsize(&data->send), on_send, ud) != ZN_OK)
     {
         zn_deltcp(data->tcp);
         zn_putbuffer(&pool, data);
@@ -76,6 +76,7 @@ static void cleanup(void) {
 #ifdef _WIN32
 static int deinited = 0;
 static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
+    (void)dwCtrlEvent;
     if (!deinited) {
         deinited = 1;
         /* windows ctrl handler is running at another thread */
@@ -105,7 +106,8 @@ static void register_interrupted(void) {
 
 int main(int argc, const char **argv) {
     zn_Accept *accept;
-    setvbuf(stdout, NULL, _IOLBF, 0); /* line-buffered: run under just/CI */
+    /* run.bat kills the pair: buffered output would be lost */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (argc == 2 && strcmp(argv[1], "-h") == 0) {
         printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
         exit(0);

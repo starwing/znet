@@ -52,6 +52,7 @@ static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 
 static size_t on_header(void *ud, const char *buff, size_t len) {
     unsigned short plen;
+    (void)ud;
     if (len < 2) return 0;
     memcpy(&plen, buff, 2);
     return ntohs(plen);
@@ -62,7 +63,7 @@ static void on_packet(void *ud, const char *buff, size_t len) {
     if (zn_sendprepare(&node->send, buff, len))
         zn_send(node->tcp,
             zn_sendbuff(&node->send),
-            zn_sendsize(&node->send), on_send, node);
+            (unsigned)zn_sendsize(&node->send), on_send, node);
     ++node->user_data;
 }
 
@@ -80,12 +81,15 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
     if (zn_sendprepare(&node->send, data, DATA_SIZE+2))
         zn_send(tcp,
             zn_sendbuff(&node->send),
-            zn_sendsize(&node->send), on_send, ud);
+            (unsigned)zn_sendsize(&node->send), on_send, ud);
 }
 
 static zn_Time on_client(void *ud, zn_Timer *timer, zn_Time elapsed) {
     zn_BufferPoolNode *node = zn_getbuffer(&pool);
     zn_Tcp *tcp = zn_newtcp(S);
+    (void)ud;
+    (void)timer;
+    (void)elapsed;
     zn_recvonheader(&node->recv, on_header, node);
     zn_recvonpacket(&node->recv, on_packet, node);
     node->user_data = 0;
@@ -95,7 +99,7 @@ static zn_Time on_client(void *ud, zn_Timer *timer, zn_Time elapsed) {
 }
 
 static void init_data(void) {
-    int count = 2;
+    size_t count = 2;
     const char *padding = "Hello world\r\n";
     size_t paddlen = strlen(padding);
     short len = htons(DATA_SIZE);
@@ -107,8 +111,11 @@ static void init_data(void) {
 }
 
 static zn_Time on_timer(void *ud, zn_Timer *timer, zn_Time elapsed) {
-    printf("%d: connect=%d, recv=%d, send=%d\n",
-            zn_time(), connect_count, recv_count, send_count);
+    (void)ud;
+    (void)timer;
+    (void)elapsed;
+    printf("%u: connect=%d, recv=%d, send=%d\n",
+            (unsigned)zn_time(), connect_count, recv_count, send_count);
     connect_count = 0;
     recv_count = 0;
     send_count = 0;
@@ -127,6 +134,7 @@ static void cleanup(void) {
 #ifdef _WIN32
 static int deinited = 0;
 static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
+    (void)dwCtrlEvent;
     if (!deinited) {
         deinited = 1;
         /* windows ctrl handler is running at another thread */
@@ -156,7 +164,8 @@ static void register_interrupted(void) {
 
 int main(int argc, char **argv) {
     zn_Timer *t1, *t2;
-    setvbuf(stdout, NULL, _IOLBF, 0); /* line-buffered: run under just/CI */
+    /* run.bat kills the pair: buffered output would be lost */
+    setvbuf(stdout, NULL, _IONBF, 0);
     strcpy(addr, "127.0.0.1");
     if (argc == 2) {
         unsigned p = atoi(argv[1]);

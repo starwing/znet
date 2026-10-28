@@ -57,16 +57,18 @@ static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) 
 }
 
 static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
+    (void)ud;
     if (err != ZN_OK)
         client_error(tcp);
     else if (zn_send(tcp, client.send, BLOCK_SIZE, on_client_send, &client) != ZN_OK)
         client_error(tcp);
 }
 
-static void on_error(void *ud, zn_State *S) {
-    zn_Tcp *tcp = zn_newtcp(S);
+static void on_error(void *ud, zn_State *state) {
+    zn_Tcp *tcp = zn_newtcp(state);
+    (void)ud;
     if (tcp && zn_connect(tcp, addr, port, 0, on_connect, &client) != ZN_OK)
-        zn_post(S, on_error, NULL);
+        zn_post(state, on_error, NULL);
 }
 
 static void client_error(zn_Tcp *tcp) {
@@ -123,7 +125,7 @@ static void human_readed(unsigned sz) {
         printf("%.3fGB", sz/(1024.0*1024.0*1024.0));
 }
 
-static void print_ud(Userdata *ud, const char *title) {
+static void print_ud(Userdata *ud) {
     printf("(recv=%u/%u/", ud->recv_ok, ud->recv_err);
     human_readed(ud->recv_bytes);
     printf(", send=%u/%u/", ud->send_ok, ud->send_err);
@@ -134,11 +136,14 @@ static void print_ud(Userdata *ud, const char *title) {
 }
 
 static zn_Time on_summary(void *ud, zn_Timer *timer, zn_Time elapsed) {
+    (void)ud;
+    (void)timer;
+    (void)elapsed;
     printf("%u: ", (unsigned)zn_time());
     if (is_client)
-        print_ud(&client, "client");
+        print_ud(&client);
     else
-        print_ud(&server, "server");
+        print_ud(&server);
     printf("\n");
     return 1000;
 }
@@ -155,6 +160,7 @@ static void cleanup(void) {
 #ifdef _WIN32
 static int deinited = 0;
 static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
+    (void)dwCtrlEvent;
     if (!deinited) {
         deinited = 1;
         /* windows ctrl handler is running at another thread */
@@ -184,7 +190,8 @@ static void register_interrupted(void) {
 
 int main(int argc, const char **argv) {
     int i, client_count = 1;
-    setvbuf(stdout, NULL, _IOLBF, 0); /* line-buffered: run under just/CI */
+    /* run.bat kills the pair: buffered output would be lost */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (argc == 2 && strcmp(argv[1], "-h") == 0) {
         printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
         exit(0);

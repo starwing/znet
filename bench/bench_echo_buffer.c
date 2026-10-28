@@ -31,8 +31,8 @@ static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) 
     ++send_ok;
     send_bytes += count;
     if (zn_sendfinish(&data->send, count))
-        zn_send(tcp, zn_sendbuff(&data->send), zn_sendsize(&data->send),
-                on_client_send, ud);
+        zn_send(tcp, zn_sendbuff(&data->send),
+                (unsigned)zn_sendsize(&data->send), on_client_send, ud);
 }
 
 static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
@@ -54,6 +54,7 @@ static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) 
  * packet handler sees the frame including its prefix */
 static size_t on_header(void *ud, const char *buff, size_t len) {
     unsigned short packet_len;
+    (void)ud;
     if (len < 2) return 0;
     memcpy(&packet_len, buff, 2);
     return (size_t)ntohs(packet_len) + 2;
@@ -62,8 +63,9 @@ static size_t on_header(void *ud, const char *buff, size_t len) {
 static void on_client_packet(void *ud, const char *buff, size_t len) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode*)ud;
     if (zn_sendprepare(&data->send, buff, len)
-            && zn_send(data->tcp, zn_sendbuff(&data->send), zn_sendsize(&data->send),
-                on_client_send, ud) != ZN_OK)
+            && zn_send(data->tcp, zn_sendbuff(&data->send),
+                (unsigned)zn_sendsize(&data->send), on_client_send, ud)
+                != ZN_OK)
         client_error(data->tcp, data);
 }
 
@@ -79,18 +81,20 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
                 on_client_recv, ud) != ZN_OK)
         client_error(tcp, data);
     else if (zn_sendprepare(&data->send, send_data, BLOCK_SIZE)
-            && zn_send(tcp, zn_sendbuff(&data->send), zn_sendsize(&data->send),
-                on_client_send, ud) != ZN_OK)
+            && zn_send(tcp, zn_sendbuff(&data->send),
+                (unsigned)zn_sendsize(&data->send), on_client_send, ud)
+                != ZN_OK)
         client_error(tcp, data);
 }
 
-static void new_connection(void *ud, zn_State *S) {
+static void new_connection(void *ud, zn_State *state) {
     zn_BufferPoolNode *data = zn_getbuffer(&pool);
+    (void)ud;
     zn_recvonheader(&data->recv, on_header, data);
     zn_recvonpacket(&data->recv, on_client_packet, data);
-    data->tcp = zn_newtcp(S);
+    data->tcp = zn_newtcp(state);
     if (zn_connect(data->tcp, addr, port, 0, on_connect, data) != ZN_OK)
-        zn_post(S, new_connection, NULL);
+        zn_post(state, new_connection, NULL);
 }
 
 static void client_error(zn_Tcp *tcp, zn_BufferPoolNode *data) {
@@ -110,8 +114,8 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     ++send_ok;
     send_bytes += count;
     if (zn_sendfinish(&data->send, count))
-        zn_send(tcp, zn_sendbuff(&data->send), zn_sendsize(&data->send),
-                on_send, ud);
+        zn_send(tcp, zn_sendbuff(&data->send),
+                (unsigned)zn_sendsize(&data->send), on_send, ud);
 }
 
 static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
@@ -132,8 +136,8 @@ static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 static void on_packet(void *ud, const char *buff, size_t len) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode*)ud;
     if (zn_sendprepare(&data->send, buff, len)
-            && zn_send(data->tcp, zn_sendbuff(&data->send), zn_sendsize(&data->send),
-                on_send, ud) != ZN_OK)
+            && zn_send(data->tcp, zn_sendbuff(&data->send),
+                (unsigned)zn_sendsize(&data->send), on_send, ud) != ZN_OK)
     {
         zn_deltcp(data->tcp);
         zn_putbuffer(&pool, data);
@@ -164,7 +168,7 @@ static void human_readed(unsigned sz) {
         printf("%.3fGB", sz/(1024.0*1024.0*1024.0));
 }
 
-static void print_ud(const char *title) {
+static void print_ud(void) {
     printf("(recv=%u/%u/", recv_ok, recv_err);
     human_readed(recv_bytes);
     printf(", send=%u/%u/", send_ok, send_err);
@@ -175,11 +179,14 @@ static void print_ud(const char *title) {
 }
 
 static zn_Time on_summary(void *ud, zn_Timer *timer, zn_Time elapsed) {
+    (void)ud;
+    (void)timer;
+    (void)elapsed;
     printf("%u: ", (unsigned)zn_time());
     if (is_client)
-        print_ud("client");
+        print_ud();
     else
-        print_ud("server");
+        print_ud();
     printf("\n");
     return 1000;
 }
@@ -196,6 +203,7 @@ static void cleanup(void) {
 #ifdef _WIN32
 static int deinited = 0;
 static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
+    (void)dwCtrlEvent;
     if (!deinited) {
         deinited = 1;
         /* windows ctrl handler is running at another thread */
@@ -225,7 +233,8 @@ static void register_interrupted(void) {
 
 int main(int argc, const char **argv) {
     int i, client_count = 1;
-    setvbuf(stdout, NULL, _IOLBF, 0); /* line-buffered: run under just/CI */
+    /* run.bat kills the pair: buffered output would be lost */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (argc == 2 && strcmp(argv[1], "-h") == 0) {
         printf("usage: %s [(client/server) [ip [port]]]\n", argv[0]);
         exit(0);

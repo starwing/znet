@@ -43,6 +43,7 @@ static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 
 static size_t on_header(void *ud, const char *buff, size_t len) {
     unsigned short plen;
+    (void)ud;
     if (len < 2) return 0;
     memcpy(&plen, buff, 2);
     return ntohs(plen);
@@ -53,7 +54,7 @@ static void on_packet(void *ud, const char *buff, size_t len) {
     zn_sendprepare(&node->send, buff, len);
     zn_send(node->tcp,
             zn_sendbuff(&node->send),
-            zn_sendsize(&node->send), on_send, node);
+            (unsigned)zn_sendsize(&node->send), on_send, node);
 }
 
 static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
@@ -75,8 +76,11 @@ static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
 }
 
 static zn_Time on_timer(void *ud, zn_Timer *timer, zn_Time elapsed) {
-    printf("%d: connect=%d, recv=%d, send=%d\n",
-            zn_time(), connect_count, recv_count, send_count);
+    (void)ud;
+    (void)timer;
+    (void)elapsed;
+    printf("%u: connect=%d, recv=%d, send=%d\n",
+            (unsigned)zn_time(), connect_count, recv_count, send_count);
     connect_count = 0;
     recv_count = 0;
     send_count = 0;
@@ -95,6 +99,7 @@ static void cleanup(void) {
 #ifdef _WIN32
 static int deinited = 0;
 static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
+    (void)dwCtrlEvent;
     if (!deinited) {
         deinited = 1;
         /* windows ctrl handler is running at another thread */
@@ -126,7 +131,8 @@ int main(int argc, char **argv) {
     unsigned port = 12345;
     zn_Accept *accept;
     zn_Timer *timer;
-    setvbuf(stdout, NULL, _IOLBF, 0); /* line-buffered: run under just/CI */
+    /* run.bat kills the pair: buffered output would be lost */
+    setvbuf(stdout, NULL, _IONBF, 0);
     if (argc == 2) {
         unsigned p = atoi(argv[1]);
         if (p != 0) port = p;

@@ -15,6 +15,8 @@
 # handler, which is not async-signal-safe).  The programs set stdout
 # line-buffered so the per-second counters show up under just/CI.
 
+set windows-shell := ["cmd.exe", "/C"]
+
 SRC   := source_directory()
 ROOT  := source_directory() / ".."
 BUILD := source_directory() / "build"
@@ -26,6 +28,7 @@ PORT := env("ZNET_BENCH_PORT", "18581")
 # build every program in bench/ (default)
 default: build
 
+[unix]
 build:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -39,15 +42,19 @@ build:
     ls -1 "$out" | grep -v '\.dSYM$' || true
 
 # run the echo benchmark for N seconds
+[unix]
 echo secs="5": (pair "bench_echo" secs)
 
 # run the flood benchmark for N seconds
+[unix]
 flood secs="5": (pair "bench_flood" secs)
 
 # run the buffered-echo benchmark for N seconds
+[unix]
 echo-buffer secs="5": (pair "bench_echo_buffer" secs)
 
 # one server+client pair from the same binary, killed after N seconds
+[unix]
 [private]
 pair bin secs:
     #!/usr/bin/env bash
@@ -69,6 +76,7 @@ pair bin secs:
     disown -a 2>/dev/null || true   # no "Killed" noise from the job table
 
 # programs without a server+client split are meant to be run by hand
+[unix]
 list:
     @echo "binaries:"
     @ls -1 '{{BUILD}}' 2>/dev/null | grep -v '\.dSYM$' || echo "  (none; run 'just bench')"
@@ -76,5 +84,36 @@ list:
     @echo "split pair:   bench_server [port]  +  bench_client [ip [port]]"
     @echo "echo server:  echo_server [ip [port]]"
 
+[unix]
 clean:
     rm -rf '{{BUILD}}'
+
+# ---------------------------------------------------------------------------
+# windows / MSVC
+#
+# build.bat and run.bat hold the logic so they also work from a Developer
+# Command Prompt without just; these recipes only dispatch.
+
+[windows]
+build:
+    @call "{{SRC}}\build.bat"
+
+[windows]
+echo secs="5":
+    @call "{{SRC}}\run.bat" echo {{secs}}
+
+[windows]
+flood secs="5":
+    @call "{{SRC}}\run.bat" flood {{secs}}
+
+[windows]
+echo-buffer secs="5":
+    @call "{{SRC}}\run.bat" echo-buffer {{secs}}
+
+[windows]
+list:
+    @dir /b "{{BUILD}}\*.exe" 2>nul
+
+[windows]
+clean:
+    @if exist "{{BUILD}}" rmdir /s /q "{{BUILD}}"
