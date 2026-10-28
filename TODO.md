@@ -552,6 +552,11 @@ C2 的 MSVC `/W4` 部分随 1.15 关闭：`tests\check.bat`、`example.c`、`ben
 （arm/cancel/re-arm/fire，比较触发顺序和 `nexttime`）→ 只有基准显示明显收益才保留，
 否则回退并在 `notes/timers.md` 记录。
 
+**执行计划（2026-10-29 定，按 6 个可独立回退的提交推进）**：
+[`notes/m4-4ary-heap.md`](notes/m4-4ary-heap.md)。其中两条语义已先定：T6 —— 溢出用
+`emit < start` 检测，`ZN_FOREVER` 当 delay 返回 `ZN_EPARAM`，`delayms == 0` 保持合法；
+T7 —— 相同 deadline 的触发顺序不定义，只写文档、改测试口径。
+
 ### M5 — 文档、示例、过时测试收尾（未开始）
 
 `test.c` 已删除并迁移，`example.c` 的 `"%sn"`/`%p`/C89 问题已修（1.3）；剩余：处理

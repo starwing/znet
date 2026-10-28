@@ -60,6 +60,12 @@ which stays under the IPv6 minimum MTU, so a datagram is never fragmented by
 the IP layer).  Define ZN_MAX_UDPSEND to a larger value before including
 znet.h if the application wants to own the fragmentation risk.
 
+zn_starttimer() rejects a delay of ZN_FOREVER or larger with ZN_EPARAM: a delay
+must stay below the "wait forever" sentinel, which doubles as "no deadline"
+inside the timer heap.  A delay of 0 is valid and fires on the next poll.
+Timers armed with the same deadline fire in an unspecified order; use distinct
+delays when the order matters.
+
 The znet library and utils have the same license when Lua[3], have fun :)
 
 

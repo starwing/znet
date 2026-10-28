@@ -435,6 +435,7 @@ ZN_API void zn_deltimer(zn_Timer *timer) {
 ZN_API int zn_starttimer(zn_Timer *timer, zn_Time delayms) {
     zn_TimerState *ts = timer->ts;
     unsigned       i, p;
+    if (delayms >= ZN_FOREVER) return ZN_EPARAM;
     if (timer->index != ZN_TIMER_NOINDEX) zn_canceltimer(timer);
     if (ts->size == ts->used && !znT_resize(ts, ts->size * 2)) return ZN_ERROR;
     i = ts->used++;

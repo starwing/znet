@@ -589,4 +589,55 @@ TEST(timer_resize_heap) {
     zt_close(S);
 }
 
+/* ---- starttimer value domain (T6) ---- */
+
+static zn_Time cb_sentinel(void *ud, zn_Timer *timer, zn_Time elapsed) {
+    (void)ud;
+    (void)timer;
+    (void)elapsed;
+    g_fired++;
+    return ZN_FOREVER;
+}
+
+TEST(timer_start_param) {
+    zn_State *S = zt_open();
+    zt_Loop   L;
+    zn_Timer *t = zn_newtimer(S, cb_record, NULL);
+    zn_Time   emit;
+
+    reset_events();
+    assertok(t != NULL);
+    asserteq(zn_starttimer(t, ZN_FOREVER), ZN_EPARAM);
+    asserteq(t->index, ZN_TIMER_NOINDEX);
+    asserteq(S->ts.used, 0);
+    asserteq(S->ts.nexttime, ZN_FOREVER);
+
+    /* a rejected re-arm must leave the armed timer alone */
+    asserteq(zn_starttimer(t, 100), ZN_OK);
+    emit = t->emit;
+    asserteq(zn_starttimer(t, ZN_FOREVER), ZN_EPARAM);
+    asserteq(S->ts.used, 1);
+    asserteq(t->index, 0);
+    asserteq(t->emit, emit);
+    asserteq(S->ts.nexttime, emit);
+
+    /* zero is still a valid delay: fire on the next update */
+    asserteq(zn_starttimer(t, 0), ZN_OK);
+    asserteq(t->emit, t->start);
+    zn_canceltimer(t);
+    zn_deltimer(t);
+
+    /* the handler returning the sentinel must neither re-arm nor crash */
+    t = zn_newtimer(S, cb_sentinel, NULL);
+    assertok(t != NULL);
+    asserteq(zn_starttimer(t, 0), ZN_OK);
+    zt_begin(&L, S, 1000);
+    ZT_WAIT(L, g_fired == 1);
+    zt_end(&L);
+    asserteq(t->index, ZN_TIMER_NOINDEX);
+    asserteq(S->ts.used, 0);
+    zn_deltimer(t);
+    zt_close(S);
+}
+
 #include "timer_test.gen.inc"

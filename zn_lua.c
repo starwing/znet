@@ -120,7 +120,12 @@ static int Ltimer_start(lua_State *L) {
     if (!obj->timer) return 0;
     if (delayms < 0) delayms = 0;
     obj->delayms = (zn_Time)delayms;
-    if (zn_starttimer(obj->timer, obj->delayms)) lzn_ref(L, 1, &obj->ref);
+    if (zn_starttimer(obj->timer, obj->delayms) != ZN_OK) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "delay too large");
+        return 2;
+    }
+    lzn_ref(L, 1, &obj->ref);
     lbind_returnself(L);
 }
 
