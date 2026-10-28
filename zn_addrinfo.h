@@ -165,33 +165,19 @@ static znA_AddrRequest *znA_fetchreq(void) {
 #endif /* WIN32_LEAN_AND_MEAN */
 #include <Windows.h>
 #include <WinSock2.h>
+#include <WS2Tcpip.h>
 #include <process.h>
 
 #define zn_AddrInfo ADDRINFOW
 
 static LONG             znA_initalize = 0;
+static volatile LONG    znA_stop = 0;
 static CRITICAL_SECTION znA_lock;
 static HANDLE           znA_event;
 static HANDLE           znA_thread;
 
-static const char *znA_ntop(int af, const void *src, char *dst, socklen_t size) {
-    struct sockaddr_storage ss;
-    unsigned long s = size;
-    ZeroMemory(&ss, sizeof(ss));
-    ss.ss_family = af;
-    switch(af) {
-    case AF_INET:
-        ((struct sockaddr_in *)&ss)->sin_addr = *(struct in_addr *)src;
-        break;
-    case AF_INET6:
-        ((struct sockaddr_in6 *)&ss)->sin6_addr = *(struct in6_addr *)src;
-        break;
-    default:
-        return NULL;
-    }
-    return WSAAddressToString(
-            (struct sockaddr*)&ss, sizeof(ss), NULL, dst, &s) == 0 ? dst : NULL;
-}
+static const char *znA_ntop(int af, const void *src, char *dst, socklen_t size)
+{ return InetNtopA(af, src, dst, (DWORD)size); }
 
 static WCHAR *znA_getwstring(const char *s) {
     WCHAR *out;
@@ -219,22 +205,27 @@ static int znA_processreq(znA_AddrRequest *req) {
 }
 
 static unsigned __stdcall znA_worker(void *param) {
+    unsigned ret = 0;
     (void)param;
     for (;;) {
         znA_AddrRequest *req;
-        if (WaitForSingleObject(znA_event, INFINITE) != WAIT_OBJECT_0)
-            return 1;
+        if (WaitForSingleObject(znA_event, INFINITE) != WAIT_OBJECT_0) {
+            ret = 1;
+            break;
+        }
+        if (znA_stop) break; /* the event is the only wakeup source */
         do {
             EnterCriticalSection(&znA_lock);
             req = znA_fetchreq();
             LeaveCriticalSection(&znA_lock);
         } while (znA_processreq(req));
     }
-    return 0;
+    return ret;
 }
 
 static int znA_init(zn_State *S, znA_AddrRequest *req) {
     znQ_init(&znA_queue);
+    znA_stop = 0;
     InitializeCriticalSection(&znA_lock);
     znA_event = CreateEvent(NULL, FALSE, FALSE, NULL);
     if (znA_event != NULL) {
@@ -271,17 +262,28 @@ ZN_API void zn_closeaddrinfo(zn_State *S) {
     LONG ret;
     while ((ret = InterlockedCompareExchange(&znA_initalize, -1, 1)) < 0)
         Sleep(1);
-    if (ret) {
-        EnterCriticalSection(&znA_lock);
-        znA_clearreq(S);
-        LeaveCriticalSection(&znA_lock);
-        if (S == NULL) {
-            _endthreadex((uintptr_t)znA_thread);
-            CloseHandle(znA_event);
-            CloseHandle(znA_thread);
-            DeleteCriticalSection(&znA_lock);
-        }
+    if (ret == 0) { /* never started, or already stopped */
+        InterlockedExchange(&znA_initalize, 0);
+        return;
     }
+    EnterCriticalSection(&znA_lock);
+    znA_clearreq(S);
+    if (S == NULL) { /* wake the worker: it must exit before teardown */
+        znA_stop = 1;
+        SetEvent(znA_event);
+    }
+    LeaveCriticalSection(&znA_lock);
+    if (S != NULL) { /* only this state's requests: keep the worker */
+        InterlockedExchange(&znA_initalize, 1);
+        return;
+    }
+    WaitForSingleObject(znA_thread, INFINITE);
+    CloseHandle(znA_thread);
+    CloseHandle(znA_event);
+    DeleteCriticalSection(&znA_lock);
+    znA_thread = NULL;
+    znA_event = NULL;
+    znA_stop = 0;
     InterlockedExchange(&znA_initalize, 0);
 }
 
@@ -296,6 +298,7 @@ ZN_API void zn_closeaddrinfo(zn_State *S) {
 #define zn_AddrInfo struct addrinfo
 
 static int             znA_initalize = 0;
+static int             znA_stop = 0;
 static pthread_mutex_t znA_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  znA_event = PTHREAD_COND_INITIALIZER;
 static pthread_t       znA_thread;
@@ -306,8 +309,20 @@ static void *znA_worker(void *param) {
         zn_AddrInfo hints, *info;
         znA_AddrRequest *req;
         pthread_mutex_lock(&znA_lock);
-        while ((req = znA_fetchreq()) == NULL)
+        req = znA_fetchreq(); /* posts the request just processed */
+        while (!znA_stop && req == NULL) {
             pthread_cond_wait(&znA_event, &znA_lock);
+            req = znA_fetchreq();
+        }
+        if (znA_stop) {
+            if (req != NULL) { /* never processed: report it like clearreq */
+                req->ret = ZN_ERROR;
+                zn_post(req->S, znA_callback, req);
+                znA_current = NULL;
+            }
+            pthread_mutex_unlock(&znA_lock);
+            break;
+        }
         pthread_mutex_unlock(&znA_lock);
         znA_makehints(req, &hints);
         req->ret = getaddrinfo(req->node, req->service, &hints, &info);
@@ -323,9 +338,12 @@ ZN_API int zn_getaddrinfo(zn_State *S, const char *node, const char *service, in
     znA_AddrRequest *req = znA_makereq(S, node, service, flags, h, ud);
     if (req == NULL) return ZN_ERROR;
     pthread_mutex_lock(&znA_lock);
-    if (!znA_initalize && pthread_create(&znA_thread, NULL, znA_worker, NULL) == 0) {
-        znQ_init(&znA_queue);
-        znA_initalize = 1;
+    if (!znA_initalize) {
+        znA_stop = 0;
+        if (pthread_create(&znA_thread, NULL, znA_worker, NULL) == 0) {
+            znQ_init(&znA_queue);
+            znA_initalize = 1;
+        }
     }
     znQ_enqueue(&znA_queue, req);
     pthread_cond_signal(&znA_event);
@@ -335,14 +353,21 @@ ZN_API int zn_getaddrinfo(zn_State *S, const char *node, const char *service, in
 
 ZN_API void zn_closeaddrinfo(zn_State *S) {
     pthread_mutex_lock(&znA_lock);
-    if (!znA_initalize) return;
-    znA_clearreq(S);
-    if (S == NULL) {
-        pthread_cancel(znA_thread);
-        pthread_join(znA_thread, NULL);
-        znA_initalize = 0;
+    if (!znA_initalize) {
+        pthread_mutex_unlock(&znA_lock);
+        return;
     }
+    znA_clearreq(S);
+    if (S != NULL) { /* only this state's requests: keep the worker */
+        pthread_mutex_unlock(&znA_lock);
+        return;
+    }
+    /* cancel is not an option: the worker would exit holding the lock */
+    znA_initalize = 0;
+    znA_stop = 1;
+    pthread_cond_signal(&znA_event);
     pthread_mutex_unlock(&znA_lock);
+    pthread_join(znA_thread, NULL);
 }
 
 #endif

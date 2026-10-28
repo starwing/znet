@@ -14,16 +14,15 @@
  * ("localhost"), a numeric literal, and a name in the reserved .invalid
  * TLD that every resolver rejects.  No fixed ports and no sleeps.
  *
- * KNOWN FAILURE on the select backend (new bug, not in TODO.md): the select
- * znP_init() FD_SETs S->sockpairs[1] but never raises S->nfds, and POSIX
- * select() ignores every descriptor >= nfds.  A pure DNS test has no socket,
- * so nfds stays 0, fd 0 is the only descriptor watched, and the worker's
- * zn_post() wakeup is never seen -> these tests time out.  Fix: raise
- * S->nfds in znP_init() right after FD_SET (znet.h:2128).  The tests stay
- * strict because the desired behaviour is "the result is always delivered".
- * The suite is not in the justfile SUITES list yet; run it with
- *   just --justfile tests/justfile test addrinfo
- * and add it to SUITES (plus README) to cover it in `check`.
+ * The worker is process-global, so the last two tests pin its lifetime:
+ * zn_closeaddrinfo(S) only drops that state's requests (the worker stays up
+ * for the next state), while zn_closeaddrinfo(NULL) stops the worker and
+ * must return to the caller -- the Win32 version used to call the CRT's
+ * _endthreadex(), which terminates the calling thread, not the worker.
+ *
+ * zt_open() returns a state with the select backend's post socketpair
+ * already in readfds and S->nfds raised past it, so a pure DNS test (no
+ * sockets) still sees the worker's zn_post() wakeup.
  */
 
 /* ztest.h first: it defines ZN_IMPLEMENTATION for znet.h.  zn_addrinfo.h
@@ -132,6 +131,47 @@ TEST(addrinfo_two_lookups) {
     asserteq(ai_err, 0);
     assertok(ai_count >= 1);
     assertstreq(ai_infos[0].addr, "::1");
+
+    zn_closeaddrinfo(S);
+    zt_close(S);
+}
+
+/* ---- closing one state keeps the shared worker for the next one ---- */
+
+TEST(addrinfo_close_state_keeps_worker) {
+    zn_State *S = zt_open();
+
+    ai_resolve(S, "127.0.0.1", ZN_TCP | ZN_IPV4, 1000);
+    asserteq(ai_err, 0);
+    zn_closeaddrinfo(S); /* S != NULL: only this state's requests */
+    asserteq(znA_initalize, 1);
+    zt_close(S);
+
+    S = zt_open();
+    ai_resolve(S, "localhost", ZN_TCP | ZN_IPV4, 1000);
+    asserteq(ai_err, 0);
+    assertok(ai_count >= 1);
+    zn_closeaddrinfo(S);
+    zt_close(S);
+}
+
+/* ---- zn_closeaddrinfo(NULL) stops the worker, not the caller ---- */
+
+TEST(addrinfo_stop_all) {
+    zn_State *S = zt_open();
+
+    ai_resolve(S, "127.0.0.1", ZN_TCP | ZN_IPV4, 1000);
+    asserteq(ai_err, 0);
+    /* the watchdog turns "the worker never exits" into a failure, not a hang */
+    zt_guard_start(ZT_TIMEOUT_MS);
+    zn_closeaddrinfo(NULL);
+    zt_guard_stop();
+    asserteq(znA_initalize, 0);
+
+    /* still on the caller thread: a fresh lookup restarts the worker */
+    ai_resolve(S, "127.0.0.1", ZN_TCP | ZN_IPV4, 1000);
+    asserteq(ai_err, 0);
+    asserteq(znA_initalize, 1);
 
     zn_closeaddrinfo(S);
     zt_close(S);

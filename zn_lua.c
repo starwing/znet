@@ -437,17 +437,26 @@ typedef struct lzn_Accept {
 static void lzn_onaccept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     lzn_Accept *obj = (lzn_Accept*)ud;
     lua_State *L = obj->L;
-    if (err != ZN_OK) return;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onaccept_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
-    lzn_newtcp(L, obj->S, tcp);
-    if (lbind_pcall(L, 2, 1) != LUA_OK) {
+    if (err == ZN_OK) lzn_newtcp(L, obj->S, tcp);
+    else {
+        lua_pushnil(L);
+        lua_pushstring(L, zn_strerror(err));
+        lua_pushinteger(L, err);
+    }
+    if (lbind_pcall(L, err == ZN_OK ? 2 : 4, 1) != LUA_OK) {
         fprintf(stderr, "%s\n", lua_tostring(L, -1));
         lzn_unref(L, &obj->ref);
+        zn_closeaccept(accept);
     }
     else if (lua_toboolean(L, -1))
         zn_accept(accept, lzn_onaccept, ud);
-    else lzn_unref(L, &obj->ref);
+    else {
+        /* a listener with no handler spins the level-triggered backends */
+        lzn_unref(L, &obj->ref);
+        zn_closeaccept(accept);
+    }
     lua_pop(L, 1);
 }
 

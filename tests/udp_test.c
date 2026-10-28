@@ -3,7 +3,7 @@
  * Covers: parameter validation (unparsable address, zero length, NULL
  * callback, one in-flight recvfrom -> ZN_EBUSY), an IPv4 loopback round trip
  * with peer address/port checks, five datagrams without loss, closing while a
- * recvfrom is pending, and the zn_sendto 1200-byte limit.
+ * recvfrom is pending, and the ZN_MAX_UDPSEND datagram limit.
  *
  * Every socket binds "127.0.0.1"/"::1" port 0 and the bound port is read back
  * with zt_udp_port(), so the suite never uses fixed ports.  zn_sendto is
@@ -23,7 +23,6 @@
 # include <fcntl.h> /* open()/fcntl() for the reused-fd regression (L3) */
 #endif /* _WIN32 */
 
-#define UDP_MAX_PAYLOAD 1200
 #define MSG_COUNT       5
 
 /* ---- shared recorder ----
@@ -243,7 +242,7 @@ TEST(udp_close_pending_recv) {
 TEST(udp_sendto_max_payload) {
     zn_State *S = zt_open();
     zn_Udp   *srv, *cli;
-    char      payload[UDP_MAX_PAYLOAD + 1];
+    char      payload[ZN_MAX_UDPSEND + 1];
     unsigned  srv_port;
 
     reset_recorder();
@@ -254,13 +253,12 @@ TEST(udp_sendto_max_payload) {
     srv_port = zt_udp_port(srv);
     assertok(srv_port != 0);
 
-    /* 1200 bytes is the documented hard limit: a bound peer must accept it */
-    asserteq(zn_sendto(cli, payload, UDP_MAX_PAYLOAD, "127.0.0.1", srv_port),
+    /* ZN_MAX_UDPSEND is the documented compile-time limit (default 1200, one
+     * IPv6-minimum-MTU datagram): a bound peer must accept it, and one byte
+     * over is rejected as a parameter error before the socket is touched */
+    asserteq(zn_sendto(cli, payload, ZN_MAX_UDPSEND, "127.0.0.1", srv_port),
              ZN_OK);
-    /* TODO B4: the limit is a fixed 1200 in zn_sendto() (znet.h:724) and
-     * should become a configurable constant; one byte over the limit is
-     * rejected as a parameter error before the socket is touched */
-    asserteq(zn_sendto(cli, payload, UDP_MAX_PAYLOAD + 1, "127.0.0.1",
+    asserteq(zn_sendto(cli, payload, ZN_MAX_UDPSEND + 1, "127.0.0.1",
                        srv_port),
              ZN_EPARAM);
 
@@ -410,6 +408,25 @@ TEST(udp_sendto_after_close) {
 
     zn_deludp(u);
     zn_deludp(peer);
+    zt_close(S);
+}
+
+/* ---- B3: a failed sendto must not come back as ZN_OK ----
+ * The socket is bound to IPv4, so sending to an IPv6 address fails inside
+ * sendto() (EINVAL on macOS, EAFNOSUPPORT on Linux, WSAEAFNOSUPPORT on
+ * Windows) without depending on routes or on a peer. */
+
+TEST(udp_sendto_error) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    int       ret;
+
+    assertok(u != NULL);
+    ret = zn_sendto(u, "x", 1, "::1", 9);
+    test_log("  sendto v6 on a v4 socket: %d (%s)\n", ret, zn_strerror(ret));
+    asserteq(ret, ZN_ERROR);
+
+    zn_deludp(u);
     zt_close(S);
 }
 

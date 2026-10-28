@@ -2,7 +2,8 @@
  *
  * Covers znU_parseaddr (IPv4/IPv6 literals and rejected input),
  * znU_setinfo round-trips, znU_ipproto, znU_ntop and znU_error.  These are
- * pure string/struct conversions: no zn_State and no socket is needed.
+ * pure string/struct conversions: no zn_State, no socket and no
+ * zn_initialize() is needed (InetPtonA/InetNtopA work without WSAStartup).
  *
  * znU_parseaddr picks the family from a ':' in the string, so an IPv4
  * literal with a port glued on ("1.2.3.4:80") is parsed as IPv6 and fails.
@@ -51,10 +52,12 @@ TEST(addr_parse_ipv4_ports) {
     for (i = 0; i < sizeof(ports) / sizeof(ports[0]); ++i) {
         asserteq(znU_parseaddr(&sa, "127.0.0.1", ports[i]), AF_INET);
         asserteq(znU_family(&sa), AF_INET);
-        asserteq(sa.ipv4.sin_port, htons(ports[i]));
+        asserteq(sa.ipv4.sin_port, htons((unsigned short)ports[i]));
         /* the port does not disturb the address */
         assertok(sa.ipv4.sin_addr.s_addr == htonl(0x7F000001u));
     }
+    /* a port is 16 bits: above 65535 is rejected instead of truncated */
+    asserteq(znU_parseaddr(&sa, "127.0.0.1", 65536), 0);
 }
 
 /* ---- IPv6 ---- */

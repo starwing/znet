@@ -66,10 +66,15 @@ static size_t rec_header(void *ud, const char *buff, size_t len) {
     return payload + 2;
 }
 
+/* big-endian 16-bit write: a constant (char)0xB6 is C4310 on MSVC */
+static void put_be16(char *out, unsigned v) {
+    out[0] = (char)((v >> 8) & 0xFF);
+    out[1] = (char)(v & 0xFF);
+}
+
 /* write one frame into out and return its length */
 static size_t rec_frame(char *out, size_t payloadlen, const char *payload) {
-    out[0] = (char)((payloadlen >> 8) & 0xFF);
-    out[1] = (char)(payloadlen & 0xFF);
+    put_be16(out, (unsigned)payloadlen);
     memcpy(out + 2, payload, payloadlen);
     return payloadlen + 2;
 }
@@ -599,8 +604,7 @@ TEST(recv_oom_slow_path) {
 
     memset(&log, 0, sizeof(log));
     memset(frame, 'F', sizeof(frame));
-    frame[0] = (char)((2998 >> 8) & 0xFF);
-    frame[1] = (char)(2998 & 0xFF);
+    put_be16(frame, 2998);
     g_recv_big_len = 0;
     g_recv_big_packets = 0;
 

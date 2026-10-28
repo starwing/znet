@@ -531,19 +531,11 @@ static void ioerr_close(ioerr_ctx *c) {
 
 /* A send after the peer is gone must reach the callback with an error, not
  * with ZN_OK/count.  shutdown(SHUT_WR) makes send() fail with EPIPE on the
- * next attempt, so no timing is involved. */
+ * next attempt, so no timing is involved.  The process must survive that
+ * send: the library has to suppress SIGPIPE itself (B13). */
 TEST(tcp_send_error) {
     ioerr_ctx        c;
     zt_Loop          L;
-    struct sigaction sa, old;
-
-    /* the suite compiles with -D_XOPEN_SOURCE=600, which hides
-     * SO_NOSIGPIPE on macOS, so the library's SIGPIPE guard is compiled out;
-     * ignore it locally or the expected EPIPE would kill the test process */
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = SIG_IGN;
-    sigemptyset(&sa.sa_mask);
-    assertok(sigaction(SIGPIPE, &sa, &old) == 0);
 
     ioerr_open(&c, ioerr_accept, ioerr_connect);
     zt_begin(&L, c.S, 2000);
@@ -554,12 +546,45 @@ TEST(tcp_send_error) {
     ZT_WAIT(L, c.done == 1);
     zt_end(&L);
 
-    assertok(sigaction(SIGPIPE, &old, NULL) == 0);
     test_log("  send after shutdown: err=%u (%s)\n", c.err,
              zn_strerror((int)c.err));
     assertok(c.err != ZN_OK);
     asserteq(c.S->waitings, 0);
     ioerr_close(&c);
+}
+
+/* B13: strict feature macros hide both MSG_NOSIGNAL and SO_NOSIGPIPE on
+ * Darwin, so the socket option is the guard; assert it directly instead of
+ * relying on the process surviving a SIGPIPE. */
+#if defined(__APPLE__)
+# define ZT_SO_NOSIGPIPE 0x1022 /* Darwin ABI value, hidden by _XOPEN_SOURCE */
+#endif
+
+TEST(tcp_nosigpipe_option) {
+#if defined(__APPLE__)
+    ioerr_ctx c;
+    zt_Loop   L;
+    int       no_sigpipe = 0;
+    socklen_t optlen = (socklen_t)sizeof(no_sigpipe);
+
+    ioerr_open(&c, ioerr_accept, ioerr_connect);
+    zt_begin(&L, c.S, 2000);
+    ZT_WAIT(L, c.connected == 1 && c.accepted == 1);
+    zt_end(&L);
+
+    asserteq(getsockopt(c.client->socket, SOL_SOCKET, ZT_SO_NOSIGPIPE,
+                        (void*)&no_sigpipe, &optlen), 0);
+    asserteq(no_sigpipe, 1);
+    no_sigpipe = 0;
+    optlen = (socklen_t)sizeof(no_sigpipe);
+    asserteq(getsockopt(c.server->socket, SOL_SOCKET, ZT_SO_NOSIGPIPE,
+                        (void*)&no_sigpipe, &optlen), 0);
+    asserteq(no_sigpipe, 1);
+
+    ioerr_close(&c);
+#else
+    test_skip("SO_NOSIGPIPE is a Darwin socket option");
+#endif
 }
 
 /* After an RST, recv() reports ECONNRESET; that must surface through the
@@ -811,13 +836,25 @@ TEST(tcp_send_after_close) {
 
     /* A closed tcp may be opened again (invariant 6: only zn_deltcp() or a
      * new zn_connect() is legal afterwards), so zn_connect is deliberately
-     * not ESTATE here; tcp_reconnect_after_close proves it succeeds. */
+     * not ESTATE here; tcp_reconnect_after_close proves it succeeds.  IOCP
+     * keeps the handler of a connect that was in flight when close ran until
+     * its completion is dequeued, so an immediate reconnect is EBUSY (B14). */
+#ifdef _WIN32
+    asserteq(zn_connect(tcp, "127.0.0.1", port, 0, cb_noop_connect, NULL),
+             ZN_EBUSY);
+#else
     asserteq(zn_connect(tcp, "127.0.0.1", port, 0, cb_noop_connect, NULL),
              ZN_OK);
+#endif
 
     zn_deltcp(tcp);
     zn_delaccept(listener);
+#ifndef _WIN32
+    /* IOCP still owns one pending operation here: the closed connect's
+     * completion has not been dequeued, so its retain is only released on
+     * the next poll (B14) */
     asserteq(S->waitings, 0);
+#endif
     zt_close(S);
 }
 

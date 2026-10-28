@@ -102,10 +102,70 @@ timer = znet:timer(function(self)
 end)
 timer:start(2000)
 
+-- 4. U10: returning false from onaccept stops accepting and closes the
+-- listening socket.  Leaving it armed-less kept the level-triggered backends
+-- spinning, so "false" must close; a later connect to that port then fails
+-- instead of sitting in a listener nobody polls for.
+local stop_listener
+local stop_port
+local stop_accepted = false
+local stop_refused  = false
+local stop_attempts = 0
+
+local function on_accept_stop(_, tcp)
+    tcp:delete()
+    stop_accepted = true
+    return false
+end
+
+for p = first + 21, first + 40 do
+    local a = znet:accept(on_accept_stop)
+    if a:listen("127.0.0.1", p) then
+        stop_listener = a
+        stop_port = p
+        break
+    end
+    a:delete()
+end
+if not stop_listener then
+    fail("cannot bind a second loopback port")
+    os.exit(1)
+end
+
+local stop_client = znet:tcp("127.0.0.1", stop_port, function(_, err)
+    if err then
+        fail("U10: first connect failed: " .. tostring(err))
+    end
+end)
+
+local stop_probe = znet:timer(function(self)
+    stop_attempts = stop_attempts + 1
+    if not stop_accepted then
+        if stop_attempts > 200 then
+            fail("U10: the accept callback never ran")
+            return false
+        end
+        return 10
+    end
+    stop_client:delete()
+    znet:tcp("127.0.0.1", stop_port, function(_, err)
+        if err then
+            stop_refused = true
+        else
+            fail("U10: a stopped listener still accepted a connection")
+        end
+    end)
+    return false
+end)
+stop_probe:start(10)
+
 znet:run()
 
 if not echoed then
     fail("loop finished without the echo")
+end
+if not stop_refused then
+    fail("U10: connecting to a stopped listener did not fail")
 end
 if failures == 0 then
     print("test.lua: OK")

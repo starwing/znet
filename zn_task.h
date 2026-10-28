@@ -108,6 +108,7 @@ ZN_NS_BEGIN
 
 #include <stdlib.h>
 #include <string.h>
+#include <assert.h>
 
 #define ZN_WS_NORMAL 0
 #define ZN_WS_PAUSE  1
@@ -119,6 +120,7 @@ ZN_NS_BEGIN
 # define WIN32_LEAN_AND_MEAN
 #endif
 #include <Windows.h>
+#include <process.h> /* _beginthreadex: not declared by <Windows.h> */
 
 typedef struct zn_Task {
     znQ_entry(struct zn_Task);
@@ -136,8 +138,8 @@ struct zn_TaskPool {
     int status;
 };
 
-static DWORD WINAPI zn_tasker(LPVOID lpParameter) {
-    zn_TaskPool *ws = (zn_TaskPool*)lpParameter;
+static unsigned __stdcall zn_tasker(void *param) {
+    zn_TaskPool *ws = (zn_TaskPool*)param;
     zn_Task *task = NULL;
     int status = ZN_WS_NORMAL;
 
@@ -195,9 +197,10 @@ ZN_API zn_TaskPool *zn_newtaskpool(int nthread) {
         }
         if (ws->nthread != 0) return ws;
     }
-    if (ws->event != NULL)
+    if (ws->event != NULL) { /* the lock is initialized with the event */
         CloseHandle(ws->event);
-    DeleteCriticalSection(&ws->lock);
+        DeleteCriticalSection(&ws->lock);
+    }
     free(ws);
     return NULL;
 }
@@ -211,16 +214,12 @@ ZN_API void zn_deltaskpool(zn_TaskPool *ws) {
     LeaveCriticalSection(&ws->lock);
 
     ret = WaitForMultipleObjects(ws->nthread, ws->threads, TRUE, INFINITE);
-    if (ret >= WAIT_OBJECT_0 && ret < WAIT_OBJECT_0 + ws->nthread) {
-        for (i = 0; i < ws->nthread; ++i)
-            CloseHandle(ws->threads[i]);
+    assert(ret == WAIT_OBJECT_0);
+    if (ret != WAIT_OBJECT_0) { /* TerminateThread skips _endthreadex: leak */
+        return;
     }
-    else {
-        for (i = 0; i < ws->nthread; ++i) {
-            _endthreadex(ws->threads[i]);
-            CloseHandle(ws->threads[i]);
-        }
-    }
+    for (i = 0; i < ws->nthread; ++i)
+        CloseHandle(ws->threads[i]);
     CloseHandle(ws->event);
     DeleteCriticalSection(&ws->lock);
     znQ_apply(zn_Task, znQ_first(&ws->freed_tasks), free(cur));
@@ -354,8 +353,11 @@ ZN_API void zn_deltaskpool(zn_TaskPool *ws) {
     pthread_mutex_unlock(&ws->lock);
 
     for (i = 0; i < ws->nthread; ++i) {
-        if (pthread_join(ws->threads[i], NULL) != 0)
-            pthread_cancel(ws->threads[i]);
+        int rc = pthread_join(ws->threads[i], NULL);
+        assert(rc == 0);
+        if (rc != 0) { /* killing it could leave ws->lock owned: leak instead */
+            return;
+        }
     }
 
     pthread_cond_destroy(&ws->event);

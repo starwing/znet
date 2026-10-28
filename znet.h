@@ -53,6 +53,12 @@ typedef size_t zn_Time;
 #define ZN_MAX_TIMERHEAP 512
 #define ZN_MAX_PAGESIZE  4096
 
+/* one datagram; 1200 stays under the IPv6 minimum MTU, so it is never
+ * fragmented.  Larger values are allowed but the caller owns the fragments. */
+#ifndef ZN_MAX_UDPSEND
+# define ZN_MAX_UDPSEND 1200
+#endif
+
 #define ZN_TIMER_NOINDEX (~(unsigned)0)
 #define ZN_FOREVER       ((~(zn_Time)0)-100)
 #define ZN_MAX_SIZET     ((~(size_t)0)-100)
@@ -736,7 +742,7 @@ ZN_API void zn_deludp(zn_Udp *udp) {
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len, const char *addr, unsigned port) {
     zn_SockAddr remote_addr;
-    if (udp == NULL || len == 0 || len >1200) return ZN_EPARAM;
+    if (udp == NULL || len == 0 || len > ZN_MAX_UDPSEND) return ZN_EPARAM;
     if (udp->socket == ZN_INVALID_SOCKET)     return ZN_ESTATE;
     if (znU_parseaddr(&remote_addr, addr, port) == 0) return ZN_EPARAM;
     return znP_sendto(udp, buff, len, &remote_addr);
@@ -783,44 +789,12 @@ ZN_API int zn_recvfrom(zn_Udp *udp, char *buff, unsigned len, zn_RecvFromHandler
 
 #define ZN_INVALID_SOCKET INVALID_SOCKET
 
-static int znU_pton(int af, const char *src, void *dst) {
-    struct sockaddr_storage ss;
-    int size = sizeof(ss);
-    char src_copy[INET6_ADDRSTRLEN+1];
-    ZeroMemory(&ss, sizeof(ss));
-    strncpy(src_copy, src, INET6_ADDRSTRLEN+1);
-    src_copy[INET6_ADDRSTRLEN] = 0;
-    if (WSAStringToAddress(src_copy, af, NULL, (struct sockaddr*)&ss, &size) == 0) {
-        switch(af) {
-        case AF_INET:
-            *(struct in_addr *)dst = ((struct sockaddr_in *)&ss)->sin_addr;
-            return 1;
-        case AF_INET6:
-            *(struct in6_addr *)dst = ((struct sockaddr_in6 *)&ss)->sin6_addr;
-            return 1;
-        }
-    }
-    return 0;
-}
+/* InetPtonA rejects "127.0.0" like inet_pton; WSAStringToAddress accepts it */
+static int znU_pton(int af, const char *src, void *dst)
+{ return InetPtonA(af, src, dst) == 1; }
 
-static const char *znU_ntop(int af, const void *src, char *dst, socklen_t size) {
-    struct sockaddr_storage ss;
-    unsigned long s = size;
-    ZeroMemory(&ss, sizeof(ss));
-    ss.ss_family = af;
-    switch(af) {
-    case AF_INET:
-        ((struct sockaddr_in *)&ss)->sin_addr = *(struct in_addr *)src;
-        break;
-    case AF_INET6:
-        ((struct sockaddr_in6 *)&ss)->sin6_addr = *(struct in6_addr *)src;
-        break;
-    default:
-        return NULL;
-    }
-    return WSAAddressToString(
-            (struct sockaddr*)&ss, sizeof(ss), NULL, dst, &s) == 0 ? dst : NULL;
-}
+static const char *znU_ntop(int af, const void *src, char *dst, socklen_t size)
+{ return InetNtopA(af, src, dst, (DWORD)size); }
 
 static int znU_set_nodelay(SOCKET socket) {
     BOOL bEnable = 1;
@@ -834,10 +808,12 @@ static int znU_update_acceptinfo(SOCKET server, SOCKET client) {
             (const char*)&server, sizeof(server)) == 0;
 }
 
-static int znU_set_reuseaddr(SOCKET socket) {
-    BOOL bReuseAddr = TRUE;
-    return setsockopt(socket, SOL_SOCKET, SO_REUSEADDR,
-            (const char*)&bReuseAddr, sizeof(BOOL)) == 0;
+/* SO_REUSEADDR on Windows lets another socket steal the port; the exclusive
+ * option keeps the POSIX behaviour of a failed second bind */
+static int znU_set_exclusiveaddruse(SOCKET socket) {
+    BOOL exclusive = TRUE;
+    return setsockopt(socket, SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+            (const char*)&exclusive, sizeof(exclusive)) == 0;
 }
 
 static int znU_error(int syserr) {
@@ -905,6 +881,13 @@ ZN_API zn_Time zn_time(void) {
 # define ZN_NOSIGNAL 0
 #endif
 
+/* strict feature macros hide SO_NOSIGPIPE on Darwin; its ABI value is stable */
+#if defined(SO_NOSIGPIPE)
+# define ZN_SO_NOSIGPIPE SO_NOSIGPIPE
+#elif defined(__APPLE__)
+# define ZN_SO_NOSIGPIPE 0x1022 /* SO_NOSIGPIPE */
+#endif
+
 #define znU_pton inet_pton
 #define znU_ntop inet_ntop
 
@@ -942,14 +925,14 @@ static int znU_set_reuseaddr(int socket) {
 }
 
 static int znU_set_nosigpipe(int socket) {
-#ifdef SO_NOSIGPIPE
+#ifdef ZN_SO_NOSIGPIPE
     int no_sigpipe = 1;
-    return setsockopt(socket, SOL_SOCKET, SO_NOSIGPIPE,
-            (char*)&no_sigpipe, sizeof(no_sigpipe)) == 0;
+    return setsockopt(socket, SOL_SOCKET, ZN_SO_NOSIGPIPE,
+            (const void*)&no_sigpipe, sizeof(no_sigpipe)) == 0;
 #else
     (void)socket;
     return 0;
-#endif /* SO_NOSIGPIPE */
+#endif /* ZN_SO_NOSIGPIPE */
 }
 
 static int znU_error(int syserr) {
@@ -1003,14 +986,15 @@ static int znU_ipproto(int type)
 
 static int znU_parseaddr(zn_SockAddr *ret, const char *addr, unsigned port) {
     memset(ret, 0, sizeof(*ret));
+    if (port > 0xFFFFu) return 0;
     if (strchr(addr, ':') != 0) {
         ret->ipv6.sin6_family = AF_INET6;
-        ret->ipv6.sin6_port = htons(port);
+        ret->ipv6.sin6_port = htons((unsigned short)port);
         if (znU_pton(AF_INET6, addr, &ret->ipv6.sin6_addr) != 1)
             return 0;
     } else {
         ret->ipv4.sin_family = AF_INET;
-        ret->ipv4.sin_port = htons(port);
+        ret->ipv4.sin_port = htons((unsigned short)port);
         if (znU_pton(AF_INET, addr, &ret->ipv4.sin_addr) != 1)
             return 0;
     }
@@ -1308,7 +1292,7 @@ static int zn_tcpfromfamily(zn_Tcp *tcp, int family, int type) {
         return ZN_ESOCKET;
 
     memset(&local_addr, 0, sizeof(local_addr));
-    znU_family(&local_addr) = family;
+    znU_family(&local_addr) = (ADDRESS_FAMILY)family;
     if (bind(socket, &local_addr.addr, znU_size(&local_addr)) != 0) {
         closesocket(socket);
         return ZN_EBIND;
@@ -1470,7 +1454,7 @@ static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
                     NULL, 0, WSA_FLAG_OVERLAPPED)) == INVALID_SOCKET)
         return ZN_ESOCKET;
 
-    znU_set_reuseaddr(socket);
+    znU_set_exclusiveaddruse(socket);
     if (bind(socket, &addr->addr, znU_size(addr)) != 0) {
         closesocket(socket);
         return ZN_EBIND;
@@ -1580,7 +1564,7 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
         return;
     }
 
-    znU_setinfo((zn_SockAddr*)&paddr2, &tcp->peer_info);
+    znU_setinfo((zn_SockAddr*)paddr2, &tcp->peer_info);
     cb(accept->accept_ud, accept, ZN_OK, tcp);
 }
 
@@ -1618,7 +1602,9 @@ static int znP_initudp(zn_Udp *udp, zn_SockAddr *addr) {
 }
 
 static int znP_sendto(zn_Udp *udp, const char *buff, unsigned len, zn_SockAddr *addr) {
-    sendto(udp->socket, buff, len, 0, &addr->addr, znU_size(addr));
+    if (sendto(udp->socket, buff, (int)len, 0, &addr->addr,
+                znU_size(addr)) == SOCKET_ERROR)
+        return znU_error((int)WSAGetLastError());
     return ZN_OK;
 }
 
@@ -1889,6 +1875,7 @@ static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr, int type) {
     if (tcp->S->nfds < fd)
         tcp->S->nfds = fd;
     znU_set_nonblock(fd);
+    znU_set_nosigpipe(fd); /* before send() can be armed, not at completion */
 
     ret = connect(fd, &addr->addr, znU_size(addr));
     if (ret != 0 && errno != EINPROGRESS) {
@@ -1925,7 +1912,6 @@ static void zn_onconnect(zn_Tcp *tcp, int err) {
         return;
     }
 
-    znU_set_nosigpipe(tcp->socket);
     znU_set_nodelay(tcp->socket);
     cb(tcp->connect_ud, tcp, ZN_OK);
 }
@@ -2102,7 +2088,8 @@ static int znP_closeudp(zn_Udp *udp) {
 }
 
 static int znP_sendto(zn_Udp *udp, const char *buff, unsigned len, zn_SockAddr *addr) {
-    sendto(udp->socket, buff, len, 0, &addr->addr, znU_size(addr));
+    if (sendto(udp->socket, buff, len, 0, &addr->addr, znU_size(addr)) < 0)
+        return znU_error(errno);
     return ZN_OK;
 }
 
@@ -2359,6 +2346,7 @@ static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr, int type) {
     fd = socket(znU_family(addr), type, 0);
     if (fd < 0) return ZN_ESOCKET;
     znU_set_nonblock(fd);
+    znU_set_nosigpipe(fd); /* before the first send(), not at completion */
     ret = connect(fd, &addr->addr, znU_size(addr));
     if (ret != 0 && errno != EINPROGRESS) {
         close(fd);
@@ -2540,7 +2528,8 @@ static int znP_closeudp(zn_Udp *udp) {
 }
 
 static int znP_sendto(zn_Udp *udp, const char *buff, size_t len, zn_SockAddr *addr) {
-    sendto(udp->socket, buff, len, 0, &addr->addr, znU_size(addr));
+    if (sendto(udp->socket, buff, len, 0, &addr->addr, znU_size(addr)) < 0)
+        return znU_error(errno);
     return ZN_OK;
 }
 
@@ -2588,7 +2577,6 @@ static void zn_onconnect(zn_Tcp *tcp, int eventmask) {
     }
 
     if ((eventmask & EPOLLOUT) != 0) {
-        znU_set_nosigpipe(tcp->socket);
         znU_set_nodelay(tcp->socket);
         cb(tcp->connect_ud, tcp, ZN_OK);
         /* also wakes a send/recv armed before the connect finished */
@@ -2782,7 +2770,6 @@ static void zn_onconnect(zn_Tcp *tcp, int filter, int flags) {
     }
 
     if (filter == EVFILT_WRITE) {
-        znU_set_nosigpipe(tcp->socket);
         znU_set_nodelay(tcp->socket);
         cb(tcp->connect_ud, tcp, ZN_OK);
         /* also wakes a send/recv armed before the connect finished */

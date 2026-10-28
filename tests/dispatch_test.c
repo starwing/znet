@@ -201,8 +201,8 @@ TEST(dispatch_delete_other_in_callback) {
     assertok(c.srv[1] == NULL);
     /* the deferred delete released the pending recv's retain */
     asserteq(c.S->waitings, 0);
-#if !defined(ZN_USE_SELECT)
-    /* select has no result queue: it deletes immediately, no deferral */
+#if !defined(ZN_USE_SELECT) && !defined(_WIN32)
+    /* only the reactive backends defer through a result queue */
     assertok(znQ_empty(&c.S->result_queue));
 #endif
 

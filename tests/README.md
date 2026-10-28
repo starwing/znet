@@ -11,6 +11,8 @@ justfile                    repo-root entry point; imports tests/ and bench/
                             as modules (`just tests check`, `just bench echo 5`)
 misc/gen_entries.lua        scans TEST(name), emits entries table + main()
 tests/justfile              build/run/coverage recipes for this directory
+tests/check.bat             MSVC entry: build+run every suite (IOCP + select)
+tests/run.bat               MSVC entry: build+run one suite / one test
 tests/tests.h               runner + assert macros (C89)
 tests/ztest.h               znet-specific helpers; includes znet.h with
                             ZN_IMPLEMENTATION so unit tests see internals
@@ -51,8 +53,8 @@ column 0 (the scanner matches `^TEST(`).
   condition into a normal test failure. Use this for timers and for anything
   where the loop must keep running after the condition is met.
 * Never mix the two in one phase: the tick timer keeps `ZN_RUN_LOOP` alive.
-* `zt_run(S)` on an *idle* state blocks: an empty timer heap gives
-  `ZN_FOREVER - now` as the poll timeout (TODO T3). `ZT_WAIT`/pump avoids it.
+* `zt_run(S)` on an *idle* state blocks: with an empty timer heap the poll
+  timeout is `ZN_FOREVER`, so nothing wakes the loop. `ZT_WAIT`/pump avoids it.
 
 Rules for robust tests:
 
@@ -133,6 +135,31 @@ just uncovered             # uncovered lines grouped by function (last cov)
 just clean-cov             # coverage data only
 ```
 
+On Windows the same suites build and run through the batch entry points, with
+or without just.  A plain ssh or cmd session is enough: `misc\msvc-env.bat`
+locates Visual Studio with vswhere and loads its environment when `cl.exe` is
+not on PATH (set `ZNET_VCVARS` to an explicit `vcvars64.bat` if that fails);
+`lua` must be on PATH.
+
+```bat
+tests\check.bat              # native (IOCP only), cl /nologo /W4 /WX
+tests\check.bat native       # one backend
+tests\run.bat tcp            # one suite; all tests of it in one process
+tests\run.bat tcp tcp_conn   # only matching tests
+tests\run.bat tcp -select    # select backend
+```
+
+Both scripts derive the suite list from `tests\*_test.c`, and both run one
+process per test, like the POSIX runner: an MSVC `abort()` exits with
+`0xC0000409` (negative), which `if errorlevel 1` would miss, so failures are
+detected by comparing the exit code as a string.  `check.bat` also requires
+the harness's ` OK`/` SKIP` line in the captured output: a test that kills
+its own thread exits 0 without running to the end (TODO 1.14).  It compiles
+`zn_task.h` too, because no suite includes that header and its Win32 branch
+would otherwise never reach the compiler.  The IOCP suite passes on Windows
+(VS2022 x64, 2026-10-28); `check.bat select` exits 2 because `znet.h` always
+uses IOCP on `_WIN32`.
+
 `just uncovered` (also spelled `just test uncovered`) reads the tracefile left
 by the last `just cov` and lists every line with a zero hit count under the
 function that owns it, together with that function's call count.  The function
@@ -164,7 +191,7 @@ exposes a library bug, leave the failing test in place and report:
 
 1. test name and exact assertion output;
 2. the code path involved (`file:line` in `znet.h`);
-3. whether it matches a known TODO ID (L1, L2, L3, L5, B2, B3, T1, T3, …) or
+3. whether it matches a known TODO ID (L1, L2, L3, L5, B2, T1, T3, …) or
    is new;
 4. the smallest deterministic reproduction.
 

@@ -11,6 +11,8 @@
 # tests/<suite>.c; misc/gen_entries.lua turns the TEST(name) functions into the
 # entries table and main().
 
+set windows-shell := ["cmd.exe", "/C"]
+
 ROOT  := source_directory() / ".."
 SRC   := source_directory()
 BUILD := source_directory() / "build"
@@ -46,6 +48,7 @@ default: check
 # ---------------------------------------------------------------------------
 # builds
 
+[unix]
 [private]
 build tag flags suites=SUITES:
     #!/usr/bin/env bash
@@ -58,6 +61,7 @@ build tag flags suites=SUITES:
         {{CC}} {{BASE}} {{SAN}} {{flags}} -o "$out/$s" "{{SRC}}/$s.c"
     done
 
+[unix]
 [private]
 run tag suites=SUITES:
     #!/usr/bin/env bash
@@ -80,6 +84,7 @@ run tag suites=SUITES:
     exit 0
 
 # fail if any recorded test failed; `tags` is a space separated list
+[unix]
 [private]
 verify tags:
     #!/usr/bin/env bash
@@ -105,18 +110,23 @@ verify tags:
 # checks
 
 # build + run every suite on the native backend and on select
+[unix]
 check: (build "native" "") (run "native") (build "select" "-DZN_USE_SELECT") (run "select") (verify "native select")
 
 # native backend only
+[unix]
 check-native: (build "native" "") (run "native") (verify "native")
 
 # select backend only
+[unix]
 check-select: (build "select" "-DZN_USE_SELECT") (run "select") (verify "select")
 
 # alias: ASan+UBSan is the default for `check`
+[unix]
 check-asan: check
 
 # one suite, native backend: `just test tcp`, `just test tcp tcp_connect`
+[unix]
 test name *args='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -133,6 +143,7 @@ test name *args='':
     "$out/$suite" {{args}}
 
 # one suite, select backend
+[unix]
 test-select name *args='':
     #!/usr/bin/env bash
     set -euo pipefail
@@ -152,6 +163,7 @@ test-select name *args='':
 # Needs Lua >= 5.3 and its headers (pkg-config name lua5.5/5.4/5.3/lua).  It is
 # intentionally not part of `check`: the binding is an optional component and
 # the recipe links against the host's Lua ABI.
+[unix]
 test-lua:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -171,7 +183,9 @@ test-lua:
         {{LUA}} '{{SRC}}/test.lua'
 
 # strict Clean C compile check (no run).  Covers the suites, example.c and the
-# optional headers that carry their own implementation.
+# optional headers that carry their own implementation.  zn_lua.c is exempt
+# (C4): it must include Lua headers, which use long long, so its build is C99.
+[unix]
 check-c89:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -201,6 +215,7 @@ check-c89:
     exit $fail
 
 # strict C++03 compile check (no run)
+[unix]
 check-cpp03:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -229,6 +244,7 @@ check-cpp03:
     exit $fail
 
 # MSVC /W4 /WX is a Windows-only check; do not silently pass elsewhere.
+[unix]
 check-msvc:
     #!/usr/bin/env bash
     echo "check-msvc: cl /W4 /WX requires Windows + MSVC." >&2
@@ -238,6 +254,7 @@ check-msvc:
 # ---------------------------------------------------------------------------
 # coverage (lcov)
 
+[unix]
 [private]
 cov-build tag flags:
     #!/usr/bin/env bash
@@ -265,8 +282,10 @@ cov-build tag flags:
     exit 0
 
 # build + run everything with --coverage, then merge into one report
+[unix]
 cov: (cov-build "cov-native" "") (cov-build "cov-select" "-DZN_USE_SELECT") cov-report
 
+[unix]
 [private]
 cov-report:
     #!/usr/bin/env bash
@@ -299,6 +318,7 @@ cov-report:
         --ignore-errors inconsistent,corrupt || true
 
 # lines with zero coverage in znet.h
+[unix]
 cov-lines:
     @awk '/^DA:/ && /,0$/ {gsub(/DA:|,0/,""); print $0}' \
         '{{BUILD}}/znet.info' | sort -n | while read -r ln; do \
@@ -308,6 +328,7 @@ cov-lines:
 
 # uncovered lines from the last `just cov`, grouped by function (znet.h +
 # zn_buffer.h).  Reads the functions' hit counts (FNA/FNDA) for the headers.
+[unix]
 uncovered:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -325,6 +346,7 @@ uncovered:
     {{LUA}} '{{ROOT}}/misc/uncovered.lua' "$info"
 
 # branches taken zero times in znet.h
+[unix]
 cov-unbranched:
     @awk -F'[:,]' '/^BRDA:/ && $5==0 {print $2}' \
         '{{BUILD}}/znet.info' | sort -n -u | while read -r ln; do \
@@ -336,10 +358,60 @@ cov-unbranched:
 # cleanup
 
 # remove the coverage data and reports, keep the compiled binaries
+[unix]
 clean-cov:
     rm -rf '{{BUILD}}'/cov-*
     rm -f '{{BUILD}}'/*.info '{{BUILD}}'/coverage.info
 
+[unix]
 clean:
     rm -rf '{{BUILD}}'
     rm -f '{{SRC}}'/*.gen.inc
+
+# ---------------------------------------------------------------------------
+# windows / MSVC
+#
+# The logic lives in tests\check.bat and tests\run.bat so it also works from a
+# Developer Command Prompt without just; these recipes only dispatch.  znet.h
+# always uses IOCP on _WIN32, so there is no select pass to run there; MSVC has
+# no -pedantic equivalent, so check-c89/check-cpp03 stay POSIX-only.
+
+[windows]
+check:
+    @call "{{SRC}}\check.bat"
+
+[windows]
+check-native:
+    @call "{{SRC}}\check.bat" native
+
+[windows]
+check-select:
+    @call "{{SRC}}\check.bat" select
+
+[windows]
+check-asan: check
+
+[windows]
+check-msvc:
+    @call "{{SRC}}\check.bat"
+
+[windows]
+check-c89:
+    @echo check-c89 needs gcc/clang; use "just check-msvc" for cl /W4 /WX.
+
+[windows]
+check-cpp03:
+    @echo check-cpp03 needs g++/clang; use "just check-msvc" for cl /W4 /WX.
+
+[windows]
+test name *args='':
+    @call "{{SRC}}\run.bat" {{name}} {{args}}
+
+[windows]
+test-select name *args='':
+    @call "{{SRC}}\run.bat" {{name}} -select {{args}}
+
+[windows]
+clean:
+    @if exist "{{BUILD}}" rmdir /s /q "{{BUILD}}"
+    @if exist "{{SRC}}\*.gen.inc" del /q "{{SRC}}\*.gen.inc"

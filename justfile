@@ -19,6 +19,8 @@
 #   just bench echo 5      echo benchmark, 5 seconds
 #   just clean             remove every build artifact
 
+set windows-shell := ["cmd.exe", "/C"]
+
 mod tests
 mod bench
 
@@ -55,6 +57,7 @@ check-msvc: (tests::check-msvc)
 
 # (`just test uncovered` is the coverage report, not a suite)
 # one suite, native backend: just test tcp [name-prefix]
+[unix]
 test suite="tcp" *args="":
     #!/usr/bin/env bash
     set -euo pipefail
@@ -64,31 +67,40 @@ test suite="tcp" *args="":
     exec just --justfile tests/justfile test '{{suite}}' {{args}}
 
 # one suite, select backend
+[unix]
 test-select suite="tcp" *args="":
     @just --justfile tests/justfile test-select {{suite}} {{args}}
 
 # Lua binding smoke test (needs Lua >= 5.3 and its headers)
+[unix]
 test-lua: (tests::test-lua)
 
 # lcov coverage report for znet.h (native + select, merged)
+[unix]
 cov: (tests::cov)
 
 # lines of znet.h that never executed
+[unix]
 cov-lines: (tests::cov-lines)
 
 # branches of znet.h never taken
+[unix]
 cov-unbranched: (tests::cov-unbranched)
 
 # uncovered lines from the last `just cov`, grouped by function
+[unix]
 uncovered: (tests::uncovered)
 
 # ---------------------------------------------------------------------------
 # smoke program
 
 # build + run example.c
+[unix]
 smoke: (smoke-run "native" "")
+[unix]
 smoke-select: (smoke-run "select" "-DZN_USE_SELECT")
 
+[unix]
 [private]
 smoke-run tag flags:
     #!/usr/bin/env bash
@@ -102,8 +114,41 @@ smoke-run tag flags:
 # cleanup
 
 # remove every build artifact (tests, benchmarks, smoke binaries)
+[unix]
 clean: (tests::clean) (bench::clean)
     rm -rf /tmp/znet-smoke-native /tmp/znet-smoke-select
 
 # remove coverage data only (keeps the compiled test binaries)
+[unix]
 clean-cov: (tests::clean-cov)
+
+# ---------------------------------------------------------------------------
+# windows / MSVC
+#
+# `just check`, `just test` and `just bench` are wired to the batch scripts in
+# tests\ and bench\; these recipes cover the rest.  misc\msvc-env.bat loads the
+# MSVC environment when cl.exe is not on PATH, so this also works from ssh.
+# MSVC has no -pedantic equivalent, so the C89/C++03 targets stay POSIX-only.
+
+[windows]
+test suite="tcp" *args="":
+    @call "{{source_directory()}}\tests\run.bat" {{suite}} {{args}}
+
+[windows]
+test-select suite="tcp" *args="":
+    @call "{{source_directory()}}\tests\run.bat" {{suite}} -select {{args}}
+
+[windows]
+smoke:
+    @call "{{source_directory()}}\misc\msvc-env.bat" && cl /nologo /W4 /WX /I. example.c
+    @example.exe
+
+[windows]
+smoke-select:
+    @call "{{source_directory()}}\misc\msvc-env.bat" && cl /nologo /W4 /WX /DZN_USE_SELECT /I. example.c
+    @example.exe
+
+[windows]
+clean: (tests::clean) (bench::clean)
+    @if exist "{{source_directory()}}\example.exe" del /q "{{source_directory()}}\example.exe"
+    @if exist "{{source_directory()}}\example.obj" del /q "{{source_directory()}}\example.obj"
