@@ -217,9 +217,13 @@ TEST(timer_cancel_sift_up) {
     zn_Time   emit[6];
     int       i;
 
-    emit[0] = 1;  emit[1] = 10; emit[2] = 2;
-    emit[3] = 12; emit[4] = 11; emit[5] = 5;
-    assertok(znT_resizeheap(&S->ts, 6));
+    emit[0] = 1;
+    emit[1] = 10;
+    emit[2] = 2;
+    emit[3] = 12;
+    emit[4] = 11;
+    emit[5] = 5;
+    assertok(znT_resize(&S->ts, 6));
     for (i = 0; i < 6; ++i) {
         t[i] = zn_newtimer(S, cb_record, (void *)(size_t)i);
         assertok(t[i] != NULL);
@@ -427,12 +431,12 @@ TEST(timer_cancel_updates_nexttime) {
  * negative number, i.e. "wait forever" (TODO B6). */
 #if defined(__linux__) && !defined(ZN_USE_SELECT)
 TEST(epoll_timeout_clamp) {
-    asserteq(znP_timeoutms(ZN_FOREVER), -1);
-    asserteq(znP_timeoutms(0), 0);
-    asserteq(znP_timeoutms(25), 25);
-    asserteq(znP_timeoutms((zn_Time)INT_MAX), INT_MAX);
-    asserteq(znP_timeoutms((zn_Time)INT_MAX + 1), INT_MAX);
-    asserteq(znP_timeoutms(ZN_FOREVER - 1), INT_MAX);
+    asserteq(znB_timeoutms(ZN_FOREVER), -1);
+    asserteq(znB_timeoutms(0), 0);
+    asserteq(znB_timeoutms(25), 25);
+    asserteq(znB_timeoutms((zn_Time)INT_MAX), INT_MAX);
+    asserteq(znB_timeoutms((zn_Time)INT_MAX + 1), INT_MAX);
+    asserteq(znB_timeoutms(ZN_FOREVER - 1), INT_MAX);
 }
 #endif /* __linux__ && !ZN_USE_SELECT */
 
@@ -527,7 +531,7 @@ TEST(timer_64bit_delay) {
     zt_close(S);
 }
 
-/* T1: znT_updatetimers stores the handler return in an int, truncating a
+/* T1: znT_update stores the handler return in an int, truncating a
  * 64-bit re-arm delay.  0x80000005 becomes negative, so the timer is silently
  * not re-armed.  The test does not wait for the re-armed deadline; it checks
  * the timer is scheduled far in the future and then cancels it. */
@@ -563,7 +567,7 @@ TEST(timer_64bit_handler_return) {
     zt_close(S);
 }
 
-/* More than ZN_MAX_TIMERHEAP (512) armed timers forces znT_resizeheap() to
+/* More than ZN_MAX_TIMERHEAP (512) armed timers forces znT_resize() to
  * double the array, covering the growth path. */
 TEST(timer_resize_heap) {
     zn_State *S = zt_open();

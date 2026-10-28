@@ -27,7 +27,7 @@
 
 /* ztest.h first: it defines ZN_IMPLEMENTATION for znet.h.  zn_addrinfo.h
  * guards its implementation with its own zn_implemented macro (not znet.h's
- * znet_implemented), so it is still emitted after znet.h. */
+ * zn_implemented), so it is still emitted after znet.h. */
 #include "ztest.h"
 #include "zn_addrinfo.h"
 
@@ -73,7 +73,7 @@ static void ai_resolve(zn_State *S, const char *node, int flags, unsigned ms) {
 
 TEST(addrinfo_localhost) {
     zn_State *S = zt_open();
-    unsigned i;
+    unsigned  i;
 
     ai_resolve(S, "localhost", ZN_TCP | ZN_IPV4, 1000);
     asserteq(ai_err, 0);
@@ -144,7 +144,7 @@ TEST(addrinfo_close_state_keeps_worker) {
     ai_resolve(S, "127.0.0.1", ZN_TCP | ZN_IPV4, 1000);
     asserteq(ai_err, 0);
     zn_closeaddrinfo(S); /* S != NULL: only this state's requests */
-    asserteq(znA_initalize, 1);
+    asserteq(znA_started, 1);
     zt_close(S);
 
     S = zt_open();
@@ -166,12 +166,12 @@ TEST(addrinfo_stop_all) {
     zt_guard_start(ZT_TIMEOUT_MS);
     zn_closeaddrinfo(NULL);
     zt_guard_stop();
-    asserteq(znA_initalize, 0);
+    asserteq(znA_started, 0);
 
     /* still on the caller thread: a fresh lookup restarts the worker */
     ai_resolve(S, "127.0.0.1", ZN_TCP | ZN_IPV4, 1000);
     asserteq(ai_err, 0);
-    asserteq(znA_initalize, 1);
+    asserteq(znA_started, 1);
 
     zn_closeaddrinfo(S);
     zt_close(S);

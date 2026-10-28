@@ -73,8 +73,8 @@ HANDLE zt_guard_thread = NULL;
 DWORD WINAPI zt_guard_main(LPVOID param) {
     DWORD ms = (DWORD)(size_t)param;
     if (WaitForSingleObject(zt_guard_event, ms) == WAIT_TIMEOUT) {
-        static const char msg[] =
-                "FAIL: test timeout (event loop did not return)\n";
+        static const char
+                msg[] = "FAIL: test timeout (event loop did not return)\n";
         fwrite(msg, 1, sizeof(msg) - 1, stderr);
         fflush(stderr);
         TerminateProcess(GetCurrentProcess(), 97);
@@ -108,8 +108,8 @@ void zt_guard_stop(void) {
 int zt_guard_installed = 0;
 
 void zt_guard_alarm(int sig) {
-    static const char msg[] =
-            "FAIL: test timeout (event loop did not return)\n";
+    static const char
+            msg[] = "FAIL: test timeout (event loop did not return)\n";
     (void)sig;
     (void)write(2, msg, sizeof(msg) - 1);
     _exit(97);
@@ -199,15 +199,15 @@ void zt_wait(zt_Loop *L, unsigned ms) {
     while (zn_time() < end) (void)zn_run(L->S, ZN_RUN_ONCE);
 }
 
-#define ZT_WAIT(L, cond)                                         \
-    do {                                                         \
-        while (!(cond)) {                                        \
-            if (!zt_pump(&(L))) {                                \
-                test_log("FAIL %s:%d: timeout waiting for %s\n", \
-                         __FILE__, __LINE__, #cond);             \
-                abort();                                         \
-            }                                                    \
-        }                                                        \
+#define ZT_WAIT(L, cond)                                                   \
+    do {                                                                   \
+        while (!(cond)) {                                                  \
+            if (!zt_pump(&(L))) {                                          \
+                test_log("FAIL %s:%d: timeout waiting for %s\n", __FILE__, \
+                         __LINE__, #cond);                                 \
+                abort();                                                   \
+            }                                                              \
+        }                                                                  \
     } while (0)
 
 /* ---- socket inspection (white box) ----
@@ -228,7 +228,7 @@ unsigned zt_sockport(zt_sock_t fd) {
     zt_socklen_t len = (zt_socklen_t)sizeof(sa);
     memset(&sa, 0, sizeof(sa));
     if (getsockname(fd, &sa.addr, &len) != 0) return 0;
-    return znU_isv6(&sa) ? (unsigned)ntohs(sa.ipv6.sin6_port)
+    return znP_isv6(&sa) ? (unsigned)ntohs(sa.ipv6.sin6_port)
                          : (unsigned)ntohs(sa.ipv4.sin_port);
 }
 
@@ -238,10 +238,10 @@ void zt_sockaddr(zt_sock_t fd, char *out, size_t cap) {
     memset(&sa, 0, sizeof(sa));
     out[0] = 0;
     if (getsockname(fd, &sa.addr, &len) != 0) return;
-    if (znU_isv6(&sa))
-        (void)znU_ntop(AF_INET6, &sa.ipv6.sin6_addr, out, (zt_socklen_t)cap);
+    if (znP_isv6(&sa))
+        (void)znP_ntop(AF_INET6, &sa.ipv6.sin6_addr, out, (zt_socklen_t)cap);
     else
-        (void)znU_ntop(AF_INET, &sa.ipv4.sin_addr, out, (zt_socklen_t)cap);
+        (void)znP_ntop(AF_INET, &sa.ipv4.sin_addr, out, (zt_socklen_t)cap);
 }
 
 unsigned zt_tcp_port(zn_Tcp *tcp) { return zt_sockport(tcp->socket); }
@@ -251,8 +251,8 @@ unsigned zt_accept_port(zn_Accept *a) { return zt_sockport(a->socket); }
 /* shrink the kernel send buffer so a few sends hit EAGAIN and the reactive
  * backends leave a send pending (regression L2). */
 void zt_tcp_set_sndbuf(zn_Tcp *tcp, int bytes) {
-    (void)setsockopt(tcp->socket, SOL_SOCKET, SO_SNDBUF,
-                     (const char *)&bytes, (zt_socklen_t)sizeof(bytes));
+    (void)setsockopt(tcp->socket, SOL_SOCKET, SO_SNDBUF, (const char *)&bytes,
+                     (zt_socklen_t)sizeof(bytes));
 }
 
 int zt_peer_is(const zn_PeerInfo *info, const char *addr, unsigned port) {
@@ -269,21 +269,21 @@ int zt_peer_is(const zn_PeerInfo *info, const char *addr, unsigned port) {
 
 void zt_dispatch_accept(zn_Accept *accept, int error_event) {
 #if defined(ZN_USE_SELECT)
-    zn_onaccept(accept, error_event); /* 1: the fd is in exceptfds */
+    znB_onaccept(accept, error_event); /* 1: the fd is in exceptfds */
 #elif defined(__linux__)
-    zn_onaccept(accept, error_event ? EPOLLERR : EPOLLIN);
+    znB_onaccept(accept, error_event ? EPOLLERR : EPOLLIN);
 #else
-    zn_onaccept(accept, EVFILT_READ, error_event ? EV_ERROR : 0);
+    znB_onaccept(accept, EVFILT_READ, error_event ? EV_ERROR : 0);
 #endif
 }
 
 void zt_dispatch_udp(zn_Udp *udp, int error_event) {
 #if defined(ZN_USE_SELECT)
-    zn_onrecvfrom(udp, error_event);
+    znB_onrecvfrom(udp, error_event);
 #elif defined(__linux__)
-    zn_onrecvfrom(udp, error_event ? EPOLLERR : EPOLLIN);
+    znB_onrecvfrom(udp, error_event ? EPOLLERR : EPOLLIN);
 #else
-    zn_onrecvfrom(udp, EVFILT_READ, error_event ? EV_ERROR : 0);
+    znB_onrecvfrom(udp, EVFILT_READ, error_event ? EV_ERROR : 0);
 #endif
 }
 

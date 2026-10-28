@@ -5,14 +5,14 @@
  * and another one that still has a pending operation.  A delete is postponed
  * while an operation is in flight (ZN_GETOBJECT/ZN_PUTOBJECT contract,
  * AGENTS.md invariants 3-5), which is what keeps the dispatch paths in
- * znP_dispatch() safe.
+ * znB_dispatch() safe.
  *
  * Everything here is plain loopback TCP on port 0 (no fixed ports, no sleeps):
  * one listener, one or two clients, and a handler that closes/deletes.
  *
  * The last test is select-only and is the regression test for TODO L1: a
  * callback closes another fd that is still queued in the same select() batch,
- * so znP_dispatch() later finds S->infos[fd] == NULL.  Before the fix that
+ * so znB_dispatch() later finds S->infos[fd] == NULL.  Before the fix that
  * was a NULL dereference.  It stays last because a crash would kill the rest
  * of the process when the whole suite runs in one binary.
  */
@@ -28,9 +28,9 @@ typedef void dt_RecvCb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
 typedef struct dt_Ctx {
     zn_State  *S;
     zn_Accept *a;
-    zn_Tcp    *c1;      /* first client */
-    zn_Tcp    *c2;      /* second client, tests that need two */
-    zn_Tcp    *srv[2];  /* accepted connections, in accept order */
+    zn_Tcp    *c1;     /* first client */
+    zn_Tcp    *c2;     /* second client, tests that need two */
+    zn_Tcp    *srv[2]; /* accepted connections, in accept order */
     char       recv_buf[2][64];
     char       send_buf[2][1];
     unsigned   port;
@@ -43,7 +43,7 @@ typedef struct dt_Ctx {
     int        ndeleted;
     int        accept_error;
     int        connect_error;
-    dt_RecvCb *recv_cb;    /* armed on accept; NULL: the test arms recv */
+    dt_RecvCb *recv_cb; /* armed on accept; NULL: the test arms recv */
 } dt_Ctx;
 
 /* ---- callbacks ---- */
@@ -180,13 +180,11 @@ TEST(dispatch_delete_other_in_callback) {
     ZT_WAIT(L, c.naccepted == 2 && c.nconn == 2);
 
     /* both accepted sockets now have a pending recv */
-    asserteq(zn_recv(c.srv[0], c.recv_buf[0],
-                     (unsigned)sizeof(c.recv_buf[0]), dt_on_recv_close_other,
-                     &c),
+    asserteq(zn_recv(c.srv[0], c.recv_buf[0], (unsigned)sizeof(c.recv_buf[0]),
+                     dt_on_recv_close_other, &c),
              ZN_OK);
-    asserteq(zn_recv(c.srv[1], c.recv_buf[1],
-                     (unsigned)sizeof(c.recv_buf[1]), dt_on_recv_close_other,
-                     &c),
+    asserteq(zn_recv(c.srv[1], c.recv_buf[1], (unsigned)sizeof(c.recv_buf[1]),
+                     dt_on_recv_close_other, &c),
              ZN_OK);
     /* only the first accepted connection's peer sends */
     asserteq(zn_send(c.c1, c.send_buf[0], 1, dt_on_send, &c), ZN_OK);
@@ -256,8 +254,8 @@ TEST(dispatch_delete_self_in_callback) {
 
 #if defined(ZN_USE_SELECT)
 
-/* L1: select's znP_dispatch() used to dereference S->infos[fd] without a NULL
- * check.  znF_unregister() sets S->infos[fd] = NULL, so when a callback closes
+/* L1: select's znB_dispatch() used to dereference S->infos[fd] without a NULL
+ * check.  znF_unreg() sets S->infos[fd] = NULL, so when a callback closes
  * another fd that is ready in the *same* select batch, the next dispatch in
  * that batch crashed.  The fix skips NULL entries; the deleted connection must
  * also not deliver a second callback (nrecv == 1).
@@ -277,20 +275,20 @@ TEST(dispatch_select_close_other_fd) {
     dt_newclient(&c, &c.c2);
     ZT_WAIT(L, c.naccepted == 2 && c.nconn == 2);
 
-    asserteq(zn_recv(c.srv[0], c.recv_buf[0],
-                     (unsigned)sizeof(c.recv_buf[0]), dt_on_recv_close_other,
-                     &c),
+    asserteq(zn_recv(c.srv[0], c.recv_buf[0], (unsigned)sizeof(c.recv_buf[0]),
+                     dt_on_recv_close_other, &c),
              ZN_OK);
-    asserteq(zn_recv(c.srv[1], c.recv_buf[1],
-                     (unsigned)sizeof(c.recv_buf[1]), dt_on_recv_close_other,
-                     &c),
+    asserteq(zn_recv(c.srv[1], c.recv_buf[1], (unsigned)sizeof(c.recv_buf[1]),
+                     dt_on_recv_close_other, &c),
              ZN_OK);
 
-    test_log("dispatch_select_close_other_fd: both accepted sockets have a "
-             "pending recv; writing one byte to each client socket so both "
-             "server fds are ready in the same select batch.\n");
-    test_log("TODO L1 regression: the first callback closes the other tcp; "
-             "the second event must see S->infos[fd] == NULL and return.\n");
+    test_log(
+            "dispatch_select_close_other_fd: both accepted sockets have a "
+            "pending recv; writing one byte to each client socket so both "
+            "server fds are ready in the same select batch.\n");
+    test_log(
+            "TODO L1 regression: the first callback closes the other tcp; "
+            "the second event must see S->infos[fd] == NULL and return.\n");
     asserteq((int)send(c.c1->socket, "x", 1, 0), 1);
     asserteq((int)send(c.c2->socket, "x", 1, 0), 1);
     usleep(50000);
@@ -339,12 +337,12 @@ TEST(dispatch_select_close_other_fd) {
 #endif /* ZN_USE_SELECT */
 
 /* TODO L8 (znet.h:2530, :2726) is deliberately not covered here: on kqueue a
- * user recv handler never runs inside the fd event batch.  zn_onevent()
+ * user recv handler never runs inside the fd event batch.  znB_onevent()
  * re-issues zn_recv(), the completion is queued, and the handler runs later
  * from znR_process() -- i.e. after every event of the batch has been
  * dispatched.  A freeing handler therefore cannot be hit by a later
  * EVFILT_WRITE event of the same batch.  The only user callback that does run
- * during dispatch is zn_onconnect(), and whether both connect events land in
+ * during dispatch is znB_onconnect(), and whether both connect events land in
  * one batch (and in which order) is not deterministic, so a same-fd-twice test
  * would be flaky.  No test is better than a flaky one: a deterministic L8
  * reproduction needs the deferred-release queue suggested in TODO.md M1. */

@@ -62,7 +62,7 @@ static size_t rec_header(void *ud, const char *buff, size_t len) {
     (void)ud;
     if (len < 2) return 0;
     payload = ((size_t)(unsigned char)buff[0] << 8)
-              | (size_t)(unsigned char)buff[1];
+            | (size_t)(unsigned char)buff[1];
     return payload + 2;
 }
 
@@ -210,7 +210,7 @@ TEST(buffcache_alloc_free) {
 }
 
 /* The cache owns every block allocated for it, including the one that
- * bypasses the buckets when znBC_getcache() fails (OOM or >2 GiB).  The
+ * bypasses the buckets when znZ_getcache() fails (OOM or >2 GiB).  The
  * fallback therefore has to use the cache allocator too; otherwise
  * zn_resetbuffer()/zn_delbuffcache() would free a libc pointer through a
  * custom allocator. */
@@ -241,7 +241,7 @@ static void *alloc_log_f(void *ud, void *ptr, size_t ns, size_t os) {
     }
     if (log->fail_count > 0) {
         --log->fail_count;
-        return NULL;                    /* force the getcache fallback */
+        return NULL; /* force the getcache fallback */
     }
     p = realloc(ptr, ns);
     if (p == NULL) return NULL;
@@ -250,8 +250,7 @@ static void *alloc_log_f(void *ud, void *ptr, size_t ns, size_t os) {
             log->blocks[i] = p;
             return p;
         }
-    if (ptr == NULL && log->n < ALLOC_LOG_MAX)
-        log->blocks[log->n++] = p;
+    if (ptr == NULL && log->n < ALLOC_LOG_MAX) log->blocks[log->n++] = p;
     return p;
 }
 
@@ -271,8 +270,8 @@ TEST(buffcache_fallback_alloc) {
     assertok(zn_prepbuffsize(&b, 4096) != NULL);
     assertok(b.buff != b.init_buff);
 
-    zn_resetbuffer(&b);          /* parks the block in the cache */
-    zn_delbuffcache(bc);         /* frees it through alloc_log_f */
+    zn_resetbuffer(&b);  /* parks the block in the cache */
+    zn_delbuffcache(bc); /* frees it through alloc_log_f */
     asserteq(log.bad_free, 0);
 }
 
@@ -358,8 +357,8 @@ TEST(buffcache_boundaries) {
 
     for (i = 0; i < 6; ++i) {
         size_t upos = 0, lpos = 0;
-        size_t up = znBC_upperbound(sizes[i], &upos);
-        size_t lo = znBC_lowerbound(sizes[i], &lpos);
+        size_t up = znZ_upperbound(sizes[i], &upos);
+        size_t lo = znZ_lowerbound(sizes[i], &lpos);
 
         /* upperbound has to cover the request with a whole bucket */
         assertok(up >= sizes[i]);
@@ -402,9 +401,9 @@ TEST(recv_default_handlers) {
 
     /* a NULL handler restores the built-in one */
     zn_recvonheader(&rb, NULL, NULL);
-    assertok(rb.header_handler == znRB_onheader);
+    assertok(rb.header_handler == znX_onheader);
     zn_recvonpacket(&rb, NULL, NULL);
-    assertok(rb.packet_handler == znRB_onpacket);
+    assertok(rb.packet_handler == znX_onpacket);
 
     /* the built-in packet handler is a no-op: bytes are consumed and nothing
      * reaches the recorder */
@@ -438,7 +437,7 @@ TEST(recv_default_handlers) {
     /* reset must drop the handler data the buffer carried (U4) */
     zn_resetrecvbuffer(&rb);
     assertok(rb.packet_ud == NULL);
-    assertok(rb.header_handler == znRB_onheader);
+    assertok(rb.header_handler == znX_onheader);
     asserteq(rb.expected, 0);
 }
 
@@ -511,8 +510,8 @@ TEST(recv_multi_batches) {
     int           ret;
 
     rec_reset(&rec);
-    n += rec_frame(stream + n, 2, "AB"); /* frame 0: 4 bytes */
-    n += rec_frame(stream + n, 3, "xyz"); /* frame 1: 5 bytes */
+    n += rec_frame(stream + n, 2, "AB");   /* frame 0: 4 bytes */
+    n += rec_frame(stream + n, 3, "xyz");  /* frame 1: 5 bytes */
     n += rec_frame(stream + n, 4, "qrst"); /* frame 2: 6 bytes */
     asserteq(n, sizeof(stream));
 
@@ -552,9 +551,9 @@ TEST(recv_partial_header_then_frames) {
     int           ret;
 
     rec_reset(&rec);
-    n += rec_frame(stream + n, 2, "AB");  /* frame 0: 4 bytes */
-    n += rec_frame(stream + n, 3, "xyz"); /* frame 1: 5 bytes */
-    n += rec_frame(stream + n, 4, "qrst");/* frame 2: 6 bytes */
+    n += rec_frame(stream + n, 2, "AB");   /* frame 0: 4 bytes */
+    n += rec_frame(stream + n, 3, "xyz");  /* frame 1: 5 bytes */
+    n += rec_frame(stream + n, 4, "qrst"); /* frame 2: 6 bytes */
     asserteq(n, sizeof(stream));
 
     zn_initrecvbuffer(&rb, NULL);
@@ -804,7 +803,7 @@ TEST(sendbuffer_merge_oom) {
 
     log.fail_count = 0;
     asserteq(zn_sendfinish(&sb, 10), 1);
-    asserteq(sb.pending->used, 0);           /* merged on the retry */
+    asserteq(sb.pending->used, 0); /* merged on the retry */
 
     zn_resetsendbuffer(&sb);
     zn_delbuffcache(bc);
@@ -878,7 +877,7 @@ TEST(recv_split_header) {
     rec_assert(&rec, 0, frame, sizeof(frame));
 }
 
-/* U2 (zn_buffer.h: znBC_upperbound/znBC_lowerbound): the bucket index must
+/* U2 (zn_buffer.h: znZ_upperbound/znZ_lowerbound): the bucket index must
  * stay inside buffs[] (0..ZN_BUFFCACHE_SLOTS-1) and the returned size must
  * agree with that index.  A request above the last bucket (2 GiB) cannot be
  * served by the cache, so both helpers return 0 and the callers fall back to
@@ -892,14 +891,14 @@ TEST(buffcache_huge_index) {
     size_t sz;
 
     /* above the last bucket: refused, and the out parameter is reset */
-    sz = znBC_upperbound((size_t)1 << 33, &pos);
+    sz = znZ_upperbound((size_t)1 << 33, &pos);
     asserteq(sz, 0);
     asserteq(pos, 0);
-    asserteq(znBC_lowerbound((size_t)1 << 33, &pos), 0);
+    asserteq(znZ_lowerbound((size_t)1 << 33, &pos), 0);
     asserteq(pos, 0);
 
     /* the last bucket itself is still served */
-    sz = znBC_upperbound((size_t)1 << ZN_BUFFCACHE_MAXLSIZE, &pos);
+    sz = znZ_upperbound((size_t)1 << ZN_BUFFCACHE_MAXLSIZE, &pos);
     asserteq(sz, (size_t)1 << ZN_BUFFCACHE_MAXLSIZE);
     asserteq(pos, (size_t)ZN_BUFFCACHE_COUNT);
 

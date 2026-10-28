@@ -2,7 +2,7 @@
  *
  * Only the epoll/kqueue backends use znR_*; select and IOCP deliver their
  * completions directly.  A result is a zn_Result embedded in a zn_Tcp
- * (send_result / recv_result); zn_onresult() runs the user handler and
+ * (send_result / recv_result); znR_dispatch() runs the user handler and
  * releases the retain taken by zn_send()/zn_recv().  Objects may be deleted
  * from those handlers, so a delete is deferred while a result is queued.
  *
@@ -11,7 +11,7 @@
  * ZN_MAX_RESULT_LOOPS (= 100) cap counts iterations, not results.  A queue
  * that is filled once is therefore drained in one iteration; only a cascade
  * where servicing one result queues the next one hits the cap.  When it does,
- * znR_process() returns non-zero and znP_poll() must return 1 instead of
+ * znR_process() returns non-zero and znB_poll() must return 1 instead of
  * blocking in epoll_wait/kevent -- that is the fix from commit 4380d8b
  * (znet.h:2561, znet.h:2762).
  *
@@ -24,7 +24,7 @@
  * For an IOCP build the generator must also be given -D_WIN32 (the current
  * justfile only drives POSIX), because Windows has no result queue either.
  *
- * The dummy sockets below are real fds so the ZN_ERROR path in zn_onresult()
+ * The dummy sockets below are real fds so the ZN_ERROR path in znR_dispatch()
  * has something to close.  The ZN_OK path never touches the socket and never
  * reads the send buffer, so a shared static buffer is enough.
  */
@@ -39,7 +39,7 @@ static int      g_calls;
 static unsigned g_last_err;
 static unsigned g_last_count;
 static zn_Tcp  *g_last_tcp;
-static char     g_payload[4] = { 'a', 'b', 'c', 0 };
+static char     g_payload[4] = {'a', 'b', 'c', 0};
 
 /* cascade state for rq_poll_returns_one_when_backlog */
 static zn_State *g_chain_S;
@@ -81,7 +81,7 @@ static zn_Tcp *rq_new(zn_State *S, unsigned len) {
 }
 
 /* queue one completion the way the backend does; the retain is the operation
- * that zn_onresult() releases */
+ * that znR_dispatch() releases */
 static void rq_queue(zn_State *S, zn_Tcp *tcp, int err) {
     zn_retain(S);
     znR_add(S, err, &tcp->send_result);
@@ -225,7 +225,7 @@ TEST(rq_err_result) {
     asserteq(g_calls, 1);
     asserteq(g_last_err, ZN_ERROR);
     asserteq(g_last_count, 0);
-    /* zn_onresult() closes the tcp before reporting the error */
+    /* znR_dispatch() closes the tcp before reporting the error */
     asserteq(tcp->socket, ZN_INVALID_SOCKET);
     asserteq(S->waitings, 0);
 
@@ -233,7 +233,7 @@ TEST(rq_err_result) {
     zt_close(S);
 }
 
-/* zn_close() must drain the result queue (znP_close calls znR_process(S, 1)
+/* zn_close() must drain the result queue (znB_close calls znR_process(S, 1)
  * and asserts the queue is empty) without running a user handler for a socket
  * it just closed.  Do not touch S afterwards: it is freed. */
 TEST(rq_close_with_queued) {
@@ -274,7 +274,7 @@ TEST(rq_close_with_many_queued) {
 
 /* A genuine >ZN_MAX_RESULT_LOOPS cascade: each serviced result queues the next
  * one, so every znR_process() iteration drains exactly one result.  After 100
- * iterations one result (the next link) is still queued; znP_poll() must
+ * iterations one result (the next link) is still queued; znB_poll() must
  * report "still work to do" without entering epoll_wait/kevent (commit
  * 4380d8b, znet.h:2561, :2762).
  *
@@ -306,13 +306,13 @@ TEST(rq_poll_returns_one_when_backlog) {
     rq_queue(S, tcp[0], ZN_OK);
     asserteq(S->waitings, 1);
 
-    asserteq(znP_poll(S, 0), 1);
+    asserteq(znB_poll(S, 0), 1);
     asserteq(g_calls, ZN_MAX_RESULT_LOOPS);
     queued = rq_count_queued(S);
     asserteq(queued, 1); /* the cascade's next link */
     asserteq(S->waitings, (unsigned)queued);
 
-    /* the loop would call znP_poll again; drain explicitly before closing */
+    /* the loop would call znB_poll again; drain explicitly before closing */
     asserteq(znR_process(S, 1), 0);
     asserteq(g_calls, RQ_BATCH);
     asserteq(rq_count_queued(S), 0);

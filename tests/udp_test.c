@@ -21,9 +21,9 @@
  * never taken and would hide the test from the generated runner. */
 #ifndef _WIN32
 # include <fcntl.h> /* open()/fcntl() for the reused-fd regression (L3) */
-#endif /* _WIN32 */
+#endif              /* _WIN32 */
 
-#define MSG_COUNT       5
+#define MSG_COUNT 5
 
 /* ---- shared recorder ----
  * The buffers passed to zn_recvfrom must stay valid until the deferred
@@ -46,13 +46,13 @@ static void reset_recorder(void) {
 
 /* a datagram payload is not NUL terminated: compare exactly `n` bytes and
  * report the expectation at the call site */
-#define assertbytes(buf, want, n)                                          \
-    do {                                                                   \
-        if (memcmp((buf), (want), (size_t)(n)) != 0) {                     \
-            test_log("FAIL %s:%d: payload mismatch, expected '%s'\n",      \
-                     __FILE__, __LINE__, (want));                          \
-            abort();                                                       \
-        }                                                                  \
+#define assertbytes(buf, want, n)                                     \
+    do {                                                              \
+        if (memcmp((buf), (want), (size_t)(n)) != 0) {                \
+            test_log("FAIL %s:%d: payload mismatch, expected '%s'\n", \
+                     __FILE__, __LINE__, (want));                     \
+            abort();                                                  \
+        }                                                             \
     } while (0)
 
 /* ---- callbacks ---- */
@@ -97,8 +97,8 @@ static void cb_client_v4(void *ud, zn_Udp *udp, unsigned err, unsigned count,
 }
 
 /* re-arm after every datagram; the fifth one is the last */
-static void cb_server_multi(void *ud, zn_Udp *udp, unsigned err,
-                            unsigned count, const char *addr, unsigned port) {
+static void cb_server_multi(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+                            const char *addr, unsigned port) {
     (void)ud;
     (void)addr;
     (void)port;
@@ -108,7 +108,8 @@ static void cb_server_multi(void *ud, zn_Udp *udp, unsigned err,
     g_fired++;
     if (g_fired < MSG_COUNT)
         assertok(zn_recvfrom(udp, g_sbuf, (unsigned)sizeof(g_sbuf),
-                             cb_server_multi, NULL) == ZN_OK);
+                             cb_server_multi, NULL)
+                 == ZN_OK);
     else
         zn_deludp(udp); /* all five arrived; nothing is left to poll */
 }
@@ -138,8 +139,7 @@ TEST(udp_params) {
     asserteq(zn_recvfrom(NULL, buf, (unsigned)sizeof(buf), cb_count, NULL),
              ZN_EPARAM);
     asserteq(zn_recvfrom(u, buf, 0, cb_count, NULL), ZN_EPARAM);
-    asserteq(zn_recvfrom(u, buf, (unsigned)sizeof(buf), NULL, NULL),
-             ZN_EPARAM);
+    asserteq(zn_recvfrom(u, buf, (unsigned)sizeof(buf), NULL, NULL), ZN_EPARAM);
 
     /* one in-flight recvfrom per socket */
     assertok(zn_recvfrom(u, buf, (unsigned)sizeof(buf), cb_count, NULL)
@@ -168,10 +168,12 @@ TEST(udp_send_recv_v4) {
     assertok(g_server_port != 0 && g_client_port != 0);
     assertok(g_server_port != g_client_port);
 
-    assertok(zn_recvfrom(srv, g_sbuf, (unsigned)sizeof(g_sbuf),
-                         cb_server_v4, NULL) == ZN_OK);
-    assertok(zn_recvfrom(cli, g_cbuf, (unsigned)sizeof(g_cbuf),
-                         cb_client_v4, NULL) == ZN_OK);
+    assertok(zn_recvfrom(srv, g_sbuf, (unsigned)sizeof(g_sbuf), cb_server_v4,
+                         NULL)
+             == ZN_OK);
+    assertok(zn_recvfrom(cli, g_cbuf, (unsigned)sizeof(g_cbuf), cb_client_v4,
+                         NULL)
+             == ZN_OK);
 
     /* zn_sendto is synchronous, so the datagram is queued before the loop */
     asserteq(zn_sendto(cli, "hello", 5, "127.0.0.1", g_server_port), ZN_OK);
@@ -197,8 +199,9 @@ TEST(udp_multiple_datagrams) {
     srv_port = zt_udp_port(srv);
     assertok(srv_port != 0);
 
-    assertok(zn_recvfrom(srv, g_sbuf, (unsigned)sizeof(g_sbuf),
-                         cb_server_multi, NULL) == ZN_OK);
+    assertok(zn_recvfrom(srv, g_sbuf, (unsigned)sizeof(g_sbuf), cb_server_multi,
+                         NULL)
+             == ZN_OK);
     /* every sendto completes synchronously, before the loop is entered */
     for (i = 0; i < MSG_COUNT; ++i)
         asserteq(zn_sendto(cli, "ding!", 5, "127.0.0.1", srv_port), ZN_OK);
@@ -219,8 +222,8 @@ TEST(udp_close_pending_recv) {
 
     reset_recorder();
     assertok(u != NULL);
-    assertok(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf),
-                         cb_count, NULL) == ZN_OK);
+    assertok(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), cb_count, NULL)
+             == ZN_OK);
 
     /* close reports ZN_ERROR only when the syscall fails; the cancellation
      * of the pending recvfrom is what this test is about, so the return
@@ -258,8 +261,7 @@ TEST(udp_sendto_max_payload) {
      * over is rejected as a parameter error before the socket is touched */
     asserteq(zn_sendto(cli, payload, ZN_MAX_UDPSEND, "127.0.0.1", srv_port),
              ZN_OK);
-    asserteq(zn_sendto(cli, payload, ZN_MAX_UDPSEND + 1, "127.0.0.1",
-                       srv_port),
+    asserteq(zn_sendto(cli, payload, ZN_MAX_UDPSEND + 1, "127.0.0.1", srv_port),
              ZN_EPARAM);
 
     zn_deludp(cli);
@@ -276,7 +278,7 @@ TEST(udp_sendto_max_payload) {
  * ===================================================================== */
 
 /* ---- B2: kqueue reported a garbage IPv6 peer address ------------------
- * zn_onrecvfrom used to call memset(&remote_addr, 0,
+ * znB_onrecvfrom used to call memset(&remote_addr, 0,
  * addr_size = sizeof(&remote_addr)): addr_size became the size of a pointer
  * (8), not of zn_SockAddr (28), so recvfrom() truncated the sockaddr_in6 and
  * the peer address was uninitialized stack memory.  IPv4 survived because 8
@@ -331,10 +333,12 @@ TEST(udp_ipv6_loopback) {
     g_client_port = zt_udp_port(cli);
     assertok(g_server_port != 0 && g_client_port != 0);
 
-    assertok(zn_recvfrom(srv, g_sbuf, (unsigned)sizeof(g_sbuf),
-                         cb_server_v6, NULL) == ZN_OK);
-    assertok(zn_recvfrom(cli, g_cbuf, (unsigned)sizeof(g_cbuf),
-                         cb_client_v6, NULL) == ZN_OK);
+    assertok(zn_recvfrom(srv, g_sbuf, (unsigned)sizeof(g_sbuf), cb_server_v6,
+                         NULL)
+             == ZN_OK);
+    assertok(zn_recvfrom(cli, g_cbuf, (unsigned)sizeof(g_cbuf), cb_client_v6,
+                         NULL)
+             == ZN_OK);
 
     asserteq(zn_sendto(cli, "hello", 5, "::1", g_server_port), ZN_OK);
 
@@ -344,7 +348,7 @@ TEST(udp_ipv6_loopback) {
 }
 
 /* A second UDP socket cannot bind an address:port that is already taken;
- * zn_newudp() must report EBIND by returning NULL (znP_initudp failure). */
+ * zn_newudp() must report EBIND by returning NULL (znB_initudp failure). */
 TEST(udp_bind_conflict) {
     zn_State *S = zt_open();
     zn_Udp   *a = zn_newudp(S, "127.0.0.1", 0);
@@ -509,20 +513,23 @@ static void sp_on_recvfrom(void *ud, zn_Udp *udp, unsigned err, unsigned count,
     (void)count;
     (void)addr;
     (void)port;
-    if (err == ZN_OK) c->ok++;
-    else c->err++;
+    if (err == ZN_OK)
+        c->ok++;
+    else
+        c->err++;
 }
 
 static int sp_udp_socket(unsigned port) {
     struct sockaddr_in sa;
-    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int                fd = socket(AF_INET, SOCK_DGRAM, 0);
     assertok(fd >= 0);
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
     sa.sin_port = htons((unsigned short)port);
     sa.sin_addr.s_addr = htonl(0x7f000001u);
     asserteq((int)sendto(fd, "x", 1, 0, (const struct sockaddr *)&sa,
-                         (socklen_t)sizeof(sa)), 1);
+                         (socklen_t)sizeof(sa)),
+             1);
     return fd;
 }
 
@@ -537,8 +544,9 @@ TEST(udp_recvfrom_spurious_ready) {
     assertok(u != NULL);
     memset(&c, 0, sizeof(c));
     port = zt_udp_port(u);
-    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf),
-                         sp_on_recvfrom, &c), ZN_OK);
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), sp_on_recvfrom,
+                         &c),
+             ZN_OK);
     asserteq(S->waitings, 1);
 
     zt_dispatch_udp(u, 0); /* no datagram pending: recvfrom() -> EAGAIN */
@@ -546,8 +554,9 @@ TEST(udp_recvfrom_spurious_ready) {
     asserteq(c.err, 1);
     asserteq(c.ok, 0);
     asserteq(S->waitings, 0);
-    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf),
-                         sp_on_recvfrom, &c), ZN_OK); /* still usable */
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), sp_on_recvfrom,
+                         &c),
+             ZN_OK); /* still usable */
 
     s2 = sp_udp_socket(port);
     zt_begin(&L, S, 2000);
@@ -575,15 +584,17 @@ TEST(udp_recvfrom_error_event) {
     assertok(u != NULL);
     memset(&c, 0, sizeof(c));
     port = zt_udp_port(u);
-    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf),
-                         sp_on_recvfrom, &c), ZN_OK);
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), sp_on_recvfrom,
+                         &c),
+             ZN_OK);
 
     zt_dispatch_udp(u, 1);
     asserteq(c.err, 1);
     asserteq(c.ok, 0);
     asserteq(S->waitings, 0);
-    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf),
-                         sp_on_recvfrom, &c), ZN_OK); /* still usable */
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), sp_on_recvfrom,
+                         &c),
+             ZN_OK); /* still usable */
 
     s2 = sp_udp_socket(port);
     zt_begin(&L, S, 2000);

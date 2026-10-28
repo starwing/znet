@@ -3,30 +3,29 @@
 #include <stdio.h>
 #include <string.h>
 
-
 char     addr[ZN_MAX_ADDRLEN] = "127.0.0.1";
 unsigned port = 8081;
-
 
 #define BLOCK_SIZE 1024
 typedef struct Userdata {
     unsigned send_ok, send_err, send_bytes;
     unsigned recv_ok, recv_err, recv_bytes;
-    char send[BLOCK_SIZE];
-    char recv[BLOCK_SIZE];
+    char     send[BLOCK_SIZE];
+    char     recv[BLOCK_SIZE];
 } Userdata;
 
-int is_client;
+int       is_client;
 zn_State *S;
-Userdata server;
-Userdata client;
+Userdata  server;
+Userdata  client;
 
 static void client_error(zn_Tcp *tcp);
 static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
 static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
 
-static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
-    Userdata *data = (Userdata*)ud;
+static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err,
+                           unsigned count) {
+    Userdata *data = (Userdata *)ud;
     /*printf("on_client_send: %p, %p, %u, %u\n", ud, tcp, err, count);*/
     if (err != ZN_OK) {
         ++data->send_err;
@@ -40,8 +39,9 @@ static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) 
         client_error(tcp);
 }
 
-static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
-    Userdata *data = (Userdata*)ud;
+static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err,
+                           unsigned count) {
+    Userdata *data = (Userdata *)ud;
     /*printf("on_client_recv: %p, %p, %u, %u\n", ud, tcp, err, count);*/
     if (err != ZN_OK) {
         ++data->recv_err;
@@ -60,7 +60,8 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
     (void)ud;
     if (err != ZN_OK)
         client_error(tcp);
-    else if (zn_send(tcp, client.send, BLOCK_SIZE, on_client_send, &client) != ZN_OK)
+    else if (zn_send(tcp, client.send, BLOCK_SIZE, on_client_send, &client)
+             != ZN_OK)
         client_error(tcp);
 }
 
@@ -76,12 +77,11 @@ static void client_error(zn_Tcp *tcp) {
     zn_post(S, on_error, NULL);
 }
 
-
 static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
 static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
 
 static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
-    Userdata *data = (Userdata*)ud;
+    Userdata *data = (Userdata *)ud;
     if (err != ZN_OK) {
         ++data->send_err;
         zn_deltcp(tcp);
@@ -94,7 +94,7 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 }
 
 static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
-    Userdata *data = (Userdata*)ud;
+    Userdata *data = (Userdata *)ud;
     if (err != ZN_OK) {
         ++data->recv_err;
         zn_deltcp(tcp);
@@ -107,8 +107,7 @@ static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 }
 
 static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
-    if (err != ZN_OK)
-        return;
+    if (err != ZN_OK) return;
     if (zn_recv(tcp, server.recv, BLOCK_SIZE, on_recv, &server) != ZN_OK)
         zn_deltcp(tcp);
     zn_accept(accept, on_accept, ud);
@@ -117,12 +116,12 @@ static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
 static void human_readed(unsigned sz) {
     if (sz < 1024)
         printf("%uB", sz);
-    else if (sz < 1024*1024)
-        printf("%.3fKB", sz/1024.0);
-    else if (sz < 1024*1024*1024)
-        printf("%.3fMB", sz/(1024.0*1024.0));
+    else if (sz < 1024 * 1024)
+        printf("%.3fKB", sz / 1024.0);
+    else if (sz < 1024 * 1024 * 1024)
+        printf("%.3fMB", sz / (1024.0 * 1024.0));
     else
-        printf("%.3fGB", sz/(1024.0*1024.0*1024.0));
+        printf("%.3fGB", sz / (1024.0 * 1024.0 * 1024.0));
 }
 
 static void print_ud(Userdata *ud) {
@@ -158,13 +157,13 @@ static void cleanup(void) {
 }
 
 #ifdef _WIN32
-static int deinited = 0;
+static int         deinited = 0;
 static BOOL WINAPI on_interrupted(DWORD dwCtrlEvent) {
     (void)dwCtrlEvent;
     if (!deinited) {
         deinited = 1;
         /* windows ctrl handler is running at another thread */
-        zn_post(S, (zn_PostHandler*)cleanup, NULL);
+        zn_post(S, (zn_PostHandler *)cleanup, NULL);
     }
     return TRUE;
 }
@@ -176,15 +175,14 @@ static void register_interrupted(void) {
 #include <signal.h>
 
 static void on_interrupted(int signum) {
-    if (signum == SIGINT)
-        cleanup();
+    if (signum == SIGINT) cleanup();
 }
 
 static void register_interrupted(void) {
-   struct sigaction act; 
-   act.sa_flags = SA_RESETHAND;
-   act.sa_handler = on_interrupted;
-   sigaction(SIGINT, &act, NULL);
+    struct sigaction act;
+    act.sa_flags = SA_RESETHAND;
+    act.sa_handler = on_interrupted;
+    sigaction(SIGINT, &act, NULL);
 }
 #endif
 
@@ -204,7 +202,7 @@ int main(int argc, const char **argv) {
         }
     }
     if (argc > 2) {
-        strncpy(addr, argv[2], ZN_MAX_ADDRLEN-1);
+        strncpy(addr, argv[2], ZN_MAX_ADDRLEN - 1);
     }
     if (argc > 3) {
         unsigned p = atoi(argv[3]);
@@ -223,15 +221,13 @@ int main(int argc, const char **argv) {
             if ((tcp = zn_newtcp(S)) == NULL) return 2;
             zn_connect(tcp, addr, port, 0, on_connect, NULL);
         }
-    }
-    else {
+    } else {
         zn_Accept *accept;
         if ((accept = zn_newaccept(S, 0)) == NULL) return 2;
         zn_listen(accept, addr, port);
         zn_accept(accept, on_accept, NULL);
         printf("listening at %s:%d ...\n", addr, port);
     }
-
 
     zn_starttimer(zn_newtimer(S, on_summary, NULL), 1000);
 

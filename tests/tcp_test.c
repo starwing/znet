@@ -15,7 +15,7 @@
  *
  * Backend selection: znet.h #undefs its internal zn_use_* selectors after
  * using them, so a test file cannot test those.  The result-queue (reactive)
- * backends are "POSIX and no ZN_USE_SELECT"; zn_have_kqueue and ZN_USE_SELECT
+ * backends are "POSIX and no ZN_USE_SELECT"; ZN_HAVE_KQUEUE and ZN_USE_SELECT
  * both survive znet.h and misc/gen_entries.lua is given the same platform
  * defines as the compiler (see tests/README.md, "conditional compilation").
  */
@@ -108,8 +108,8 @@ TEST(tcp_params) {
      * to complete for this: while it is still in flight the same guard
      * returns ESTATE too, but the contract there is EBUSY (see
      * tcp_connect_twice). */
-    asserteq(zn_connect(tcp, "127.0.0.1", port, 0, cb_flag_connect,
-                        &connected), ZN_OK);
+    asserteq(zn_connect(tcp, "127.0.0.1", port, 0, cb_flag_connect, &connected),
+             ZN_OK);
     zt_begin(&L, S, 2000);
     ZT_WAIT(L, connected == 1);
     zt_end(&L);
@@ -387,8 +387,8 @@ static zn_Time echo_loop_tick(void *ud, zn_Timer *timer, zn_Time elapsed) {
         free(c);
         zt_fail("zn_newtcp() returned NULL");
     }
-    asserteq(zn_connect(c->tcp, "127.0.0.1", l->port, 0, echo_loop_connect,
-                        c), ZN_OK);
+    asserteq(zn_connect(c->tcp, "127.0.0.1", l->port, 0, echo_loop_connect, c),
+             ZN_OK);
     l->started++;
     return 20;
 }
@@ -461,7 +461,8 @@ static void ioerr_rst_peer(ioerr_ctx *c) {
     lg.l_onoff = 1;
     lg.l_linger = 0;
     assertok(setsockopt(c->server->socket, SOL_SOCKET, SO_LINGER,
-                        (const char *)&lg, sizeof(lg)) == 0);
+                        (const char *)&lg, sizeof(lg))
+             == 0);
     zn_deltcp(c->server);
     c->server = NULL;
 }
@@ -518,8 +519,9 @@ static void ioerr_open(ioerr_ctx *c, zn_AcceptHandler *accept_cb,
     asserteq(zn_accept(c->listener, accept_cb, c), ZN_OK);
     c->client = zn_newtcp(c->S);
     assertok(c->client != NULL);
-    asserteq(zn_connect(c->client, "127.0.0.1", zt_accept_port(c->listener),
-                        0, connect_cb, c), ZN_OK);
+    asserteq(zn_connect(c->client, "127.0.0.1", zt_accept_port(c->listener), 0,
+                        connect_cb, c),
+             ZN_OK);
 }
 
 static void ioerr_close(ioerr_ctx *c) {
@@ -534,8 +536,8 @@ static void ioerr_close(ioerr_ctx *c) {
  * next attempt, so no timing is involved.  The process must survive that
  * send: the library has to suppress SIGPIPE itself (B13). */
 TEST(tcp_send_error) {
-    ioerr_ctx        c;
-    zt_Loop          L;
+    ioerr_ctx c;
+    zt_Loop   L;
 
     ioerr_open(&c, ioerr_accept, ioerr_connect);
     zt_begin(&L, c.S, 2000);
@@ -557,7 +559,8 @@ TEST(tcp_send_error) {
  * Darwin, so the socket option is the guard; assert it directly instead of
  * relying on the process surviving a SIGPIPE. */
 #if defined(__APPLE__)
-# define ZT_SO_NOSIGPIPE 0x1022 /* Darwin ABI value, hidden by _XOPEN_SOURCE */
+/* Darwin ABI value, hidden by strict feature macros */
+# define ZT_SO_NOSIGPIPE 0x1022
 #endif
 
 TEST(tcp_nosigpipe_option) {
@@ -573,12 +576,14 @@ TEST(tcp_nosigpipe_option) {
     zt_end(&L);
 
     asserteq(getsockopt(c.client->socket, SOL_SOCKET, ZT_SO_NOSIGPIPE,
-                        (void*)&no_sigpipe, &optlen), 0);
+                        (void *)&no_sigpipe, &optlen),
+             0);
     asserteq(no_sigpipe, 1);
     no_sigpipe = 0;
     optlen = (socklen_t)sizeof(no_sigpipe);
     asserteq(getsockopt(c.server->socket, SOL_SOCKET, ZT_SO_NOSIGPIPE,
-                        (void*)&no_sigpipe, &optlen), 0);
+                        (void *)&no_sigpipe, &optlen),
+             0);
     asserteq(no_sigpipe, 1);
 
     ioerr_close(&c);
@@ -605,8 +610,7 @@ TEST(tcp_recv_error) {
     ZT_WAIT(L, c.done == 1);
     zt_end(&L);
 
-    test_log("  recv after RST: err=%u (%s)\n", c.err,
-             zn_strerror((int)c.err));
+    test_log("  recv after RST: err=%u (%s)\n", c.err, zn_strerror((int)c.err));
     assertok(c.err != ZN_OK);
     asserteq(c.S->waitings, 0);
     ioerr_close(&c);
@@ -694,7 +698,7 @@ TEST(tcp_select_except_send_error) {
 
     asserteq(zn_send(c.server, "x", 1, oobsend_sent, &c), ZN_OK);
     /* setno 2 == exceptfds: the send must fail loudly, not vanish */
-    znP_dispatch(c.S, c.server->socket, 2);
+    znB_dispatch(c.S, c.server->socket, 2);
 
     asserteq(c.done, 1);
     test_log("  send dispatched from exceptfds: err=%u (%s)\n", c.err,
@@ -789,8 +793,9 @@ TEST(tcp_send_recv_twice) {
     asserteq(zn_accept(c.listener, busy_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
-    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        0, busy_connect, &c), ZN_OK);
+    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener), 0,
+                        busy_connect, &c),
+             ZN_OK);
 
     asserteq(zt_run(S), 0);
     asserteq(c.accepted, 1);
@@ -914,8 +919,9 @@ TEST(tcp_close_pending_recv) {
     asserteq(zn_accept(c.listener, pend_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
-    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        0, pend_connect, &c), ZN_OK);
+    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener), 0,
+                        pend_connect, &c),
+             ZN_OK);
 
     asserteq(zt_run(S), 0);
     asserteq(c.accepted, 1);
@@ -988,7 +994,7 @@ TEST(tcp_reconnect_after_close) {
 
     asserteq(zt_run(S), 0);
     asserteq(c.first, 1);
-    asserteq(c.second, 1); /* the reconnect really completed */
+    asserteq(c.second, 1);   /* the reconnect really completed */
     asserteq(c.accepted, 1); /* only one accept was armed */
     asserteq(S->waitings, 0);
 
@@ -1011,8 +1017,7 @@ typedef struct close_ctx {
     int        connected;
 } close_ctx;
 
-static void close_srv_send(void *ud, zn_Tcp *tcp, unsigned err,
-                           unsigned cnt) {
+static void close_srv_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned cnt) {
     (void)ud;
     (void)tcp;
     asserteq(err, ZN_OK);
@@ -1028,12 +1033,10 @@ static void close_accept(void *ud, zn_Accept *accept, unsigned err,
     c->accepted = 1;
     c->server = tcp;
     /* mode 2 needs data so the client's recv is not left pending */
-    if (c->mode == 2)
-        asserteq(zn_send(tcp, "x", 1, close_srv_send, c), ZN_OK);
+    if (c->mode == 2) asserteq(zn_send(tcp, "x", 1, close_srv_send, c), ZN_OK);
 }
 
-static void close_cli_send(void *ud, zn_Tcp *tcp, unsigned err,
-                           unsigned cnt) {
+static void close_cli_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned cnt) {
     close_ctx *c = (close_ctx *)ud;
     asserteq(err, ZN_OK);
     asserteq(cnt, 1);
@@ -1044,8 +1047,7 @@ static void close_cli_send(void *ud, zn_Tcp *tcp, unsigned err,
     }
 }
 
-static void close_cli_recv(void *ud, zn_Tcp *tcp, unsigned err,
-                           unsigned cnt) {
+static void close_cli_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned cnt) {
     close_ctx *c = (close_ctx *)ud;
     asserteq(err, ZN_OK);
     asserteq(cnt, 1);
@@ -1088,7 +1090,8 @@ static void close_phase(int mode) {
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
     asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener), 0,
-                        close_connect, &c), ZN_OK);
+                        close_connect, &c),
+             ZN_OK);
 
     asserteq(zt_run(S), 0); /* the delete inside the callback ends the loop */
     asserteq(c.accepted, 1);
@@ -1130,8 +1133,7 @@ static void eof_srv_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned cnt) {
     c->server = NULL;
 }
 
-static void eof_accept(void *ud, zn_Accept *accept, unsigned err,
-                       zn_Tcp *tcp) {
+static void eof_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     eof_ctx *c = (eof_ctx *)ud;
     (void)accept;
     asserteq(err, ZN_OK);
@@ -1178,8 +1180,9 @@ TEST(tcp_peer_echo_peer_close) {
     asserteq(zn_accept(c.listener, eof_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
-    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        0, eof_connect, &c), ZN_OK);
+    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener), 0,
+                        eof_connect, &c),
+             ZN_OK);
 
     asserteq(zt_run(S), 0);
     asserteq(c.accepted, 1);
@@ -1273,8 +1276,9 @@ TEST(tcp_many_messages) {
     asserteq(zn_accept(c.listener, many_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
-    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        0, many_connect, &c), ZN_OK);
+    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener), 0,
+                        many_connect, &c),
+             ZN_OK);
 
     asserteq(zt_run(S), 0);
     asserteq(c.accepted, 1);
@@ -1291,12 +1295,12 @@ TEST(tcp_many_messages) {
 }
 
 /* TODO (new, not in TODO.md; proposed B13): the select backend never maps a
- * failed connect to an error.  znP_dispatch() (znet.h:2079) derives the
- * error from the fd set only ("setno == 2") and zn_onconnect() (znet.h:1854)
+ * failed connect to an error.  znB_dispatch() (znet.h:2079) derives the
+ * error from the fd set only ("setno == 2") and znB_onconnect() (znet.h:1854)
  * treats readiness as success without reading SO_ERROR, so a connection to a
  * closed port calls back with ZN_OK while SO_ERROR is ECONNREFUSED.  kqueue
  * reports ZN_ERROR (EV_EOF/EV_ERROR) and passes.  Desired: the callback must
- * never report success; check SO_ERROR in zn_onconnect() for both backends.
+ * never report success; check SO_ERROR in znB_onconnect() for both backends.
  * Kept with the expected failures at the end of the file. */
 typedef struct refused_ctx {
     int      called;
@@ -1311,12 +1315,12 @@ static void refused_connect(void *ud, zn_Tcp *tcp, unsigned err) {
 }
 
 TEST(tcp_connect_refused) {
-    zn_State    *S = zt_open();
-    zn_Accept   *listener;
-    zn_Tcp      *tcp;
-    refused_ctx  c;
-    unsigned     port;
-    int          ret;
+    zn_State   *S = zt_open();
+    zn_Accept  *listener;
+    zn_Tcp     *tcp;
+    refused_ctx c;
+    unsigned    port;
+    int         ret;
 
     memset(&c, 0, sizeof(c));
     listener = zn_newaccept(S, 0);
@@ -1332,8 +1336,8 @@ TEST(tcp_connect_refused) {
     if (ret == ZN_OK) {
         /* loopback usually refuses asynchronously; the loop delivers it */
         asserteq(zt_run(S), 0);
-        test_log("  refused connect: cb=%d err=%d (%s)\n", c.called,
-                 (int)c.err, zn_strerror((int)c.err));
+        test_log("  refused connect: cb=%d err=%d (%s)\n", c.called, (int)c.err,
+                 zn_strerror((int)c.err));
         asserteq(c.called, 1);
         assertok(c.err != ZN_OK);
     } else {
@@ -1366,7 +1370,7 @@ TEST(tcp_connect_unreachable) {
 #endif /* !_WIN32 */
 
 /* The ESTATE guard for an open socket (znet.h:644) runs before the EBUSY
- * guard (znet.h:645) and znP_connect() has already stored the socket, so a
+ * guard (znet.h:645) and znB_connect() has already stored the socket, so a
  * second zn_connect() while the first is in flight reports ZN_ESTATE and the
  * EBUSY branch is unreachable.  AGENTS invariant 2 says connect behaves like
  * send/recv, i.e. one in-flight connect per object and ZN_EBUSY for the
@@ -1389,8 +1393,8 @@ TEST(tcp_connect_twice) {
 
     tcp = zn_newtcp(S);
     assertok(tcp != NULL);
-    asserteq(zn_connect(tcp, "127.0.0.1", port, 0, cb_flag_connect,
-                        &conn_ok), ZN_OK);
+    asserteq(zn_connect(tcp, "127.0.0.1", port, 0, cb_flag_connect, &conn_ok),
+             ZN_OK);
 
     ret = zn_connect(tcp, "127.0.0.1", port, 0, cb_noop_connect, NULL);
     test_log("  connect twice: second zn_connect -> %d (%s), waitings=%u\n",
@@ -1429,7 +1433,7 @@ TEST(tcp_listen_conflict) {
     zt_close(S);
 }
 
-/* L2 regression (fixed): the reactive znP_closetcp() used to guess "is a
+/* L2 regression (fixed): the reactive znB_closetcp() used to guess "is a
  * result queued?" from can_*, so closing a send parked by EAGAIN left its
  * retain unreleased; S->waitings never reached 0 and zn_run(ZN_RUN_LOOP)
  * never returned.  close now cancels exactly the parked directions.
@@ -1439,7 +1443,7 @@ TEST(tcp_listen_conflict) {
 #if !defined(ZN_USE_SELECT) && !defined(_WIN32)
 
 #define BLOCKED_SEND_SIZE 65536
-#define BLOCKED_MAX_CBS 200
+#define BLOCKED_MAX_CBS   200
 
 typedef struct blocked_ctx {
     zn_State  *S;
@@ -1532,15 +1536,17 @@ TEST(tcp_close_blocked_send) {
     asserteq(zn_accept(c.listener, blocked_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
-    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        0, blocked_connect, &c), ZN_OK);
+    asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener), 0,
+                        blocked_connect, &c),
+             ZN_OK);
 
     /* regressed by L2: close did not cancel the parked send, so its retain
      * never came back and the loop could not return */
     ret = zt_run(S);
-    test_log("  blocked send: ret=%d blocked=%d cbs=%d bytes=%u waitings=%u "
-             "accepted=%d\n", ret, c.blocked, c.send_cbs, c.bytes,
-             S->waitings, c.accepted);
+    test_log(
+            "  blocked send: ret=%d blocked=%d cbs=%d bytes=%u waitings=%u "
+            "accepted=%d\n",
+            ret, c.blocked, c.send_cbs, c.bytes, S->waitings, c.accepted);
     asserteq(ret, 0);
     asserteq(c.accepted, 1);
     asserteq(c.connected, 1);
@@ -1574,13 +1580,13 @@ TEST(tcp_close_parked_and_queued) {
     assertok(fd >= 0);
     tcp->socket = fd;
 
-    tcp->recv_handler = cb_noop_recv;   /* parked recv */
+    tcp->recv_handler = cb_noop_recv; /* parked recv */
     tcp->recv_buffer.buf = buf;
     tcp->recv_buffer.len = sizeof(buf);
     tcp->can_read = 0;
     zn_retain(S);
 
-    tcp->send_handler = cb_noop_send;   /* completing send */
+    tcp->send_handler = cb_noop_send; /* completing send */
     tcp->send_buffer.buf = buf;
     tcp->send_buffer.len = 1;
     tcp->can_write = 1;
@@ -1589,7 +1595,7 @@ TEST(tcp_close_parked_and_queued) {
 
     asserteq(S->waitings, 2);
     asserteq(zn_closetcp(tcp), ZN_OK);
-    asserteq(S->waitings, 1);           /* only the parked recv was cancelled */
+    asserteq(S->waitings, 1); /* only the parked recv was cancelled */
     asserteq(tcp->recv_handler == NULL, 1);
     assertok(tcp->send_handler != NULL);
 
@@ -1599,7 +1605,7 @@ TEST(tcp_close_parked_and_queued) {
     asserteq(S->waitings, 0);
     /* znL_empty() cannot be called (it takes &(h) of an already expanded
      * head argument), so compare the head ring directly */
-    assertok(S->active_tcps.next == (zn_Tcp*)(void*)&S->active_tcps);
+    assertok(S->active_tcps.next == (zn_Tcp *)(void *)&S->active_tcps);
     zt_close(S);
 }
 
@@ -1617,7 +1623,7 @@ TEST(tcp_recv_result_after_close) {
     assertok(fd >= 0);
     tcp->socket = fd;
 
-    tcp->recv_handler = cb_noop_recv;   /* completing recv */
+    tcp->recv_handler = cb_noop_recv; /* completing recv */
     tcp->recv_buffer.buf = buf;
     tcp->recv_buffer.len = sizeof(buf);
     tcp->can_read = 1;
@@ -1626,11 +1632,11 @@ TEST(tcp_recv_result_after_close) {
 
     asserteq(S->waitings, 1);
     asserteq(zn_closetcp(tcp), ZN_OK);
-    asserteq(S->waitings, 1);           /* the queued result still owns it */
+    asserteq(S->waitings, 1); /* the queued result still owns it */
 
     asserteq(znR_process(S, 1), 0);
     asserteq(S->waitings, 0);
-    assertok(S->active_tcps.next == (zn_Tcp*)(void*)&S->active_tcps);
+    assertok(S->active_tcps.next == (zn_Tcp *)(void *)&S->active_tcps);
     zt_close(S);
 }
 
@@ -1663,10 +1669,10 @@ TEST(tcp_close_both_parked) {
     asserteq(S->waitings, 0);
     asserteq(tcp->send_handler == NULL, 1);
     asserteq(tcp->recv_handler == NULL, 1);
-    asserteq(zn_closetcp(tcp), ZN_OK);  /* idempotent: no second release */
+    asserteq(zn_closetcp(tcp), ZN_OK); /* idempotent: no second release */
     asserteq(S->waitings, 0);
     zn_deltcp(tcp);
-    assertok(S->active_tcps.next == (zn_Tcp*)(void*)&S->active_tcps);
+    assertok(S->active_tcps.next == (zn_Tcp *)(void *)&S->active_tcps);
     zt_close(S);
 }
 
@@ -1686,7 +1692,7 @@ TEST(tcp_connect_after_close_queued) {
     assertok(fd >= 0);
     tcp->socket = fd;
 
-    tcp->send_handler = cb_noop_send;   /* completing: result owns the retain */
+    tcp->send_handler = cb_noop_send; /* completing: result owns the retain */
     tcp->send_buffer.buf = buf;
     tcp->send_buffer.len = 1;
     tcp->can_write = 1;
@@ -1695,45 +1701,44 @@ TEST(tcp_connect_after_close_queued) {
 
     asserteq(zn_closetcp(tcp), ZN_OK);
     asserteq(zn_connect(tcp, "127.0.0.1", zt_accept_port(listener), 0,
-                        cb_noop_connect, NULL), ZN_EBUSY);
+                        cb_noop_connect, NULL),
+             ZN_EBUSY);
 
     /* draining the queue releases the last retain and reclaims the object */
     asserteq(znR_process(S, 1), 0);
     asserteq(S->waitings, 0);
-    assertok(S->active_tcps.next == (zn_Tcp*)(void*)&S->active_tcps);
+    assertok(S->active_tcps.next == (zn_Tcp *)(void *)&S->active_tcps);
     zn_delaccept(listener);
     zt_close(S);
 }
 
 /* A send parked by EAGAIN must complete once the socket is writable again:
- * znP_retry_send() releases the parked retain, re-issues through zn_send()
- * and the completion is delivered by zn_onresult().  White box: a socketpair
+ * znB_retrysend() releases the parked retain, re-issues through zn_send()
+ * and the completion is delivered by znR_dispatch().  White box: a socketpair
  * filled to EAGAIN makes the park deterministic. */
 TEST(tcp_retry_send_after_eagain) {
-    zn_State *S = zt_open();
-    zn_Tcp   *tcp = zn_newtcp(S);
+    zn_State   *S = zt_open();
+    zn_Tcp     *tcp = zn_newtcp(S);
     static char big[262144];
-    int      sv[2];
+    int         sv[2];
 
     assertok(tcp != NULL);
     assertok(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
-    znU_set_nonblock(sv[0]);
-    znU_set_nonblock(sv[1]);
+    znP_setnonblock(sv[0]);
+    znP_setnonblock(sv[1]);
     tcp->socket = sv[0];
 
     /* fill the socket buffer so the very first zn_send() parks */
     memset(big, 'x', sizeof(big));
-    while (write(sv[0], big, sizeof(big)) > 0)
-        ;
+    while (write(sv[0], big, sizeof(big)) > 0);
     asserteq(zn_send(tcp, big, sizeof(big), cb_noop_send, NULL), ZN_OK);
     assertok(tcp->send_handler != NULL);
     asserteq(tcp->can_write, 0);
     asserteq(S->waitings, 1);
 
     /* the peer drains: this is the edge the parked send is waiting for */
-    while (read(sv[1], big, sizeof(big)) > 0)
-        ;
-    znP_retry_send(tcp);
+    while (read(sv[1], big, sizeof(big)) > 0);
+    znB_retrysend(tcp);
     assertok(tcp->can_write == 1 || tcp->send_handler == NULL);
     asserteq(znR_process(S, 1), 0);
     asserteq(S->waitings, 0);
@@ -1762,8 +1767,8 @@ TEST(tcp_accept_twice) {
     asserteq(S->waitings, 1);
 
     ret = zn_accept(accept, cb_noop_accept, NULL);
-    test_log("  accept twice: second zn_accept -> %d (%s), waitings=%u\n",
-             ret, zn_strerror(ret), S->waitings);
+    test_log("  accept twice: second zn_accept -> %d (%s), waitings=%u\n", ret,
+             zn_strerror(ret), S->waitings);
     asserteq(ret, ZN_EBUSY);
     asserteq(S->waitings, 1); /* one accept, exactly one retain */
     zn_close(S);
@@ -1780,9 +1785,9 @@ TEST(tcp_accept_twice) {
 
 #ifndef _WIN32
 
-# include <fcntl.h>       /* fcntl(), O_NONBLOCK */
-# include <netinet/in.h>  /* struct sockaddr_in */
-# include <arpa/inet.h>   /* htons(), htonl() */
+# include <fcntl.h>      /* fcntl(), O_NONBLOCK */
+# include <netinet/in.h> /* struct sockaddr_in */
+# include <arpa/inet.h>  /* htons(), htonl() */
 
 typedef struct sp_ctx {
     int     ok;
@@ -1817,7 +1822,7 @@ static void sp_on_accept_rearm(void *ud, zn_Accept *accept, unsigned err,
 /* a plain blocking client: these tests only need something in the queue */
 static int sp_connect(unsigned port) {
     struct sockaddr_in sa;
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    int                fd = socket(AF_INET, SOCK_STREAM, 0);
     assertok(fd >= 0);
     memset(&sa, 0, sizeof(sa));
     sa.sin_family = AF_INET;
@@ -1829,11 +1834,12 @@ static int sp_connect(unsigned port) {
 
 static void sp_connect_and_abort(unsigned port) {
     struct linger lg;
-    int fd = sp_connect(port);
+    int           fd = sp_connect(port);
     lg.l_onoff = 1;
     lg.l_linger = 0;
     assertok(setsockopt(fd, SOL_SOCKET, SO_LINGER, (const void *)&lg,
-                        (socklen_t)sizeof(lg)) == 0);
+                        (socklen_t)sizeof(lg))
+             == 0);
     close(fd); /* RST: the completed connection dies before it is accepted */
 }
 
@@ -1937,8 +1943,7 @@ TEST(tcp_accept_after_aborted_clients) {
     port = zt_accept_port(accept);
     asserteq(zn_accept(accept, sp_on_accept_rearm, &c), ZN_OK);
 
-    for (i = 0; i < 20; ++i)
-        sp_connect_and_abort(port);
+    for (i = 0; i < 20; ++i) sp_connect_and_abort(port);
 
     zt_begin(&L, S, 3000);
     zt_wait(&L, 200); /* drain the dead connections */
@@ -1956,10 +1961,10 @@ TEST(tcp_accept_after_aborted_clients) {
 #endif /* !_WIN32 */
 
 /* ---- B9: the select TCP directions must park, not drop -----------------
- * zn_onsend/zn_onrecv consumed the operation before the syscall, so a
+ * znB_onsend/znB_onrecv consumed the operation before the syscall, so a
  * readiness report with no room/data dropped the send/recv silently (no
  * callback, retain gone).  TCP directions do have a park state -- the
- * reactive backends use it for exactly this case (znP_retry_send -> znP_send
+ * reactive backends use it for exactly this case (znB_retrysend -> znB_send
  * -> EAGAIN -> can_write = 0), so select parks the same way instead of
  * reporting an error that the other backends do not report. */
 
@@ -1974,23 +1979,25 @@ static void b9_on_io(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     b9_ctx *c = (b9_ctx *)ud;
     (void)tcp;
     (void)count;
-    if (err == ZN_OK) c->ok++;
-    else c->err++;
+    if (err == ZN_OK)
+        c->ok++;
+    else
+        c->err++;
 }
 
 static void b9_socketpair(zn_Tcp *tcp, int sv[2]) {
     assertok(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
-    znU_set_nonblock(sv[0]);
-    znU_set_nonblock(sv[1]);
+    znP_setnonblock(sv[0]);
+    znP_setnonblock(sv[1]);
     tcp->socket = sv[0];
 }
 
 TEST(tcp_select_send_spurious_ready) {
-    zn_State *S = zt_open();
-    zn_Tcp   *tcp = zn_newtcp(S);
-    b9_ctx    c;
+    zn_State   *S = zt_open();
+    zn_Tcp     *tcp = zn_newtcp(S);
+    b9_ctx      c;
     static char big[262144];
-    int       sv[2];
+    int         sv[2];
 
     memset(&c, 0, sizeof(c));
     assertok(tcp != NULL);
@@ -1998,12 +2005,11 @@ TEST(tcp_select_send_spurious_ready) {
 
     /* fill the kernel send buffer so the first send() has to return EAGAIN */
     memset(big, 'x', sizeof(big));
-    while (write(sv[0], big, sizeof(big)) > 0)
-        ;
+    while (write(sv[0], big, sizeof(big)) > 0);
     asserteq(zn_send(tcp, big, sizeof(big), b9_on_io, &c), ZN_OK);
     asserteq(S->waitings, 1);
 
-    zn_onsend(tcp, 0); /* write-ready, but the send buffer is full */
+    znB_onsend(tcp, 0); /* write-ready, but the send buffer is full */
 
     /* parked, not dropped and not failed: the operation is still the
      * caller's, the retain is still held, and no callback ran */
@@ -2013,9 +2019,8 @@ TEST(tcp_select_send_spurious_ready) {
     asserteq(S->waitings, 1);
 
     /* drain the peer: the same readiness now completes the parked send */
-    while (read(sv[1], big, sizeof(big)) > 0)
-        ;
-    zn_onsend(tcp, 0);
+    while (read(sv[1], big, sizeof(big)) > 0);
+    znB_onsend(tcp, 0);
     asserteq(c.ok, 1);
     asserteq(c.err, 0);
     asserteq(S->waitings, 0);
@@ -2039,7 +2044,7 @@ TEST(tcp_select_recv_spurious_ready) {
     asserteq(zn_recv(tcp, buf, (unsigned)sizeof(buf), b9_on_io, &c), ZN_OK);
     asserteq(S->waitings, 1);
 
-    zn_onrecv(tcp, 0); /* read-ready, but nothing to read */
+    znB_onrecv(tcp, 0); /* read-ready, but nothing to read */
 
     asserteq(c.ok, 0);
     asserteq(c.err, 0);
@@ -2047,7 +2052,7 @@ TEST(tcp_select_recv_spurious_ready) {
     asserteq(S->waitings, 1);
 
     assertok(write(sv[1], "x", 1) == 1);
-    zn_onrecv(tcp, 0); /* the next report completes the parked recv */
+    znB_onrecv(tcp, 0); /* the next report completes the parked recv */
     asserteq(c.ok, 1);
     asserteq(c.err, 0);
     asserteq(S->waitings, 0);

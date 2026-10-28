@@ -37,16 +37,15 @@
 
 /* asserteq -- abort if (a) != (b); ptrdiff_t holds pointer values whole,
  * unlike long (32-bit on LLP64 MSVC, which truncates and warns C4311) */
-#define asserteq(a, b)                                                 \
-    do {                                                               \
-        ptrdiff_t _a = (ptrdiff_t)(a), _b = (ptrdiff_t)(b);            \
-        if (_a != _b) {                                                \
-            test_log(                                                  \
-                    "FAIL %s:%d: %s == %ld, expected %ld\n", __FILE__, \
-                    __LINE__, #a, (long)_a, (long)_b);                 \
-            abort();                                                   \
-        }                                                              \
-        assert(_a == _b);                                              \
+#define asserteq(a, b)                                                  \
+    do {                                                                \
+        ptrdiff_t _a = (ptrdiff_t)(a), _b = (ptrdiff_t)(b);             \
+        if (_a != _b) {                                                 \
+            test_log("FAIL %s:%d: %s == %ld, expected %ld\n", __FILE__, \
+                     __LINE__, #a, (long)_a, (long)_b);                 \
+            abort();                                                    \
+        }                                                               \
+        assert(_a == _b);                                               \
     } while (0)
 
 /* assertok -- abort if (e) is false */
@@ -59,24 +58,23 @@
     } while (0)
 
 /* assertstreq -- abort if strcmp(a, b) != 0 */
-#define assertstreq(a, b)                                                  \
-    do {                                                                   \
-        const char *_sa = (a), *_sb = (b);                                 \
-        if (strcmp(_sa, _sb) != 0) {                                       \
-            test_log(                                                      \
-                    "FAIL %s:%d: '%s' != '%s'\n", __FILE__, __LINE__, _sa, \
-                    _sb);                                                  \
-            abort();                                                       \
-        }                                                                  \
+#define assertstreq(a, b)                                                   \
+    do {                                                                    \
+        const char *_sa = (a), *_sb = (b);                                  \
+        if (strcmp(_sa, _sb) != 0) {                                        \
+            test_log("FAIL %s:%d: '%s' != '%s'\n", __FILE__, __LINE__, _sa, \
+                     _sb);                                                  \
+            abort();                                                        \
+        }                                                                   \
     } while (0)
 
 /* test_skip -- mark the current test as skipped (e.g. no IPv6 loopback).
  * The test still counts as a pass but the runner reports SKIP. */
-#define test_skip(...)                        \
-    do {                                      \
-        test_log(__VA_ARGS__);                \
-        test_log("\n");                       \
-        test_skipped = 1;                     \
+#define test_skip(...)         \
+    do {                       \
+        test_log(__VA_ARGS__); \
+        test_log("\n");        \
+        test_skipped = 1;      \
     } while (0)
 
 static int test_skipped = 0;
@@ -91,8 +89,8 @@ typedef struct {
 /* test_run -- no args: run all; args: prefix match, '@' = first only,
  * '?' = optional (not found is not an error); "--list" prints test names
  * on stdout so the runner can isolate each test in its own process. */
-static int test_run(
-        const char *banner, const test_entry *entries, int argc, char *argv[]) {
+static int test_run(const char *banner, const test_entry *entries, int argc,
+                    char *argv[]) {
     int i, j;
     if (argc == 2 && strcmp(argv[1], "--list") == 0) {
         for (j = 0; entries[j].name; ++j) printf("%s\n", entries[j].name);
