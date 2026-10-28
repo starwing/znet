@@ -645,4 +645,132 @@ TEST(timer_start_param) {
     zt_close(S);
 }
 
+/* ---- randomized model check (heap invariant + firing order) ---- */
+
+/* Same fan-out as the implementation.  C5 changes this one line to
+ * ZN_TIMER_ARITY; the rest of the property test is arity-agnostic. */
+#define PROP_ARITY  2
+#define PROP_TIMERS 256
+#define PROP_OPS    2000
+
+static zn_Timer *g_prop[PROP_TIMERS];
+static zn_Time   g_prop_emit[PROP_TIMERS];
+static int       g_prop_armed[PROP_TIMERS];
+static int       g_prop_fired[PROP_TIMERS];
+static zn_Time   g_prop_fired_emit[PROP_TIMERS];
+static int       g_prop_nfired;
+static unsigned  g_prop_seed = 12345u;
+
+static unsigned prop_rand(void) {
+    g_prop_seed = g_prop_seed * 1103515245u + 12345u;
+    return (g_prop_seed >> 8) & 0xFFFFFFu;
+}
+
+static zn_Time prop_min(void) {
+    zn_Time min = ZN_FOREVER;
+    int     i;
+    for (i = 0; i < PROP_TIMERS; ++i)
+        if (g_prop_armed[i] && g_prop_emit[i] < min) min = g_prop_emit[i];
+    return min;
+}
+
+static zn_Time cb_prop(void *ud, zn_Timer *timer, zn_Time elapsed) {
+    (void)elapsed;
+    if (g_prop_nfired < PROP_TIMERS) {
+        g_prop_fired[g_prop_nfired] = (int)(size_t)ud;
+        g_prop_fired_emit[g_prop_nfired] = timer->emit;
+    }
+    g_prop_nfired++;
+    return 0;
+}
+
+/* the model and the heap must agree on size, nexttime, every index and the
+ * parent/child order; a broken sift shows up here even when the test never
+ * observes a wrong firing order */
+static void prop_check(zn_State *S) {
+    zn_Time  min = prop_min();
+    unsigned used = 0;
+    int      i;
+
+    for (i = 0; i < PROP_TIMERS; ++i) used += (unsigned)g_prop_armed[i];
+    asserteq(S->ts.used, used);
+    asserteq(S->ts.nexttime, min);
+    for (i = 0; i < PROP_TIMERS; ++i) {
+        if (!g_prop_armed[i]) {
+            asserteq(g_prop[i]->index, ZN_TIMER_NOINDEX);
+            continue;
+        }
+        assertok(g_prop[i]->index < S->ts.used);
+        assertok(S->ts.heap[g_prop[i]->index] == g_prop[i]);
+        asserteq(g_prop[i]->emit, g_prop_emit[i]);
+    }
+    for (i = 0; i < (int)S->ts.used; ++i) {
+        unsigned p;
+        asserteq(S->ts.heap[i]->index, (unsigned)i);
+        if (i == 0) continue;
+        p = (unsigned)((i - 1) / PROP_ARITY);
+        assertok(S->ts.heap[p]->emit <= S->ts.heap[i]->emit);
+    }
+}
+
+TEST(timer_heap_property) {
+    zn_State *S = zt_open();
+    int       i, op;
+
+    g_prop_seed = 12345u;
+    memset(g_prop_armed, 0, sizeof(g_prop_armed));
+    for (i = 0; i < PROP_TIMERS; ++i) {
+        g_prop[i] = zn_newtimer(S, cb_prop, (void *)(size_t)i);
+        assertok(g_prop[i] != NULL);
+        assertok(zn_starttimer(g_prop[i], (zn_Time)(prop_rand() % 5000))
+                 == ZN_OK);
+        g_prop_armed[i] = 1;
+        g_prop_emit[i] = g_prop[i]->emit;
+    }
+    prop_check(S);
+
+    for (op = 0; op < PROP_OPS; ++op) {
+        unsigned r = prop_rand() % 4;
+        int      id = (int)(prop_rand() % PROP_TIMERS);
+
+        if (r < 2) { /* arm or re-arm */
+            assertok(zn_starttimer(g_prop[id], (zn_Time)(prop_rand() % 5000))
+                     == ZN_OK);
+            g_prop_armed[id] = 1;
+            g_prop_emit[id] = g_prop[id]->emit;
+        } else if (r == 2) { /* cancel, armed or not */
+            zn_canceltimer(g_prop[id]);
+            g_prop_armed[id] = 0;
+        } else if (prop_min() != ZN_FOREVER) { /* fire up to a synthetic now */
+            zn_Time target = prop_min() + (zn_Time)(prop_rand() % 800);
+            int     expect = 0, j;
+
+            for (j = 0; j < PROP_TIMERS; ++j)
+                if (g_prop_armed[j] && g_prop_emit[j] <= target) ++expect;
+            g_prop_nfired = 0;
+            znT_update(&S->ts, target);
+            asserteq(g_prop_nfired, expect);
+            for (j = 0; j < g_prop_nfired; ++j) {
+                int fired = g_prop_fired[j];
+                assertok(fired >= 0 && fired < PROP_TIMERS);
+                assertok(g_prop_armed[fired]);
+                assertok(g_prop_emit[fired] <= target);
+                assertok(g_prop_fired_emit[j] == g_prop_emit[fired]);
+                g_prop_armed[fired] = 0;
+                if (j > 0)
+                    assertok(g_prop_fired_emit[j - 1] <= g_prop_fired_emit[j]);
+            }
+        }
+        prop_check(S);
+    }
+
+    for (i = 0; i < PROP_TIMERS; ++i) {
+        zn_canceltimer(g_prop[i]);
+        zn_deltimer(g_prop[i]);
+    }
+    asserteq(S->ts.used, 0);
+    asserteq(S->ts.nexttime, ZN_FOREVER);
+    zt_close(S);
+}
+
 #include "timer_test.gen.inc"
