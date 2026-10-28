@@ -259,4 +259,34 @@ int zt_peer_is(const zn_PeerInfo *info, const char *addr, unsigned port) {
     return strcmp(info->addr, addr) == 0 && info->port == port;
 }
 
+/* ---- manual dispatch (white box) ----
+ * The kernel will not report "ready" for a listener or a UDP socket that has
+ * nothing to accept, so a spurious readiness report can only be injected by
+ * calling the backend entry point.  Only the name/shape of that entry point
+ * differs between backends; the spare int keeps one signature for both. */
+
+#if !defined(_WIN32)
+
+void zt_dispatch_accept(zn_Accept *accept, int error_event) {
+#if defined(ZN_USE_SELECT)
+    zn_onaccept(accept, error_event); /* 1: the fd is in exceptfds */
+#elif defined(__linux__)
+    zn_onaccept(accept, error_event ? EPOLLERR : EPOLLIN);
+#else
+    zn_onaccept(accept, EVFILT_READ, error_event ? EV_ERROR : 0);
+#endif
+}
+
+void zt_dispatch_udp(zn_Udp *udp, int error_event) {
+#if defined(ZN_USE_SELECT)
+    zn_onrecvfrom(udp, error_event);
+#elif defined(__linux__)
+    zn_onrecvfrom(udp, error_event ? EPOLLERR : EPOLLIN);
+#else
+    zn_onrecvfrom(udp, EVFILT_READ, error_event ? EV_ERROR : 0);
+#endif
+}
+
+#endif /* !_WIN32 */
+
 #endif /* ZTEST_H */

@@ -187,7 +187,10 @@ void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
 
     (void)ud;
 
-    /* if err is not ZN_OK, we meet errors. simple return. */
+    /* if err is not ZN_OK, we meet errors.  the listener is still open but
+     * no longer armed: call zn_accept() again (with a backoff) to keep
+     * serving, or zn_delaccept() to stop.  re-arming immediately could spin
+     * if the error is persistent, so this example stops here. */
     if (err != ZN_OK) {
         fprintf(stderr, "[%p] some bad thing happens to server\n"
                 "  when accept connection: %s\n", (void*)accept, zn_strerror(err));

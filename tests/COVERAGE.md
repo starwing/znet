@@ -6,26 +6,29 @@
 
 | 平台 / 后端 | `znet.h` 行 | `zn_buffer.h` 行 | 合计 |
 | --- | --- | --- | --- |
-| macOS：kqueue + select | 94.6%（1015/1073） | 99.2%（242/244） | 95.4%（1257/1317） |
-| Linux：epoll + select | 94.2%（935/993） | 99.1%（217/219） | 95.0%（1152/1212） |
-| POSIX 合并：kqueue + epoll + select | 93.9%（1135/1209） | 99.2%（242/244） | 94.8%（1377/1453） |
+| macOS：kqueue + select | 95.1%（1059/1113） | 99.2%（242/244） | 95.9%（1301/1357） |
+| Linux：epoll + select | 95.1%（983/1034） | 99.1%（217/219） | 95.8%（1200/1253） |
+| POSIX 合并：kqueue + epoll + select | 95.0%（1192/1255） | 99.2%（242/244） | 95.7%（1434/1499） |
 
-macOS 明细：`znet.h` 函数 100%（92/92）、分支 76.7%（461/601）；
+macOS 明细：`znet.h` 函数 100%（95/95）、分支 78.3%（483/617）；
 `zn_buffer.h` 函数 100%（26/26）、分支 85.8%（115/134）。
-POSIX 合并的分支覆盖为 86.8%（782/901）。
+POSIX 合并的分支覆盖为 86.9%（679/781）。
 
-**没有达到 100% 行覆盖。** 以 macOS 的报告计，剩余未执行行是 `znet.h` 58 行、
-`zn_buffer.h` 2 行；把 Linux 的 epoll 行加进来做并集后是 `znet.h` 74 行、
+**没有达到 100% 行覆盖。** 以 macOS 的报告计，剩余未执行行是 `znet.h` 54 行、
+`zn_buffer.h` 2 行；把 Linux 的 epoll 行加进来做并集后是 `znet.h` 63 行、
 `zn_buffer.h` 2 行。它们不是“还没写到测试”，而是分属三类当前测试架构无法或不应触发的
 代码：
 
 1. 只有 Windows/IOCP 才会走到的公共 API 失败清理（9 行）；
-2. 需要故障注入或操作系统资源耗尽的错误路径（macOS 49 行；POSIX 并集再加 16 行）；
+2. 需要故障注入或操作系统资源耗尽的错误路径（macOS 45 行；POSIX 并集再加 9 行）；
 3. 剩下的防御性代码（`znet.h` 0 行；`zn_buffer.h` 2 行，见 §C）。
 
 2026-10-28 的两次修复（TODO 1.3/1.4）之后，原来的“死代码”7 行已经处理完：三处
 `default: ;` 删除、select 的重复 `FD_SETSIZE` 检查改成 assert、select 的 except 派发
-send 错误分支用 `tcp_select_except_send_error` 证明可达。剩余两行都在 `zn_buffer.h`，
+send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 L6/L7 修复（TODO 1.8）
+把 accept/UDP 的 `EAGAIN`、监听器/UDP 的错误事件变成可测分支（4 个新测试），所以行覆盖
+从 93.9/94.2/94.6 升到 95.1/95.1/95.0；新增但不可确定覆盖的只剩 `EINTR`/`ECONNABORTED`
+和 `fd >= FD_SETSIZE`/`zn_tcpfromfd` 失败这几条（§B）。剩余两行都在 `zn_buffer.h`，
 是刻意保留的（§C）。
 
 ## 统计口径
@@ -64,6 +67,11 @@ send 错误分支用 `tcp_select_except_send_error` 证明可达。剩余两行�
 | `recv_default_handlers`（扩展） | 默认 packet handler / `packet_ud` 初始化 |
 | `sendbuffer_merge_oom` | `sendfinish` 合并 pending 时分配失败 |
 | `recv_split_header`（扩展） | 慢路径保留不完整头部 |
+| `tcp_listener_is_nonblocking` | reactive `znP_listen` 的 `znU_set_nonblock`（L7） |
+| `tcp_accept_spurious_ready` | 三个后端的 `zn_onaccept` 在 `EAGAIN` 时解除 armed 并回调 `ZN_ERROR` |
+| `udp_recvfrom_spurious_ready` | 三个后端的 `zn_onrecvfrom` 同上 |
+| `tcp_accept_after_aborted_clients` | 连续 RST 后监听器仍可用（`ECONNABORTED` 若出现则走“保持 armed”） |
+| `tcp_accept_error_event` / `udp_recvfrom_error_event` | 监听器/UDP 的错误事件（select exceptfds、`EPOLLERR`、`EV_ERROR`）只解除 armed，socket 不关闭 |
 
 ## 剩余未覆盖行与原因
 
@@ -75,7 +83,7 @@ send 错误分支用 `tcp_select_except_send_error` 证明可达。剩余两行�
 同步失败才会返回错误。macOS/Linux 的覆盖率二进制里这些行永远不会执行。
 要覆盖它们必须跑 Windows CI（IOCP），本机不能声称验证。
 
-### B. 需要故障注入 / 资源耗尽（macOS 49 行；POSIX 并集 65 行）
+### B. 需要故障注入 / 资源耗尽（macOS 45 行；POSIX 并集 54 行）
 
 这些行都要求某个系统调用或分配在特定时刻失败。测试套件没有 mock libc，也不打算为了
 覆盖率去改写分配器。具体行号会随代码漂移，用 `just uncovered` 查当前清单；
@@ -85,7 +93,7 @@ send 错误分支用 `tcp_select_except_send_error` 证明可达。剩余两行�
 | --- | --- |
 | 分配/扩容失败 | `zn_starttimer`（堆扩容 `realloc`）、各后端的 `zn_tcpfromfd`（`zn_newtcp` 返回 NULL）、reactive 的 `znF_register_all`/`znF_register_in` 失败 |
 | fd 耗尽 / `FD_SETSIZE` | select 的 `znP_connect`、`zn_onaccept`、`znP_init`（`socketpair` 编号越界） |
-| `accept`/`recvfrom`/`send` 的系统错误 | 各后端的 `zn_onaccept`（EMFILE 等）、`zn_onrecvfrom`（非 EAGAIN）、`zn_onrecv`/`zn_onsend` 的 `znU_error` 分支 |
+| `accept`/`recvfrom`/`send` 的系统错误 | 各后端的 `zn_onaccept`（EMFILE 等）、`zn_onrecvfrom`（非 EAGAIN）、`zn_onrecv`/`zn_onsend` 的 `znU_error` 分支；`EINTR`/`ECONNABORTED` 的“保持 armed”分支（构造不出确定性的信号/半开连接） |
 | bind/listen/close 失败 | `znP_listen`（`listen` 失败）、`znP_closetcp`/`znP_closeaccept` 的 `close` 失败 |
 | 事件循环本身出错 | select `znP_poll` 的 `select(2)` 错误、kqueue `znP_poll` 的 `kevent(2)` 错误、epoll `znP_poll` 的 `epoll_wait(2)` 错误 |
 | 状态查询失败 | select `zn_onconnect` 的 `getsockopt(SO_ERROR)` 失败（置 `so_error = 0`） |

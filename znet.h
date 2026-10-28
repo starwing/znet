@@ -1349,8 +1349,10 @@ static int znP_connect(zn_Tcp *tcp, zn_SockAddr *addr, int type) {
     int err = zn_tcpfromfamily(tcp, znU_family(addr), type);
     if (err != ZN_OK) return err;
 
-    if (!lpConnectEx && !zn_getextension(tcp->socket, &gid, &lpConnectEx))
+    if (!lpConnectEx && !zn_getextension(tcp->socket, &gid, &lpConnectEx)) {
+        zn_closetcp(tcp); /* leave the object reusable, not holding a socket */
         return ZN_ECONNECT;
+    }
 
     if (!lpConnectEx(tcp->socket, &addr->addr, znU_size(addr),
                 buf, 0, &dwLength, &tcp->connect_request.overlapped)
@@ -1517,6 +1519,17 @@ static int znP_accept(zn_Accept *accept) {
     return ZN_OK;
 }
 
+/* the accepted socket belongs to the accept until it is handed to a zn_Tcp:
+ * closing it here is what keeps a re-armed zn_accept() from overwriting (and
+ * so leaking) it */
+static void znP_failaccept(zn_Accept *accept, zn_AcceptHandler *cb) {
+    if (accept->client != INVALID_SOCKET) {
+        closesocket(accept->client);
+        accept->client = INVALID_SOCKET;
+    }
+    cb(accept->accept_ud, accept, ZN_ERROR, NULL);
+}
+
 static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
     static LPFN_GETACCEPTEXSOCKADDRS lpGetAcceptExSockaddrs = NULL;
     static GUID gid = WSAID_GETACCEPTEXSOCKADDRS;
@@ -1530,10 +1543,10 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
         ZN_PUTOBJECT(accept);
         return;
     }
+    assert(cb != NULL); /* one completion per armed accept */
 
     if (!bSuccess) {
-        /* zn_closeaccept(accept); */
-        cb(accept->accept_ud, accept, ZN_ERROR, NULL);
+        znP_failaccept(accept, cb);
         return;
     }
 
@@ -1541,8 +1554,10 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
     if (accept->type == SOCK_STREAM) znU_set_nodelay(accept->client);
 
     if (!lpGetAcceptExSockaddrs && !zn_getextension(accept->client,
-                &gid, &lpGetAcceptExSockaddrs))
+                &gid, &lpGetAcceptExSockaddrs)) {
+        znP_failaccept(accept, cb);
         return;
+    }
 
     lpGetAcceptExSockaddrs(accept->recv_buffer,
             accept->recv_length,
@@ -1551,13 +1566,17 @@ static void zn_onaccept(zn_Accept *accept, BOOL bSuccess) {
             &paddr1, &tmp1, &paddr2, &tmp2);
 
     tcp = zn_newtcp(accept->S);
+    if (tcp == NULL) { /* out of memory, or the state is closing */
+        znP_failaccept(accept, cb);
+        return;
+    }
     tcp->socket = accept->client;
     accept->client = INVALID_SOCKET;
     if (CreateIoCompletionPort((HANDLE)tcp->socket,
                 tcp->S->iocp, (ULONG_PTR)tcp, 1) == NULL)
     {
-        closesocket(tcp->socket);
-        ZN_PUTOBJECT(tcp);
+        zn_deltcp(tcp); /* closes the socket and recycles the object */
+        cb(accept->accept_ud, accept, ZN_ERROR, NULL);
         return;
     }
 
@@ -1802,6 +1821,21 @@ struct zn_Udp {
     zn_DataBuffer recv_buffer;
 };
 
+/* the operation is consumed; the socket stays open for a later re-arm */
+static void znP_disarmaccept(zn_Accept *accept) {
+    znF_unregister_in(accept->S, accept->socket);
+    accept->accept_handler = NULL;
+    zn_release(accept->S);
+}
+
+static void znP_disarmudp(zn_Udp *udp) {
+    znF_unregister_in(udp->S, udp->socket);
+    udp->recv_handler = NULL;
+    udp->recv_buffer.buf = NULL;
+    udp->recv_buffer.len = 0;
+    zn_release(udp->S);
+}
+
 /* tcp */
 
 static int znP_send(zn_Tcp *tcp)
@@ -1992,29 +2026,41 @@ static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
 
 static void zn_onaccept(zn_Accept *a, int err) {
     zn_AcceptHandler *cb = a->accept_handler;
-    if (a->accept_handler == NULL) return;
-    a->accept_handler = NULL;
-    zn_release(a->S);
-    znF_unregister_in(a->S, a->socket);
+    zn_SockAddr remote_addr;
+    socklen_t addr_size = sizeof(remote_addr);
+    zn_Tcp *tcp;
+    int fd;
 
-    while (!err) {
-        zn_SockAddr remote_addr;
-        socklen_t addr_size = sizeof(remote_addr);
-        int ret = accept(a->socket, &remote_addr.addr, &addr_size);
-        if (ret >= FD_SETSIZE)
-            close(ret);
-        else if (ret >= 0) {
-            zn_Tcp *tcp = zn_tcpfromfd(a->S, ret, &remote_addr);
-            if (tcp == NULL) return;
-            if (a->S->nfds < ret) a->S->nfds = ret;
-            cb(a->accept_ud, a, ZN_OK, tcp);
-        } else if (errno != EAGAIN && errno != EWOULDBLOCK)
-            break;
+    if (cb == NULL) return; /* closed by an earlier callback in this batch */
+    if (err) {
+        znP_disarmaccept(a);
+        cb(a->accept_ud, a, ZN_ERROR, NULL);
         return;
     }
-
-    zn_closeaccept(a);
-    cb(a->accept_ud, a, ZN_ERROR, NULL);
+    fd = accept(a->socket, &remote_addr.addr, &addr_size);
+    if (fd < 0) {
+        int syserr = errno;
+        if (syserr == EINTR || syserr == ECONNABORTED)
+            return; /* nothing was lost; the next readiness report retries */
+        /* EAGAIN here means the report and the accept queue disagreed; that
+         * is not a state a retry can fix, so surface it once */
+        znP_disarmaccept(a);
+        cb(a->accept_ud, a, (syserr == EAGAIN || syserr == EWOULDBLOCK)
+                ? ZN_ERROR : znU_error(syserr), NULL);
+        return;
+    }
+    if (fd >= FD_SETSIZE) { /* select can never track this connection */
+        close(fd);
+        return; /* the accept stays armed */
+    }
+    znP_disarmaccept(a);
+    tcp = zn_tcpfromfd(a->S, fd, &remote_addr);
+    if (tcp == NULL) {
+        cb(a->accept_ud, a, ZN_ERROR, NULL);
+        return;
+    }
+    if (a->S->nfds < fd) a->S->nfds = fd;
+    cb(a->accept_ud, a, ZN_OK, tcp);
 }
 
 /* udp */
@@ -2057,29 +2103,32 @@ static int znP_recvfrom(zn_Udp *udp) {
 static void zn_onrecvfrom(zn_Udp *udp, int err) {
     zn_DataBuffer buff = udp->recv_buffer;
     zn_RecvFromHandler *cb = udp->recv_handler;
-    assert(udp->recv_handler != NULL);
-    udp->recv_handler = NULL;
-    udp->recv_buffer.buf = NULL;
-    udp->recv_buffer.len = 0;
-    zn_release(udp->S);
-    znF_unregister_in(udp->S, udp->socket);
+    zn_SockAddr remote_addr;
+    zn_PeerInfo info;
+    socklen_t addr_size;
+    int bytes;
 
-    if (err)
+    if (cb == NULL) return; /* closed by an earlier callback in this batch */
+    if (err) {
+        znP_disarmudp(udp);
         cb(udp->recv_ud, udp, ZN_ERROR, 0, NULL, 0);
-    else {
-        zn_SockAddr remote_addr;
-        socklen_t addr_size;
-        int bytes;
-        memset(&remote_addr, 0, addr_size = sizeof(remote_addr));
-        bytes = recvfrom(udp->socket, buff.buf, buff.len, 0,
-                &remote_addr.addr, &addr_size);
-        if (bytes >= 0) {
-            zn_PeerInfo info;
-            znU_setinfo(&remote_addr, &info);
-            cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
-        } else if (errno != EAGAIN && errno != EWOULDBLOCK)
-            cb(udp->recv_ud, udp, znU_error(errno), 0, NULL, 0);
+        return;
     }
+    memset(&remote_addr, 0, addr_size = sizeof(remote_addr));
+    bytes = recvfrom(udp->socket, buff.buf, buff.len, 0,
+            &remote_addr.addr, &addr_size);
+    if (bytes < 0) {
+        int syserr = errno;
+        if (syserr == EINTR)
+            return; /* nothing was lost; the next readiness report retries */
+        znP_disarmudp(udp);
+        cb(udp->recv_ud, udp, (syserr == EAGAIN || syserr == EWOULDBLOCK)
+                ? ZN_ERROR : znU_error(syserr), 0, NULL, 0);
+        return;
+    }
+    znP_disarmudp(udp);
+    znU_setinfo(&remote_addr, &info);
+    cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
 }
 
 /* poll */
@@ -2218,6 +2267,21 @@ struct zn_Udp {
     zn_SocketInfo info;
     zn_DataBuffer recv_buffer;
 };
+
+/* the operation is consumed (one callback follows); the socket stays open.
+ * registration here is per listen/init, not per operation, so disarming must
+ * not unregister: a re-armed call does not re-register. */
+static void znP_disarmaccept(zn_Accept *accept) {
+    accept->accept_handler = NULL;
+    zn_release(accept->S);
+}
+
+static void znP_disarmudp(zn_Udp *udp) {
+    udp->recv_handler = NULL;
+    udp->recv_buffer.buf = NULL;
+    udp->recv_buffer.len = 0;
+    zn_release(udp->S);
+}
 
 /* tcp */
 
@@ -2420,6 +2484,8 @@ static int znP_listen(zn_Accept *accept, zn_SockAddr *addr) {
         close(fd);
         return ZN_EPOLL;
     }
+    /* accept() must never block the loop: readiness can go stale */
+    znU_set_nonblock(fd);
     znU_set_reuseaddr(fd);
     if (bind(fd, &addr->addr, znU_size(addr)) != 0) {
         close(fd);
@@ -2530,59 +2596,66 @@ static void zn_onevent(zn_Tcp *tcp, int eventmask) {
 
 static void zn_onaccept(zn_Accept *a, int eventmask) {
     zn_AcceptHandler *cb = a->accept_handler;
-    a->accept_handler = NULL;
-    if (cb == NULL || a->socket == -1) return;
-    zn_release(a->S);
+    zn_SockAddr remote_addr;
+    socklen_t addr_size = sizeof(remote_addr);
+    zn_Tcp *tcp;
+    int fd;
 
+    if (cb == NULL || a->socket == -1) return; /* not armed / closed */
     if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
-        zn_closeaccept(a);
+        znP_disarmaccept(a);
         cb(a->accept_ud, a, ZN_ERROR, NULL);
         return;
     }
-
-    if ((eventmask & EPOLLIN) != 0) {
-        zn_SockAddr remote_addr;
-        socklen_t addr_size = sizeof(zn_SockAddr);
-        int ret = accept(a->socket, &remote_addr.addr, &addr_size);
-        if (ret >= 0) {
-            zn_Tcp *tcp = zn_tcpfromfd(a->S, ret, &remote_addr);
-            if (tcp != NULL) cb(a->accept_ud, a, ZN_OK, tcp);
-        } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            int err = znU_error(errno);
-            zn_closeaccept(a);
-            cb(a->accept_ud, a, err, NULL);
-        }
+    if ((eventmask & EPOLLIN) == 0) return;
+    fd = accept(a->socket, &remote_addr.addr, &addr_size);
+    if (fd < 0) {
+        int syserr = errno;
+        if (syserr == EINTR || syserr == ECONNABORTED)
+            return; /* nothing was lost; the next readiness report retries */
+        /* EAGAIN here means the report and the accept queue disagreed; that
+         * is not a state a retry can fix, so surface it once */
+        znP_disarmaccept(a);
+        cb(a->accept_ud, a, (syserr == EAGAIN || syserr == EWOULDBLOCK)
+                ? ZN_ERROR : znU_error(syserr), NULL);
+        return;
     }
+    znP_disarmaccept(a);
+    tcp = zn_tcpfromfd(a->S, fd, &remote_addr);
+    if (tcp == NULL) cb(a->accept_ud, a, ZN_ERROR, NULL);
+    else cb(a->accept_ud, a, ZN_OK, tcp);
 }
 
 static void zn_onrecvfrom(zn_Udp *udp, int eventmask) {
     zn_DataBuffer buff = udp->recv_buffer;
     zn_RecvFromHandler *cb = udp->recv_handler;
-    if (cb == NULL || udp->socket == -1) return;
-    udp->recv_handler = NULL;
-    udp->recv_buffer.buf = NULL;
-    udp->recv_buffer.len = 0;
-    zn_release(udp->S);
+    zn_SockAddr remote_addr;
+    zn_PeerInfo info;
+    socklen_t addr_size;
+    int bytes;
 
+    if (cb == NULL || udp->socket == -1) return; /* not armed / closed */
     if ((eventmask & (EPOLLERR|EPOLLHUP)) != 0) {
-        cb(udp->recv_ud, udp, ZN_ERROR, 0, "0.0.0.0", 0);
+        znP_disarmudp(udp);
+        cb(udp->recv_ud, udp, ZN_ERROR, 0, NULL, 0);
         return;
     }
-
-    if ((eventmask & EPOLLIN) != 0) {
-        zn_SockAddr remote_addr;
-        socklen_t addr_size;
-        int bytes;
-        memset(&remote_addr, 0, addr_size = sizeof(remote_addr));
-        bytes = recvfrom(udp->socket, buff.buf, buff.len, 0,
-                &remote_addr.addr, &addr_size);
-        if (bytes >= 0) {
-            zn_PeerInfo info;
-            znU_setinfo(&remote_addr, &info);
-            cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
-        } else if (errno != EAGAIN && errno != EWOULDBLOCK)
-            cb(udp->recv_ud, udp, znU_error(errno), 0, NULL, 0);
+    if ((eventmask & EPOLLIN) == 0) return;
+    memset(&remote_addr, 0, addr_size = sizeof(remote_addr));
+    bytes = recvfrom(udp->socket, buff.buf, buff.len, 0,
+            &remote_addr.addr, &addr_size);
+    if (bytes < 0) {
+        int syserr = errno;
+        if (syserr == EINTR)
+            return; /* nothing was lost; the next readiness report retries */
+        znP_disarmudp(udp);
+        cb(udp->recv_ud, udp, (syserr == EAGAIN || syserr == EWOULDBLOCK)
+                ? ZN_ERROR : znU_error(syserr), 0, NULL, 0);
+        return;
     }
+    znP_disarmudp(udp);
+    znU_setinfo(&remote_addr, &info);
+    cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
 }
 
 static void znP_dispatch(zn_State *S, struct epoll_event *evt) {
@@ -2717,59 +2790,66 @@ static void zn_onevent(zn_Tcp *tcp, int filter, int flags) {
 
 static void zn_onaccept(zn_Accept *a, int filter, int flags) {
     zn_AcceptHandler *cb = a->accept_handler;
-    a->accept_handler = NULL;
-    if (cb == NULL || a->socket == -1) return;
-    zn_release(a->S);
+    zn_SockAddr remote_addr;
+    socklen_t addr_size = sizeof(remote_addr);
+    zn_Tcp *tcp;
+    int fd;
 
+    if (cb == NULL || a->socket == -1) return; /* not armed / closed */
     if ((flags & (EV_EOF|EV_ERROR)) != 0) {
-        zn_closeaccept(a);
+        znP_disarmaccept(a);
         cb(a->accept_ud, a, ZN_ERROR, NULL);
         return;
     }
-
-    if (filter == EVFILT_READ) {
-        zn_SockAddr remote_addr;
-        socklen_t addr_size = sizeof(zn_SockAddr);
-        int ret = accept(a->socket, &remote_addr.addr, &addr_size);
-        if (ret >= 0) {
-            zn_Tcp *tcp = zn_tcpfromfd(a->S, ret, &remote_addr);
-            if (tcp != NULL) cb(a->accept_ud, a, ZN_OK, tcp);
-        } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            int err = znU_error(errno);
-            zn_closeaccept(a);
-            cb(a->accept_ud, a, err, NULL);
-        }
+    if (filter != EVFILT_READ) return;
+    fd = accept(a->socket, &remote_addr.addr, &addr_size);
+    if (fd < 0) {
+        int syserr = errno;
+        if (syserr == EINTR || syserr == ECONNABORTED)
+            return; /* nothing was lost; the next readiness report retries */
+        /* EAGAIN here means the report and the accept queue disagreed; that
+         * is not a state a retry can fix, so surface it once */
+        znP_disarmaccept(a);
+        cb(a->accept_ud, a, (syserr == EAGAIN || syserr == EWOULDBLOCK)
+                ? ZN_ERROR : znU_error(syserr), NULL);
+        return;
     }
+    znP_disarmaccept(a);
+    tcp = zn_tcpfromfd(a->S, fd, &remote_addr);
+    if (tcp == NULL) cb(a->accept_ud, a, ZN_ERROR, NULL);
+    else cb(a->accept_ud, a, ZN_OK, tcp);
 }
 
 static void zn_onrecvfrom(zn_Udp *udp, int filter, int flags) {
     zn_DataBuffer buff = udp->recv_buffer;
     zn_RecvFromHandler *cb = udp->recv_handler;
-    if (cb == NULL) return;
-    udp->recv_handler = NULL;
-    udp->recv_buffer.buf = NULL;
-    udp->recv_buffer.len = 0;
-    zn_release(udp->S);
+    zn_SockAddr remote_addr;
+    zn_PeerInfo info;
+    socklen_t addr_size;
+    int bytes;
 
-    if (flags & (EV_EOF|EV_ERROR)) {
+    if (cb == NULL) return; /* not armed / closed */
+    if ((flags & (EV_EOF|EV_ERROR)) != 0) {
+        znP_disarmudp(udp);
         cb(udp->recv_ud, udp, ZN_ERROR, 0, NULL, 0);
         return;
     }
-
-    if (filter == EVFILT_READ) {
-        zn_SockAddr remote_addr;
-        socklen_t addr_size;
-        int bytes;
-        memset(&remote_addr, 0, addr_size = sizeof(remote_addr));
-        bytes = recvfrom(udp->socket, buff.buf, buff.len, 0,
-                &remote_addr.addr, &addr_size);
-        if (bytes >= 0) {
-            zn_PeerInfo info;
-            znU_setinfo(&remote_addr, &info);
-            cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
-        } else if (errno != EAGAIN && errno != EWOULDBLOCK)
-            cb(udp->recv_ud, udp, znU_error(errno), 0, NULL, 0);
+    if (filter != EVFILT_READ) return;
+    memset(&remote_addr, 0, addr_size = sizeof(remote_addr));
+    bytes = recvfrom(udp->socket, buff.buf, buff.len, 0,
+            &remote_addr.addr, &addr_size);
+    if (bytes < 0) {
+        int syserr = errno;
+        if (syserr == EINTR)
+            return; /* nothing was lost; the next readiness report retries */
+        znP_disarmudp(udp);
+        cb(udp->recv_ud, udp, (syserr == EAGAIN || syserr == EWOULDBLOCK)
+                ? ZN_ERROR : znU_error(syserr), 0, NULL, 0);
+        return;
     }
+    znP_disarmudp(udp);
+    znU_setinfo(&remote_addr, &info);
+    cb(udp->recv_ud, udp, ZN_OK, bytes, info.addr, info.port);
 }
 
 static void znP_dispatch(zn_State *S, struct kevent *evt) {

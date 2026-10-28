@@ -1732,4 +1732,190 @@ TEST(tcp_accept_twice) {
     zn_close(S);
 }
 
+/* ---- L6/L7: a readiness report the accept queue cannot back up -----------
+ * "Readable" for a listening socket is derived from the accept queue itself,
+ * so `accept()` returning EAGAIN means the report and the queue disagreed:
+ * another owner drained the queue, or the kernel dropped the connection.
+ * Before the fix that state consumed the armed accept silently (select) or
+ * blocked the whole loop in accept() (epoll/kqueue: the listener was never
+ * set non-blocking), so these tests inject the readiness by hand -- the
+ * kernel will not produce it on demand. */
+
+#ifndef _WIN32
+
+# include <fcntl.h>       /* fcntl(), O_NONBLOCK */
+# include <netinet/in.h>  /* struct sockaddr_in */
+# include <arpa/inet.h>   /* htons(), htonl() */
+
+typedef struct sp_ctx {
+    int     ok;
+    int     err;
+    zn_Tcp *tcp;
+} sp_ctx;
+
+static void sp_on_accept(void *ud, zn_Accept *accept, unsigned err,
+                         zn_Tcp *tcp) {
+    sp_ctx *c = (sp_ctx *)ud;
+    (void)accept;
+    if (err == ZN_OK) {
+        c->ok++;
+        c->tcp = tcp;
+    } else
+        c->err++;
+}
+
+/* re-arm after every accepted connection: the callback is consumed by each
+ * completion, so a listener that is not re-armed stops accepting */
+static void sp_on_accept_rearm(void *ud, zn_Accept *accept, unsigned err,
+                               zn_Tcp *tcp) {
+    sp_ctx *c = (sp_ctx *)ud;
+    if (err == ZN_OK) {
+        c->ok++;
+        zn_deltcp(tcp); /* the payload is irrelevant: close and keep serving */
+    } else
+        c->err++;
+    asserteq(zn_accept(accept, sp_on_accept_rearm, c), ZN_OK);
+}
+
+/* a plain blocking client: these tests only need something in the queue */
+static int sp_connect(unsigned port) {
+    struct sockaddr_in sa;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    assertok(fd >= 0);
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((unsigned short)port);
+    sa.sin_addr.s_addr = htonl(0x7f000001u);
+    assertok(connect(fd, (struct sockaddr *)&sa, (socklen_t)sizeof(sa)) == 0);
+    return fd;
+}
+
+static void sp_connect_and_abort(unsigned port) {
+    struct linger lg;
+    int fd = sp_connect(port);
+    lg.l_onoff = 1;
+    lg.l_linger = 0;
+    assertok(setsockopt(fd, SOL_SOCKET, SO_LINGER, (const void *)&lg,
+                        (socklen_t)sizeof(lg)) == 0);
+    close(fd); /* RST: the completed connection dies before it is accepted */
+}
+
+/* the reactive backends handed a blocking listen socket to accept(), so this
+ * used to hang the loop; the guard turns that into a failure, not a stall */
+TEST(tcp_listener_is_nonblocking) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_newaccept(S, 0);
+
+    asserteq(zn_listen(accept, "127.0.0.1", 0), ZN_OK);
+    assertok((fcntl(accept->socket, F_GETFL) & O_NONBLOCK) != 0);
+    zn_delaccept(accept);
+    zt_close(S);
+}
+
+TEST(tcp_accept_spurious_ready) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_newaccept(S, 0);
+    sp_ctx     c;
+    zt_Loop    L;
+    unsigned   port;
+    int        fd;
+
+    memset(&c, 0, sizeof(c));
+    asserteq(zn_listen(accept, "127.0.0.1", 0), ZN_OK);
+    port = zt_accept_port(accept);
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK);
+    asserteq(S->waitings, 1);
+
+    zt_guard_start(1000);
+    zt_dispatch_accept(accept, 0);
+    zt_guard_stop();
+
+    asserteq(c.err, 1); /* surfaced exactly once, not retried in silence */
+    asserteq(c.ok, 0);
+    asserteq(S->waitings, 0);
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK); /* still usable */
+
+    fd = sp_connect(port); /* a real connection still gets through */
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.ok == 1);
+    zt_end(&L);
+    asserteq(c.ok, 1);
+
+    zn_deltcp(c.tcp);
+    close(fd);
+    zn_delaccept(accept);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+/* an error event on the listener (select exceptfds / EPOLLERR / EV_ERROR)
+ * used to close the socket; it must only disarm it, because a listener error
+ * is not proof that the listening socket is unusable. */
+TEST(tcp_accept_error_event) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_newaccept(S, 0);
+    sp_ctx     c;
+    zt_Loop    L;
+    unsigned   port;
+    int        fd;
+
+    memset(&c, 0, sizeof(c));
+    asserteq(zn_listen(accept, "127.0.0.1", 0), ZN_OK);
+    port = zt_accept_port(accept);
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK);
+
+    zt_dispatch_accept(accept, 1);
+    asserteq(c.err, 1);
+    asserteq(c.ok, 0);
+    asserteq(S->waitings, 0);
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK); /* still usable */
+
+    fd = sp_connect(port);
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.ok == 1);
+    zt_end(&L);
+    asserteq(c.ok, 1);
+
+    zn_deltcp(c.tcp);
+    close(fd);
+    zn_delaccept(accept);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+/* a stream of clients that die right after the handshake must not cost the
+ * listener: no error callback, no closed socket, and the next healthy client
+ * is still accepted.  (A "give up after N spurious wakeups" retry budget
+ * would fail this test, which is one reason there is none.) */
+TEST(tcp_accept_after_aborted_clients) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_newaccept(S, 0);
+    sp_ctx     c;
+    zt_Loop    L;
+    unsigned   port;
+    int        before, fd, i;
+
+    memset(&c, 0, sizeof(c));
+    asserteq(zn_listen(accept, "127.0.0.1", 0), ZN_OK);
+    port = zt_accept_port(accept);
+    asserteq(zn_accept(accept, sp_on_accept_rearm, &c), ZN_OK);
+
+    for (i = 0; i < 20; ++i)
+        sp_connect_and_abort(port);
+
+    zt_begin(&L, S, 3000);
+    zt_wait(&L, 200); /* drain the dead connections */
+    before = c.ok;
+    fd = sp_connect(port);
+    ZT_WAIT(L, c.ok > before);
+    zt_end(&L);
+
+    close(fd);
+    zn_delaccept(accept);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+#endif /* !_WIN32 */
+
 #include "tcp_test.gen.inc"

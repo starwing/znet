@@ -58,6 +58,12 @@ Rules for robust tests:
 
 * No fixed ports. Listen/bind with port `0`, then read the bound port with
   `zt_accept_port(a)` / `zt_udp_port(u)` / `zt_tcp_port(tcp)`.
+* Some readiness reports cannot be produced by the kernel on demand
+  (`EAGAIN` on a listener, an error event on a listener). `zt_dispatch_accept()`
+  / `zt_dispatch_udp()` call the backend entry point directly (`error_event` 0 =
+  readable, 1 = error/except) so those branches stay testable; they are POSIX
+  only. Wrap the call in `zt_guard_start(ms)` when the old behaviour blocked, so
+  a regression is a failure instead of a stalled suite.
 * No `sleep()` when the loop can wait for a callback. `zt_wait(&L, ms)` is the
   escape hatch for "nothing else should fire".
 * Clean up: every `zn_new*` needs a `zn_del*`; close listeners before `zt_run`

@@ -16,7 +16,7 @@
 | 优先级 | 内容 | 理由 |
 | --- | --- | --- |
 | **P0** | L8：epoll/kqueue 事件批保存裸 `zn_SocketInfo *`，同批回调删除另一个对象后可能 UAF | 是唯一剩下的崩溃/内存安全项；测试套件目前只覆盖“另一个 fd 不在本批”的情况 |
-| **P1** | L6/L7/L9、B3/B4/B13、C2/C3、U1/U10、C4（`zn_lua.c` 审计） | 正确性、平台差异、Clean C / MSVC / 签名硬约束 |
+| **P1** | B3/B4/B13、C2/C3、U1/U10、C4（`zn_lua.c` 审计） | 正确性、平台差异、Clean C / MSVC / 签名硬约束 |
 | **P2** | L10/L11、B8/B9、T5/T6、U7/U8/U11、F1/F3 | 健壮性、可维护性、资源边界 |
 | **P3** | L13、T7、M4（timer 四叉堆）、M5（收尾） | 清理和性能优化；必须先有基准/测试 |
 
@@ -145,6 +145,31 @@
 | 测试 | `timer_64bit_delay`/`timer_64bit_handler_return` 从 `#ifdef` 改为 32 位运行期 skip；新增 `timer_timeout_clamp`；删除 `check-64bit-timer` 目标 |
 | 验证 | macOS：`just check-c89` / `just check-cpp03` / `just smoke` / `just check`；Linux：`orb just check`。IOCP 只做代码审查，**未在 Windows 验证**；32 位未验证 |
 
+### 1.8 L6/L7 就绪语义与 L9 IOCP 资源所有权（2026-10-28）
+
+实测复现推翻了两条原始描述：
+
+- **L6（select）**：`accept`/`recvfrom` 返回 `EAGAIN` 时，旧代码已经消费了 armed 操作
+  （清 handler、release、注销 fd）却不回调，监听器/UDP 静默死亡。白盒注入一次就绪报告
+  即可确定性复现。
+- **L7（epoll/kqueue）**：accept 的 `EAGAIN` 分支其实**不可达** —— reactive 的
+  `znP_listen` 从来没把监听 socket 设成 non-blocking（select 有），所以过期就绪是把整个
+  循环卡在 `accept()` 里（epoll 上实测 `timeout` 退出 124），不是"空转"。UDP 的 `EAGAIN`
+  分支是活的（B7 已修 nonblock），行为与 L6 相同：静默丢弃。
+- **决策**：`EAGAIN` 是"就绪报告与队列矛盾"，一律解除 armed 并回调 `ZN_ERROR`（socket
+  不关闭，回调里可重新发起）；`ECONNABORTED`/`EINTR` 属于正常事件，保持 armed、不回调。
+  不引入重试计数。规则见 `notes/backends.md` 的"就绪不是完成"。
+- **L9**：五处资源所有权修复，外加 TODO 未列的一处真实泄漏（AcceptEx 失败后
+  `accept->client` 不关闭，重挂 accept 即泄漏一个 socket）。
+
+| 内容 | 结果 |
+| --- | --- |
+| L6 | select 的 `zn_onaccept`/`zn_onrecvfrom` 改为"先系统调用、后按结果消费"；`EAGAIN` 回调错误、`ECONNABORTED`/`EINTR` 保持 armed；`fd >= FD_SETSIZE` 只关连接、不再杀监听器；`zn_tcpfromfd` 失败回调 `ZN_ERROR` |
+| L7 | reactive `znP_listen` 补 `znU_set_nonblock`；两个后端采用同一语义；解除 armed 时**不注销** fd（注册是 per-listen） |
+| L9 | `znP_connect` 扩展指针失败关 socket；`!bSuccess` / `GetAcceptExSockaddrs` 失败 / `zn_newtcp` 返回 NULL 三处关 `accept->client` 并回调；完成端口关联失败改用 `zn_deltcp`；入口 `assert(cb)` |
+| 测试 | 新增 6 个：nonblock 断言、accept/UDP 的假就绪、accept 的错误事件、accept/UDP 的错误事件回归（前 4 个在修复前失败/挂死），以及 RST 风暴守门（修复前也通过，用来否决"重试 N 次"设计） |
+| 验证 | macOS：`just check`、`just check-c89`、`just check-cpp03`、`just smoke`；Linux：`orb just check`。IOCP 只做代码审查，**未在 Windows 验证** |
+
 ---
 
 ## 2. 待做
@@ -153,7 +178,7 @@
 
 | ID | 位置 | 缺陷与影响 | 建议 |
 | --- | --- | --- | --- |
-| L8 | `znet.h:2530,2726` | epoll/kqueue 的事件批保存 `zn_SocketInfo *` 裸指针；回调里删除另一个对象后，同一批后续事件会拿到悬空指针（UAF）。kqueue 的 `znP_dispatch` 还不判 `info` 是否为 NULL。现有 `dispatch_delete_other_in_callback` 只让一个 client 写，另一个 fd 不在本批，所以没有证明同批安全。 | 先写“两个 fd 同批就绪、回调删除另一个”的失败用例（reactive-only），再选方案：`zn_State` 增加待释放队列，`ZN_PUTOBJECT` 只入队，`znP_poll` 在一批 dispatch 完后统一 flush；或引入对象代际/活跃检查。不要只加 NULL 检查。 |
+| L8 | `znet.h:2661,2855` | epoll/kqueue 的事件批保存 `zn_SocketInfo *` 裸指针；回调里删除另一个对象后，同一批后续事件会拿到悬空指针（UAF）。kqueue 的 `znP_dispatch` 还不判 `info` 是否为 NULL。现有 `dispatch_delete_other_in_callback` 只让一个 client 写，另一个 fd 不在本批，所以没有证明同批安全。 | 先写“两个 fd 同批就绪、回调删除另一个”的失败用例（reactive-only），再选方案：`zn_State` 增加待释放队列，`ZN_PUTOBJECT` 只入队，`znP_poll` 在一批 dispatch 完后统一 flush；或引入对象代际/活跃检查。不要只加 NULL 检查。 |
 
 ### 2.2 P1 — 正确性、平台差异与硬约束
 
@@ -161,9 +186,6 @@
 
 | ID | 位置 | 缺陷与影响 |
 | --- | --- | --- |
-| L6 | `znet.h:1966,2026` | select 的 `zn_onaccept` 每个事件最多接受一个连接；虚假就绪（`accept` → `EAGAIN`）时清 handler、注销 fd、不回调，监听器静默死亡。`zn_onrecvfrom` 遇到 `EAGAIN` 同理，UDP 接收静默死亡。 |
-| L7 | `znet.h:2473,2669,2500,2696` | epoll/kqueue 的 `zn_onaccept`/`zn_onrecvfrom` 在 `EAGAIN` 时也清 handler、直接返回，不回调；监听器/UDP 进入“无 handler”状态。水平触发下可能空转。 |
-| L9 | `znet.h:1337,1528,1538` | IOCP：`znP_connect` 在 `zn_getextension` 失败时不关闭 socket；`zn_onaccept` 不检查 `zn_newtcp` 返回 NULL；`GetAcceptExSockaddrs` 失败时泄漏 client；完成端口关联失败时静默丢弃 accepted socket 且不回调。 |
 | B3 | `znet.h:1582,2015,2393` | 四个后端的 `znP_sendto` 忽略 `sendto` 返回值；UDP 发送失败不可见，仍返回 `ZN_OK`。 |
 | B4 | `znet.h:724` | `zn_sendto` 无条件拒绝 `len > 1200`，与路径 MTU 无关。 |
 | B13 | `znet.h:895,936` | **新增（写覆盖率测试时发现）**：在项目统一选项 `-D_XOPEN_SOURCE=600` 下，macOS 既不定义 `MSG_NOSIGNAL` 也不定义 `SO_NOSIGPIPE`，于是 `ZN_NOSIGNAL` 变成 0、`znU_set_nosigpipe` 编译为空。向已断开的 TCP `send` 会触发 SIGPIPE 杀死进程。`tcp_send_error` 只能在测试里临时忽略 SIGPIPE；Linux 上 `MSG_NOSIGNAL` 可见，所以问题只在 macOS。修法：在平台段显式启用 `_DARWIN_C_SOURCE`，或提供可选的 `SIGPIPE` 忽略入口；需评估库是否应改全局信号处理。 |
@@ -228,8 +250,8 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | 阻塞原因 | 条目 | 需要先定的事 |
 | --- | --- | --- |
 | 内存安全方案选择 | L8 | 延迟释放队列 vs 对象代际/活跃检查；还要先写出“两个 fd 同批就绪”的失败用例 |
-| 虚假就绪语义 | L6、L7、B9 | 自动重挂还是回调 `ZN_ERROR`（第 7.1 节）；自动重挂还要防水平触发忙等 |
-| 跨后端完成/资源语义 | B3、L9 | UDP 发送失败如何变成完成事件；IOCP 的 socket 所有权与失败清理 |
+| select 的 TCP 就绪语义 | B9 | 与已定的 accept/recvfrom 规则对齐（第 7.1 节） |
+| 跨后端完成语义 | B3 | UDP 发送失败如何变成完成事件 |
 | 公共 API/ABI 决策 | C3、B4、B13 | 签名 <80 要重构 `zn_connect`；UDP 上限与 SIGPIPE 策略（第 7.2、7.10 节） |
 | 工具/绑定重构 | U1、U7、U8、U10、U11 | `zn_deque.h` 是修还是删（第 7.5 节）；Lua/pool 的语义要先写进文档 |
 | 记账与资源边界 | L10、L11、B8、T5、T6 | 非法参数/失败路径要引入错误码或上限，属契约改动 |
@@ -276,15 +298,14 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 ### M2 — P1 正确性与平台修复（进行中）
 
 已完成：B2、B5、C1（枚举尾逗号 + 64 位 timer，见 1.7）、C4 的
-`test.c`/`example.c`/`zn_task.h` 部分、B6/B7/U4/U6/U9/T3/T4（见 1.3）。
+`test.c`/`example.c`/`zn_task.h` 部分、B6/B7/U4/U6/U9/T3/T4（见 1.3）、L6/L7/L9（见 1.8）。
 
 剩余：
 
 1. C4 的 `zn_lua.c` 严格 C89 审计；
 2. C2 的 MSVC `/W4` 收窄分类与 Windows CI；
-3. L6/L7 的 EAGAIN 语义（推荐自动重挂）、L9 的 IOCP 资源泄漏；
-4. B3/B4/B13；
-5. U1/U10。
+3. B3/B4/B13；
+4. U1/U10。
 
 ### M3 — 签名重构 + 全量 clang-format（未开始）
 
@@ -337,7 +358,12 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 | B7 | `udp_socket_is_nonblocking`（POSIX） | UDP fd 带 `O_NONBLOCK` |
 | U4/U6 | `recv_default_handlers` / `buffcache_alloc_free` | `packet_ud` 初始化；预分配返回实际块数 |
 | 死代码复核 | `tcp_select_except_send_error` | except 集上的 pending send 以 `ZN_ERROR` 完成（不是死分支） |
+| L6 | `tcp_accept_spurious_ready` / `udp_recvfrom_spurious_ready` | 假就绪回调一次 `ZN_ERROR`，`waitings` 归零，socket 仍可重新 arm |
+| L6 | `tcp_accept_error_event` / `udp_recvfrom_error_event` | 错误事件只解除 armed、不关闭 socket，之后仍能 accept/recvfrom |
+| L7 | `tcp_listener_is_nonblocking` | 监听 socket 带 `O_NONBLOCK`，过期就绪不会卡住循环 |
+| L6/L7 | `tcp_accept_after_aborted_clients` | 20 个 RST 连接之后，健康客户端仍被 accept |
 | L8 | 待补 | 两个 fd 同批就绪、回调删除另一个，ASan 干净 |
+| L9 | 待补（Windows） | 五处所有权修复仅代码审查，未在 Windows 验证（1.8） |
 | B13 | `tcp_send_error` | 对端断开后 send 回调收到错误；测试临时忽略 SIGPIPE，库侧修复待做 |
 
 ---
@@ -367,8 +393,8 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 
 ## 7. 待确认的设计取舍
 
-1. **虚假 `EAGAIN`**：自动重挂还是回调 `ZN_ERROR`？推荐自动重挂（就绪是假的，不是致命
-   错误），但要防止水平触发下忙等。
+1. **虚假 `EAGAIN`**：已决策（1.8）：回调 `ZN_ERROR` 并解除 armed（socket 不关闭），
+   `ECONNABORTED`/`EINTR` 保持 armed；不设重试预算。理由见 `notes/backends.md`。
 2. **UDP `zn_sendto` 长度上限**：保留 1200 作为保守默认，还是改成 65507 并由调用者负责
    MTU？推荐保留可配置常量，默认 1200，文档说明分片风险。
 3. **`zn_buffer` 默认 packet handler**：默认丢弃（现状）还是默认收包？推荐默认收包，

@@ -472,4 +472,114 @@ TEST(udp_socket_is_nonblocking) {
 
 #endif /* _WIN32 */
 
+/* ---- L7 (POSIX): a spurious readiness report on UDP ---------------------
+ * Same rule as accept: "readable" is derived from the receive queue, so
+ * recvfrom() returning EAGAIN means the report and the queue disagreed.  It
+ * used to disarm the pending recvfrom silently, after which every later
+ * datagram was lost. */
+
+#ifndef _WIN32
+
+typedef struct sp_ctx {
+    int ok;
+    int err;
+} sp_ctx;
+
+static void sp_on_recvfrom(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+                           const char *addr, unsigned port) {
+    sp_ctx *c = (sp_ctx *)ud;
+    (void)udp;
+    (void)count;
+    (void)addr;
+    (void)port;
+    if (err == ZN_OK) c->ok++;
+    else c->err++;
+}
+
+static int sp_udp_socket(unsigned port) {
+    struct sockaddr_in sa;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    assertok(fd >= 0);
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((unsigned short)port);
+    sa.sin_addr.s_addr = htonl(0x7f000001u);
+    asserteq((int)sendto(fd, "x", 1, 0, (const struct sockaddr *)&sa,
+                         (socklen_t)sizeof(sa)), 1);
+    return fd;
+}
+
+TEST(udp_recvfrom_spurious_ready) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    sp_ctx    c;
+    zt_Loop   L;
+    unsigned  port;
+    int       s2;
+
+    assertok(u != NULL);
+    memset(&c, 0, sizeof(c));
+    port = zt_udp_port(u);
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf),
+                         sp_on_recvfrom, &c), ZN_OK);
+    asserteq(S->waitings, 1);
+
+    zt_dispatch_udp(u, 0); /* no datagram pending: recvfrom() -> EAGAIN */
+
+    asserteq(c.err, 1);
+    asserteq(c.ok, 0);
+    asserteq(S->waitings, 0);
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf),
+                         sp_on_recvfrom, &c), ZN_OK); /* still usable */
+
+    s2 = sp_udp_socket(port);
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.ok == 1);
+    zt_end(&L);
+    asserteq(c.ok, 1);
+
+    close(s2);
+    zn_deludp(u);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+/* an error event on the UDP socket: the pending recvfrom is consumed with
+ * ZN_ERROR and the socket stays open for a re-arm (it was already like that,
+ * this pins the shape the accept side now shares). */
+TEST(udp_recvfrom_error_event) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    sp_ctx    c;
+    zt_Loop   L;
+    unsigned  port;
+    int       s2;
+
+    assertok(u != NULL);
+    memset(&c, 0, sizeof(c));
+    port = zt_udp_port(u);
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf),
+                         sp_on_recvfrom, &c), ZN_OK);
+
+    zt_dispatch_udp(u, 1);
+    asserteq(c.err, 1);
+    asserteq(c.ok, 0);
+    asserteq(S->waitings, 0);
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf),
+                         sp_on_recvfrom, &c), ZN_OK); /* still usable */
+
+    s2 = sp_udp_socket(port);
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.ok == 1);
+    zt_end(&L);
+    asserteq(c.ok, 1);
+
+    close(s2);
+    zn_deludp(u);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+#endif /* _WIN32 */
+
 #include "udp_test.gen.inc"
