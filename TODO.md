@@ -16,11 +16,11 @@
 | 优先级 | 内容 | 理由 |
 | --- | --- | --- |
 | **P0** | L8：epoll/kqueue 事件批保存裸 `zn_SocketInfo *`，同批回调删除另一个对象后可能 UAF | 是唯一剩下的崩溃/内存安全项；测试套件目前只覆盖“另一个 fd 不在本批”的情况 |
-| **P1** | B3/B4/B13、C2/C3、U1/U10、C4（`zn_lua.c` 审计） | 正确性、平台差异、Clean C / MSVC / 签名硬约束 |
-| **P2** | L10/L11、B8、T5/T6、U7/U8/U11、F1/F3 | 健壮性、可维护性、资源边界 |
+| **P1** | C3、U1 | 签名 <80 重构（M3 前置）、`zn_deque.h` 的修/删决定 |
+| **P2** | L10/L11、B8/B14、T5/T6、U7/U8/U11/U15、F1/F3 | 健壮性、可维护性、资源边界 |
 | **P3** | L13、T7、M4（timer 四叉堆）、M5（收尾） | 清理和性能优化；必须先有基准/测试 |
 
-**建议执行顺序**：L8 → P1 正确性与平台修复 → Clean C/MSVC/签名（C1–C4）→ M3 全量
+**建议执行顺序**：L8 → P1 正确性与平台修复 → Clean C/MSVC/签名（C1–C3）→ M3 全量
 格式化 → M4 timer 四叉堆 → M5 文档/示例收尾。CI（至少 Linux/macOS + Windows
 `cl /W4 /WX`）应尽早补上，但它是独立工作流，不阻塞上面的顺序。
 
@@ -47,7 +47,7 @@
 | U2 | P1 | `znBC_upperbound`/`znBC_lowerbound` 的档位索引钳到真实数组范围，>2 GiB 请求走 fallback | `buffcache_boundaries`、`buffcache_huge_index` |
 | U3 | P1 | `zn_addlstring`/`zn_addchar` 检查 `zn_prepbuffsize` 返回 NULL，OOM 不再越界写 | `buffer_append_oom`、`recv_oom_slow_path` |
 | U5 | P2 | header handler 返回 0/帧跨读时，缓冲下来的字节会参与下一次 header 解析 | `recv_split_header`、`recv_partial_header_then_frames` |
-| C1 | P1 | 删除枚举尾逗号；`zn_Time` 改为 `size_t`（见 1.7）；`znet.h`/`zn_buffer.h` 通过 `-std=c89 -pedantic-errors` 和 `-std=c++03 -pedantic-errors` | `just check-c89` 的 suite 部分（`example.c` 仍见 C4） |
+| C1 | P1 | 删除枚举尾逗号；`zn_Time` 改为 `size_t`（见 1.7）；`znet.h`/`zn_buffer.h` 通过 `-std=c89 -pedantic-errors` 和 `-std=c++03 -pedantic-errors` | `just check-c89` 的 suite 部分（`example.c` 见 C4；`zn_lua.c` 豁免见 1.10） |
 | F4 | P2 | 构建入口收敛到根 `justfile`（`mod tests` / `mod bench`），删除 `GNUmakefile` 和 `.bat` | `just check` / `just bench` |
 | U12 | P3 | 基准/echo 程序移到 `bench/` 并移植到当前 API（`packet = 0`）；帧格式修正 | `just bench`、`bench/README.md` |
 
@@ -90,7 +90,7 @@
 | U13/U14/C4 | `example.c` 修 `"%sn"`、`MyData *data` 移到块首、23 处 `%p` 配 `(void*)p`；`zn_task.h` 去掉 C89 非法的 typedef 重定义 | `just check-c89` / `just check-cpp03` 全绿（recipe 现在也编译 `zn_task.h`） |
 
 `check-c89`/`check-cpp03` 因此首次全绿；Linux VM 没有 C++ 编译器，cpp03 只在 macOS
-验证过。C4 只剩 `zn_lua.c` 的严格 C89 审计。
+验证过。C4 的 `zn_lua.c` 部分改为豁免（见 1.10）。
 
 ### 1.4 覆盖报告里的“死代码”复核（2026-10-28）
 
@@ -188,6 +188,177 @@ retain 已经还了）。现在只有结果才消费：`EINTR`/`EAGAIN`/`EWOULDB
 | 测试 | `tcp_select_send_spurious_ready` / `tcp_select_recv_spurious_ready`；修复前都因 `send_handler == NULL` / `recv_handler == NULL` 失败，随后同样的就绪把 park 的操作完成（send 用填满的内核发送缓冲确定性触发 `EAGAIN`） |
 | 验证 | macOS `just check`、`just check-c89`/`check-cpp03`；Linux `orb just check`；覆盖率见 `tests/COVERAGE.md` |
 
+### 1.10 M2 收尾：B3/B4/B13/U10 + C4 豁免（2026-10-28）
+
+| ID | 修复 | 回归 / 验证 |
+| --- | --- | --- |
+| B3 | 三个 `znP_sendto`（IOCP / select / reactive）检查 `sendto` 返回值：POSIX 返回 `znU_error(errno)`，Win32 用 `WSAGetLastError()`，不再无条件 `ZN_OK` | `udp_sendto_error`：IPv4 socket 发给 IPv6 地址（EINVAL / EAFNOSUPPORT / WSAEAFNOSUPPORT）→ `ZN_ERROR`；修复前该断言拿到 `ZN_OK` |
+| B4 | 1200 改成可覆盖常量 `ZN_MAX_UDPSEND`（`#ifndef`，默认 1200），`zn_sendto` 用它做上限；`README.txt` 与 `notes/backends.md` 写明“不产生 IP 分片”的理由 | `udp_sendto_max_payload` 改用 `ZN_MAX_UDPSEND`；`+1` 仍返回 `ZN_EPARAM` |
+| B13 | Darwin 在 `_XOPEN_SOURCE=600` 下既没有 `MSG_NOSIGNAL` 也看不到 `SO_NOSIGPIPE`。新增 `ZN_SO_NOSIGPIPE`（可见时用 `SO_NOSIGPIPE`，Darwin 否则用 ABI 值 `0x1022`），`znU_set_nosigpipe` 改用它；并把设置时机从“connect 完成”提前到 socket 创建（`znP_connect` 建 fd 后），accept 路径不变 | `tcp_send_error` 删掉测试里的 `SIG_IGN`，进程必须活下来；新增 `tcp_nosigpipe_option`（macOS）直接用 `getsockopt` 断言客户端与服务端 socket 都是 1 |
+| U10 | `lzn_onaccept`：Lua 回调真值才重新 `zn_accept`，否则 `zn_closeaccept`；accept 失败时回调收到 `(self, nil, errstr, err)`，返回真仍可重试；`pcall` 失败也关闭 | `tests/test.lua` 新增第 4 节：只接受一次并返回 false，之后再连同一端口必须失败。修复前报 “a stopped listener still accepted a connection” 并在空转中等到超时 |
+| C4 | `zn_lua.c` 从严格 C89 审计中豁免：它必须包含 Lua 头，而 Lua 自己用 `long long`，实际编译始终是 C99。代码仍按 C89 风格写 | `AGENTS.md` 与 `justfile` 注释写明；`check-c89` 本来就没包含 `zn_lua.c`，现在不再把它当待办 |
+
+同轮补充：
+
+- `tests/check.bat` / `tests/run.bat` / `bench/build.bat` / `bench/run.bat`：Windows/MSVC 入口
+  （`cl /nologo /W4 /WX`；套件列表来自 `tests\*_test.c` 的 glob，不会与 POSIX 的 `SUITES`
+  漂移）。`misc/msvc-env.bat` 在 `cl` 不在 PATH 时用 vswhere 找 Visual Studio 并
+  `call vcvars64.bat`，所以普通 cmd / ssh 会话也能直接跑这些脚本；justfile 里 POSIX-only 的
+  recipe 标了 `[unix]`，Windows 用 `[windows]` 分发到这些脚本（`smoke` 在同一条命令行里
+  先 call 环境脚本）。**未在 Windows 上验证**。
+- `notes/utils.md` 的 U10 描述与已修的 U9 记录一起更新；`notes/backends.md` 的
+  “UDP 发送错误不可见”删掉（已修）。
+- 同类问题仍在：Lua 绑定的 `lzn_onrecvfrom` 返回假值时同样留下 handler-less 的已注册 fd，
+  记为 U15（见 2.3）。
+- 顺手修掉 1.7 留下的 `-Wformat`：`bench_client.c` / `bench_server.c` 用 `%d` 打印
+  `zn_Time`，改成 `%u` + `(unsigned)`，与 `bench_echo.c` 一致；`just bench` 现在无警告。
+
+验证：macOS `just check`、`just test-lua`；Linux `orb just check`（结论见 1.11）。
+
+### 1.11 验证基线与 clang-format 评估（2026-10-28）
+
+本机 macOS：`just check`（kqueue + select）、`just check-c89`、`just check-cpp03`、
+`just smoke`、`just test-lua` 全绿。Linux（OrbStack）：`orb just check`（epoll + select）
+全绿。IOCP / Windows 当时的结论是“只有代码审查 + 新加的 `.bat` 入口”；
+**1.12 已在真机上验证，见下。**
+
+clang-format 现在不能跑，原因与数据见 M3 的“2026-10-28 评估”。
+
+### 1.12 Windows / IOCP 首次验证（2026-10-28）
+
+第一次在真机（`ssh wx-miku`，VS2022 x64）上跑 `tests\check.bat`（`cl /nologo /W4 /WX`，
+IOCP）：**全绿**。之前的所有“未在 Windows 验证”条目现在有了实际结果。发现的问题全部是
+**既有代码/测试在 Windows 上从没跑过**造成的，不是本轮 M2 修改引入的（对照 HEAD：
+`WSAStringToAddress`、IOCP 监听 socket 的 `SO_REUSEADDR`、accept 填地址的写法都在 HEAD 里）：
+
+| 现象 | 根因 | 修复 |
+| --- | --- | --- |
+| C4244 ×6（`znet.h` 816/1021/1026/1324、`zn_addrinfo.h` 181/279） | Win32 段 `int`→`ADDRESS_FAMILY`、`unsigned`→`u_short`、`uintptr_t`→`unsigned` | `htons((unsigned short)port)` 前先 `port > 0xFFFFu` 返回 0（POSIX 共用这段，行为一致了）；`family` 显式 cast；`_endthreadex(0)` 替掉 `(uintptr_t)znA_thread`（语义问题见 U16） |
+| C4702（`znA_worker` 的 `return` 不可达） | `for (;;)` 里 return | 改成 `ret` + `break` |
+| `tcp_connect_echo` 的 peer 端口/地址是垃圾 | IOCP accept 用 `znU_setinfo((zn_SockAddr*)&paddr2, ...)`：取了指针变量的地址 | 改成 `paddr2`（真 bug；`GetAcceptExSockaddrs` 给的 remote sockaddr） |
+| `addr_parse_invalid`：`"127.0.0"` 被接受 | Windows 用 `WSAStringToAddress`，它接受部分点分形式；POSIX 的 `inet_pton` 拒绝 | Win32 `znU_pton` 改 `InetPtonA`，`znU_ntop`/`znA_ntop` 改 `InetNtopA`（与 POSIX 的 inet_pton/ntop 对齐） |
+| `tcp_listen_conflict`：第二次 listen 成功 | Windows 的 `SO_REUSEADDR` 允许第二个 socket 抢占端口 | IOCP 监听 socket 改 `SO_EXCLUSIVEADDRUSE`（POSIX 的“绑定冲突”语义） |
+| `addr_test` 在 Windows 上 `znU_parseaddr` 全部失败 | 地址转换走 Winsock，旧实现需要 `WSAStartup` | 换成 `InetPtonA`/`InetNtopA` 后不需要初始化（实测无需 `WSAStartup`），测试的“纯转换”前提保留 |
+| `dispatch_test` 编译失败：`zn_State` 没有 `result_queue` | 该断言只对 reactive 后端成立，守卫漏了 `_WIN32` | 守卫改成 `!ZN_USE_SELECT && !_WIN32` |
+| 假绿：套件里 abort 了却报 “all suites passed” | MSVC 的 `abort()` 退出码是 `0xC0000409`（负数），cmd 的 `if errorlevel 1` 按有符号比较 | `check.bat` 改判 `if not "!errorlevel!"=="0"`；并且每个测试一个进程，abort 不再隐藏同一套件后面的用例 |
+| `cl: error D8003 缺少源文件名` | `/I"%SRC%"` 的 `%SRC%` 以 `\` 结尾，`\"` 吃掉参数 | `/I"%SRC%/."` |
+| Windows 上的 “select 那一遍” 是假的 | `znet.h` 在 `_WIN32` 上固定 `zn_use_backend_iocp`，`-DZN_USE_SELECT` 只影响测试宏 | `check.bat` 只跑 native；`select` 参数明确报错退出 2 |
+| `tcp_send_after_close`：close 后立刻 reconnect 返回 `ZN_EBUSY` | IOCP 的挂起 connect 完成仍持有 handler/retain，直到完成被取出 | 测试按平台断言（见 B14）；`waitings == 0` 也只在 POSIX 断言 |
+
+### 1.13 验证基线更新（2026-10-28，Windows 并入）
+
+- 本机 macOS：`just check`、`check-c89`、`check-cpp03`、`smoke`、`test-lua`、`just bench`。
+- Linux（OrbStack）：`orb just check`。
+- **Windows（wx-miku，VS2022 x64）**：`just check` → `tests\check.bat`（IOCP，
+  `cl /W4 /WX`）全绿：115 个用例 OK、1 个 SKIP（`addr_error_mapping` 是 POSIX errno
+  语义），0 失败。`just smoke`（`example.c` 在 `cl /W4 /WX` 下）通过；`just bench`
+  能构建（仍有 C5 的 `/W4` 警告）。IOCP 不再是“只做代码审查”。
+- 注意：这台机器上的仓库走 Synology Drive 同步，未落地的云占位文件会让 `cl` 报
+  C1083 “Invalid argument / No such file”；用 `Get-Content` 读过一次（或整个目录）即可。
+
+### 1.14 Windows 残余修复：DNS worker 生命周期与任务池终止（2026-10-28）
+
+1.13 之后仍然只在 Win32 上成立的三处缺陷，外加一处让它们“假绿”的测试漏洞。全部在
+wx-miku 上复现、修复并验证：
+
+| 症状 | 根因 | 修复 |
+| --- | --- | --- |
+| `zn_closeaddrinfo(NULL)` 之后调用者再也不返回：主线程被结束，worker 还活着，进程挂住 | Win32 用 `_endthreadex(0)` 想停 worker，实际终止的是**调用者线程** | worker 增加 `znA_stop`；置标志 + `SetEvent` 唤醒，`WaitForSingleObject` join 之后才关事件/锁。`znA_stop` 在 `znA_init` 里复位，停止后可以重新起 worker |
+| `zn_closeaddrinfo(S)`（`S != NULL`）之后全局初始化标记被清 0，下一次查询重新 `InitializeCriticalSection`/`CreateEvent`/起第二个 worker（UB + 句柄/线程泄漏） | Win32 在 `S != NULL` 时也把 `znA_initalize` 写成 0；POSIX 没有这个问题 | `S != NULL` 只清该 state 的请求，然后把标记恢复成 1；只有 `S == NULL` 才走完整 teardown |
+| POSIX `zn_closeaddrinfo(NULL)` 死锁 | 持锁调 `pthread_cancel` + `pthread_join`：worker 在 `pthread_cond_wait` 的取消点要先重新拿到这把锁；即使取消成功，worker 也会持锁退出 | 两个平台统一成协作式停止：置标志 + `pthread_cond_signal`，解锁后 join。worker 退出前把手上未处理的请求按 `ZN_ERROR` post 回去 |
+| `zn_task.h` 的 Win32 分支从来没被编译过：`_beginthreadex` 没有声明（缺 `<process.h>`，C4013/C4312），`zn_tasker` 用 `DWORD WINAPI` 与 `_beginthreadex` 期望的 `unsigned (__stdcall *)(void *)` 不匹配（C4057）；另外 `WaitForMultipleObjects` 失败的兜底路径调 `_endthreadex(handle)` 会终止调用者线程，`CreateEvent` 失败时会对未初始化的 `CRITICAL_SECTION` 调 `DeleteCriticalSection` | 缺包含、线程过程类型不一致，以及与 U16 同一类的 `_endthreadex` 误用 | 补 `<process.h>`；`zn_tasker` 改成 `unsigned __stdcall zn_tasker(void *)`；只在事件创建成功（锁已初始化）时删锁；join 失败时 `assert` + 放弃 teardown，**不再强杀 worker**（见下面的评审修正） |
+
+测试与工具：
+
+- `addrinfo_close_state_keeps_worker`：`zn_closeaddrinfo(S)` 之后 `znA_initalize` 仍为 1，
+  下一个 state 的查询复用同一个 worker（修复前 Windows 上是 0）。
+- `addrinfo_stop_all`：`zn_closeaddrinfo(NULL)` 必须返回调用者，之后还能重新起 worker 并
+  完成查询。用 `zt_guard_start/stop` 把“worker 不退出”变成失败而不是挂住；修复前 Windows
+  上进程挂住（主线程被杀、worker 存活），macOS 上 join 死锁。
+- `tests/check.bat` 现在要求每个测试进程的输出里有 harness 的 ` OK`/` SKIP` 行：进程以 0
+  退出但没有跑完（主线程被杀之类）不再算通过。判决逻辑用临时脚本验证过 OK/SKIP/缺行
+  三种输入。它还会用 `/W4 /WX` 编译一遍 `zn_task.h`（套件都不包含它，Win32 分支
+  因此从来没进过编译器）；临时探针在 wx-miku（`cl /W4 /WX`）和 macOS（`cc -Werror`）上
+  各跑通一次 8 个任务的建池/投递/回收/删池。
+
+评审修正（同日）：第一版把 `WaitForMultipleObjects` 失败的兜底改成 `TerminateThread`，
+那只是把“终止调用者”换成“终止 worker” —— `TerminateThread` 同样跳过 `_endthreadex`，
+CRT 每线程块不回收，而且按文档线程持有的 critical section / 堆锁都不会释放，紧接着的
+`DeleteCriticalSection` + `free(ws)` 反而更危险。现在两个平台在 join 失败时只 `assert`
+并放弃 teardown（泄漏池），不再强杀线程；`_beginthreadex` 的选择才自洽。
+
+验证（2026-10-28）：
+
+- Windows（wx-miku，VS2022 x64，`cl /W4 /WX`）：`tests\check.bat` 全绿（117 个用例 OK、
+  1 个 SKIP，套件源码和 `zn_task.h` 都用 `/W4 /WX` 编过），`tests\run.bat addrinfo`
+  六个用例全 OK；`example.c` 按 `just smoke` 的命令构建并在 `/W4 /WX` 下运行通过；
+  `zn_task.h` 的临时探针（8 个任务的建池/投递/回收/删池）通过。
+- macOS：`just check`（kqueue + select）、`just check-c89`、`just check-cpp03`、`just smoke`。
+- Linux（OrbStack）：`orb just check`（epoll + select）。
+- 评审修正只动了 `zn_task.h`：之后 `check.bat` 的 `zn_task.h` 编译门和池探针（Windows /
+  macOS 各一次）重新跑过；套件本身不包含该头文件，其余结论不受影响。
+
+仍然只在 Windows 上存在的：B14（IOCP close 时在途 connect 要等一次 poll 才能重连，
+属 L8 同族的完成事件代际问题）。C5 紧接着在 1.15 收掉了。
+
+### 1.15 C5 + Windows 上的 `just` 入口（2026-10-28）
+
+M2 剩下的“C2 收窄分类 + `example.c`/`bench` 的 MSVC 确认 + CI 化”在这里收尾。这里的
+“CI 化”指**能用 `just` 一条命令在 Windows 上跑 example/bench**，GitHub Actions 矩阵仍是
+M5 之后的事（2.5）。
+
+| 内容 | 结果 |
+| --- | --- |
+| C5：`bench/*.c` 的 `/W4` 清理 | 49 条 → 0（C4100 ×35 用 `(void)param;`、C4267 ×11 给 `zn_sendsize()` 加显式 `(unsigned)` cast（上界是 `ZN_BUFFERSIZE`）、C4459 ×3 把 `zn_State *S` 参数改名 `state`）；`bench\build.bat` 改成 `cl /W4 /WX` |
+| `bench` 在 Windows 上从来没跑过 | `setvbuf(stdout, NULL, _IOLBF, 0)` 在 MSVC 上**直接 abort**（0xC0000409，且不 flush，所以连 “znet engine: IOCP” 都看不到）。六个程序改成 `_IONBF, 0`：run 脚本用 `taskkill` 收尾，缓冲输出本来就会丢 |
+| bench 的 MSVC 构建没开优化 | `bench\build.bat` 只有 `/W4`，没有 `/O2` —— 基准程序是 `/Od` 跑出来的。补上 `/O2`；实测 echo 35 → 36.5 MB/s、flood 不变，所以它不是平台差距的原因，但基准不优化就没有意义 |
+| `bench\run.bat` 不能无头运行 | `timeout /t N /nobreak` 在 stdin 被重定向时直接报 “Input redirection is not supported”（ssh/CI 必然踩），退化成 0 秒等待；改成 `ping -n` |
+| C2 的 MSVC 部分 | `check.bat`（znet.h + 套件）、`example.c`、`bench` 三者都在 `cl /W4 /WX` 下干净；clang `-Wconversion` 不是门槛（不在 `-Wall` 里），按约定不修 |
+| `just` 入口验证（Windows） | `just smoke`、`just bench`、`just bench echo 2` / `flood 1` / `echo-buffer 1`、`just test tcp` 全部在 wx-miku 上跑通；bench 输出约 35 MB/s（echo/echo-buffer）、75 MB/s（flood），说明不仅构建成功、也确实在跑 |
+
+验证（2026-10-28）：Windows（wx-miku）上以上命令逐条通过，分离的 `bench_server` +
+`bench_client` 也用 netstat 确认过确实 accept（server 端 5 s 内 connect=334）；macOS 上
+`just bench` / `just bench echo 2` / 分离 pair 通过（`_IONBF` 在 POSIX 上同样可见）。
+`bench/*.c` 另外逐个过了 `-std=c89 -pedantic-errors` 和 `-std=c++03 -pedantic-errors`
+（收 `(void)` 时一度把 `zn_Tcp *tcp` 挤到语句后面，C89 检查抓到后已移回块首）。
+`just check` / `check-c89` / `check-cpp03` / `smoke` 不受 bench 改动影响（bench 不在
+这些目标里）。
+
+**性能标定（2026-10-28）**：先用两个数字回答“macOS 50 MB/s、Windows 35 MB/s 正常吗”。
+
+| 场景（1 KiB） | macOS（M4 Mac mini） | Windows（i9-9900 OptiPlex） |
+| --- | --- | --- |
+| 裸 socket 阻塞 ping-pong（基线，TCP_NODELAY） | ~100 MB/s | ~68 MB/s |
+| znet echo（kqueue / IOCP） | ~50 / — | — / ~36.5 |
+| znet echo（select） | ~46 | 无 select 后端 |
+| znet echo-buffer | ~48 | ~36 |
+| znet flood（单向） | ~410 | ~75 |
+
+结论：
+
+1. **跨机器不能比**：两台机器差一代以上（M4 vs 2019 的 i9-9900），loopback + 系统调用成本本来
+   就差 1.5 倍（上表基线）。
+2. **同机看，znet 是裸 socket 的 ~50%**（macOS 50/100，Windows 36.5/68）—— 两个平台的
+   “事件循环开销”一致，没有 Windows 专属退化。echo 本质是 RTT 基准：50 MB/s = 51k 往返/s
+   ≈ 19.6 µs RTT；36.5 MB/s = 37k 往返/s ≈ 26.8 µs。
+3. **flood 的 5.4 倍差距来自完成模型**，不是实现 bug：reactive 的 `znP_send` 里直接
+   `send()`，成功就把结果塞进 result queue，事件循环在同一次 poll 里把回调链跑完（一次
+   kevent 可以推动多条消息，2.4 µs/消息）；IOCP 每条消息都要 `WSASend` + 等一次完成
+   （`GetQueuedCompletionStatusEx`），而“每方向只有一个在途操作”（不变量 2）让它无法流水线，
+   13 µs/消息。要改只能允许每方向多个在途 send，那是契约改动，不在 M2/M3 范围。
+4. IOCP 的 `znP_dispatch` 每条完成都调一次 `GetOverlappedResult`（bWait=FALSE，等于读
+   overlapped 的 Internal 状态）；77k/s 下是白白的函数调用，但换成读未文档化的
+   `Internal` 不值当，暂不动。
+
+**为什么 1 KiB 只有 ~50 MB/s（不是库的问题）**：同一条 loopback 上把消息从 1 KiB 换成
+64 KiB，消息率几乎不变（56k/s → 46k/s），吞吐从 54 MB/s 涨到 **~2.5 GB/s** —— 说明瓶颈是
+“每条消息的固定成本”，不是数据路径。把 1 KiB 那次的 CPU 拆开（macOS，client 侧，6 s）：
+user 0.17 s、sys 1.93 s，约 33.5 万条消息 → **用户态 0.08 µs/条（库的代码），内核
+5.8 µs/条**。每侧每条消息 4 个系统调用（`kevent` 等待 / `recv` / `send` / 重新
+`EV_ADD`），macOS 上每次 ~1.4–2 µs，RTT ≈ 2×6 + 调度 ≈ 20 µs；阻塞 socket 只要 2 个
+系统调用/侧（9.8 µs RTT、100 MB/s），差距正好是事件循环多出来的那两个调用。M4 的快
+是算力和内存带宽，不体现在系统调用延迟上。
+
 ---
 
 ## 2. 待做
@@ -202,11 +373,8 @@ retain 已经还了）。现在只有结果才消费：`EINTR`/`EAGAIN`/`EWOULDB
 
 **生命周期 / 关闭 / 后端**
 
-| ID | 位置 | 缺陷与影响 |
-| --- | --- | --- |
-| B3 | `znet.h:1582,2015,2393` | 四个后端的 `znP_sendto` 忽略 `sendto` 返回值；UDP 发送失败不可见，仍返回 `ZN_OK`。 |
-| B4 | `znet.h:724` | `zn_sendto` 无条件拒绝 `len > 1200`，与路径 MTU 无关。 |
-| B13 | `znet.h:895,936` | **新增（写覆盖率测试时发现）**：在项目统一选项 `-D_XOPEN_SOURCE=600` 下，macOS 既不定义 `MSG_NOSIGNAL` 也不定义 `SO_NOSIGPIPE`，于是 `ZN_NOSIGNAL` 变成 0、`znU_set_nosigpipe` 编译为空。向已断开的 TCP `send` 会触发 SIGPIPE 杀死进程。`tcp_send_error` 只能在测试里临时忽略 SIGPIPE；Linux 上 `MSG_NOSIGNAL` 可见，所以问题只在 macOS。修法：在平台段显式启用 `_DARWIN_C_SOURCE`，或提供可选的 `SIGPIPE` 忽略入口；需评估库是否应改全局信号处理。 |
+M1/M2 的条目（L1–L7、L9、B1/B2/B5–B7、B10–B12）都已修完并有回归；剩下的 L8 仍在
+上面的 P0 表里，这一栏暂无其他待做项。
 
 **定时器**
 
@@ -217,16 +385,13 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 
 | ID | 位置 | 缺陷与影响 |
 | --- | --- | --- |
-| C2 | `znet.h` 多处 | MSVC `/W4` 收窄/符号性风险未分类完成：收窄点（`ssize_t`→`int`、`size_t`→`unsigned`、`uintptr_t`→`int`）需显式 cast + 值域检查；同宽 signedness 优先改类型/比较/printf 格式。clang `-Wconversion -Wsign-conversion` 只是近似，实际清单需 Windows CI。 |
-| C3 | `znet.h:103,107,417,486,640,660,678,722,730,791,1582,2015,2393` | 签名 <80 且不换行：`zn_connect` 114 列、`zn_send` 95、`zn_sendto` 100、`zn_recvfrom` 97、`zn_recv` 89、`zn_closeaccept` 81；回调 typedef 也超。`zn_connect` 必须改 API（参数结构体/去掉 `packet`/新入口），不能只折行。 |
-| C4 | `zn_lua.c` | 剩余 Clean C 审计项：`zn_lua.c` 尚未按严格 C89 审计（依赖 Lua 头）。`example.c`、`zn_task.h` 已在本轮通过 `check-c89`/`check-cpp03`（见 1.3）。 |
+| C3 | `znet.h`、`zn_addrinfo.h`、`zn_lua.c` | 签名 <80 且不换行：4 个回调 typedef（`zn_AcceptHandler` 87、`zn_SendHandler` 82、`zn_RecvHandler` 82、`zn_RecvFromHandler` 119）、`zn_connect` 114、`zn_sendto` 100、`zn_recvfrom` 97、`zn_send` 95、`zn_recv` 89（声明+定义各一次）、`znT_newtimer` 81、`znU_ntop` 81、三个 `znP_sendto` 85–87；`zn_addrinfo.h` 另有 4 个，`zn_lua.c` 的 `lzn_ongetaddr` 87；`bench/*.c` 里还有 3 个 80–81 列的回调签名（`bench_echo.c`、`bench_echo_buffer.c`、`bench_flood.c` 的 `on_client_send`/`on_client_recv`）。`zn_connect` 必须改 API（参数结构体/去掉 `packet`/新入口），不能只折行。 |
 
 **工具 / Lua**
 
 | ID | 位置 | 缺陷与影响 |
 | --- | --- | --- |
 | U1 | `zn_deque.h:302,245-261,279` | 不能编译（`znD_frontU`/`znD_backU` 先用后定义）；POSIX `zn_deldeque` 二次 unlock 未加锁的 mutex；`pthread_cond_timedwait` 收到相对 `timespec`，正 `waitms` 会立即超时。 |
-| U10 | `zn_lua.c:441` | `lzn_onaccept` 只在 Lua 回调返回真值时重新 `zn_accept`；否则监听器处于“已发起但无 handler”状态，水平触发下可能空转。 |
 
 ### 2.3 P2 — 健壮性与可维护性
 
@@ -239,7 +404,9 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | T6 | `znet.h:443` | `start + delayms` 没有溢出检查；回绕后 `emit` 顺序错误。 |
 | U7 | `bench/zn_bufferpool.h` | `zn_putbuffer` 回收节点时没有 `zn_resetrecvbuffer`/`zn_resetsendbuffer`；下一个连接继承旧分帧状态。 |
 | U8 | `znet.hpp` | `TcpAccept` 把 client 存在 accept 对象里，连续 accept 会修改同一个 `TcpSocket`；handler 运行一次即被消费，容易误用。 |
-| U11 | `zn_task.h` | `zn_deltaskpool` 遇到永久阻塞的任务会永久阻塞；需要文档化或提供超时/取消语义。 |
+| U11 | `zn_task.h` | `zn_deltaskpool` 遇到永久阻塞的任务会永久阻塞；需要文档化或提供超时/取消语义。**强杀已经否决**（`TerminateThread`/`pthread_cancel` 跳过线程自己的清理，还会留下被持有的 `ws->lock`，见 1.14 的评审修正）；真要能停只能做协作式取消。 |
+| B14 | `znet.h` IOCP `znP_closetcp`/`zn_connect` | close 时仍有一个在途 connect，它的完成事件还没被取出；这期间 `zn_connect` 返回 `ZN_EBUSY`，`S->waitings` 也仍是 1。POSIX 的 close 会取消 armed 操作，所以契约（不变量 6“close 后可以重新 connect”）在 IOCP 上要等一次 poll 才成立。要修得给完成事件加代际/取消（`CancelIoEx`），和 L8 一起考虑。 |
+| U15 | `zn_lua.c` `lzn_onrecvfrom` | 回调返回假值时只 unref，不关闭也不注销 fd；reactive 的注册是 per-listen，剩下的 datagram 会让 epoll/kqueue 空转（U10 的同类问题）。关闭 socket 会连带毁掉 `sendto`，改成 per-operation 注册又会动 reactive 模型，所以先要定“停止接收”的语义。 |
 | F1 | `.clang-format.new` | 尚未纳入版本控制/应用；`AlignAfterOpenBracket: AlwaysBreak` 会产生难看的折行；`IncludeBlocks`/`SortIncludes` 可能重排 `znet.h` 的平台 include。M3 最终排版提交时改回 `.clang-format`。 |
 | F3 | `AGENTS.md, notes/*` | 部分行号已漂移；修 bug 后需再校对一遍。 |
 
@@ -250,12 +417,15 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | L13 | `znet.h:256` | `znL_empty(h)` 展开成 `(h)->prev == &(h)`：传头指针或头变量都编不过。当前无人使用；要用先改成 `(void*)(h)->next == (void*)(h)`。 |
 | T7 | `znet.h:390` | 相同 deadline 不保证 FIFO（严格 `>` 比较）；要么文档化，要么改成稳定顺序。 |
 | M4 | `znet.h` timer | 四叉堆（4-ary heap）优化；前置条件是 T1/T2 已修、timer 测试齐全、M3 完成；先写基准，收益不足就回退。 |
+| M6 | `znet.h` reactive 后端 | 每次 arm 操作都发一次 `kevent(EV_ADD)` / `epoll_ctl(MOD)`：1 KiB 回环基准里这是每消息 4 个系统调用之一（1.15 的标定：用户态只占 0.08 µs/条，内核 5.8 µs）。改成“每连接注册一次 + `EV_CLEAR`/`EPOLLET` + `can_*` latch”，或一次 dispatch 里把缓冲读空，预计 1 KiB RTT 20 → ~15 µs，主要收益是每消息 CPU 降 20–25%。风险：动 reactive 状态机与 L2 的 latch 记账，必须和 L8 一起评估，排在 M3 之后。 |
 | M5 | 文档/示例 | 更新 `README.txt` 的约束矩阵、校对 `notes/*` 行号、补 CI 脚本。`test.c` 的清理已完成，`just smoke` 现在只跑 `example.c`。 |
 
 ### 2.5 验证缺口（不是代码缺陷）
 
-- **没有 CI**：至少需要 ubuntu/macos/windows 三套矩阵；Windows job 必须包含
-  `cl /W4 /WX` 的 C 和 C++ 编译，以及 IOCP 测试。本机不能声称 IOCP 已验证。
+- **没有 CI 服务**：目前只有本机 + `orb` + wx-miku 的手工矩阵（1.15 之后 `just smoke`/
+  `bench`/`test` 在 Windows 上可直接跑，这是“CI 化”在 M2 的定义）。GitHub Actions 的
+  ubuntu/macos/windows 三矩阵排在 M5 之后：Windows job 需要 `cl /W4 /WX` 的 C 和 C++
+  编译、IOCP 测试，以及 `misc/gen_entries.lua` 依赖的 lua。
 - **覆盖率门槛**：当前报告解释了剩余行为什么不可覆盖；如果要把 100% 行覆盖作为硬门槛，
   应对结构性死代码使用 `LCOV_EXCL_LINE`，对资源错误做 fault-injection 构建，而不是靠
   fd 耗尽测试。详见 `tests/COVERAGE.md`。
@@ -267,11 +437,11 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | 阻塞原因 | 条目 | 需要先定的事 |
 | --- | --- | --- |
 | 内存安全方案选择 | L8 | 延迟释放队列 vs 对象代际/活跃检查；还要先写出“两个 fd 同批就绪”的失败用例 |
-| 跨后端完成语义 | B3 | UDP 发送失败如何变成完成事件 |
-| 公共 API/ABI 决策 | C3、B4、B13 | 签名 <80 要重构 `zn_connect`；UDP 上限与 SIGPIPE 策略（第 7.2、7.10 节） |
-| 工具/绑定重构 | U1、U7、U8、U10、U11 | `zn_deque.h` 是修还是删（第 7.5 节）；Lua/pool 的语义要先写进文档 |
+| 跨后端完成语义 | B3（已修） | UDP 发送失败直接由同步返回值报告，不需要完成事件 |
+| 公共 API/ABI 决策 | C3 | 签名 <80 要重构 `zn_connect`（B4/B13 已在 1.10 决策） |
+| 工具/绑定重构 | U1、U7、U8、U11、U15 | `zn_deque.h` 是修还是删（第 7.5 节）；Lua/pool 的语义要先写进文档 |
 | 记账与资源边界 | L10、L11、B8、T5、T6 | 非法参数/失败路径要引入错误码或上限，属契约改动 |
-| 机械但多站点或需外部环境 | M3/F1、F3、CI、`zn_lua.c` 的 C89 审计 | 单独提交（格式化）或需要 Windows/CI，不适合混进语义提交 |
+| 机械但多站点或需外部环境 | M3/F1、F3、CI | 单独提交（格式化）或需要 Windows/CI，不适合混进语义提交 |
 
 ---
 
@@ -283,10 +453,10 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | 2. timer 改为四叉树 | **P3** | M4 | 当前二叉堆在常规规模可用；四叉堆只是常数优化。先修 T1/T2 等语义 bug，再拿基准决定。 |
 | 3. 跑 clang-format | **P2** | M3 | 必须等 P0/P1 功能修复稳定后单独提交；否则格式 diff 会淹没真正的 bug 修复。 |
 | 4. 修复函数签名折行 | **P1** | M3 | 新约束要求“单行 <80 且不能折行”；`zn_connect` 等需要 API 重构。 |
-| 5. 修复当前可能有的 bug | **P0/P1** | M1/M2 | 只剩 L8（P0）和 P1 清单；IOCP 相关仍需 Windows 验证。 |
+| 5. 修复当前可能有的 bug | **P0/P1** | M1/M2 | 只剩 L8（P0）、C3 与 U1；IOCP 已在 wx-miku 上验证（1.12/1.14/1.15）。 |
 | 6. 其他文档缺陷修复 | **P0–P3** | 分散 | 纯文档/示例/过时测试放 P3；`test.c` 已删除，`example.c` 的 `"%sn"`/`%p` 已修（1.3）。 |
 
-C1/C2/C4（Clean C、MSVC `/W4`、其余文件）和 C3（签名 <80 不换行）都是 P1 硬约束；
+C1/C2（Clean C、MSVC `/W4`）和 C3（签名 <80 不换行）都是 P1 硬约束；C4 已按 1.10 豁免；
 其中 C3 与第 4 项是同一件事：先重构签名（语义/API 改动），再做全量格式化（P2）。
 
 ---
@@ -311,21 +481,50 @@ C1/C2/C4（Clean C、MSVC `/W4`、其余文件）和 C3（签名 <80 不换行�
 
 B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP 的 L4 只做了代码审查。
 
-### M2 — P1 正确性与平台修复（进行中）
+### M2 — P1 正确性与平台修复（已完成；只剩 U1 的取舍）
 
-已完成：B2、B5、C1（枚举尾逗号 + 64 位 timer，见 1.7）、C4 的
-`test.c`/`example.c`/`zn_task.h` 部分、B6/B7/U4/U6/U9/T3/T4（见 1.3）、L6/L7/L9（见 1.8）。
+已完成：B2、B5、C1（枚举尾逗号 + 64 位 timer，见 1.7）、C4（`test.c`/`example.c`/
+`zn_task.h` 按 C89 通过；`zn_lua.c` 明确豁免，见 1.10）、B6/B7/U4/U6/U9/T3/T4（见 1.3）、
+L6/L7/L9（见 1.8）、B3/B4/B13/U10（见 1.10）、Windows 的 `zn_addrinfo`/`zn_task` 残余
+缺陷（见 1.14）、C5 + C2 的 MSVC 部分 + Windows 的 `just` 入口（见 1.15）。
+
+C2 的 MSVC `/W4` 部分随 1.15 关闭：`tests\check.bat`、`example.c`、`bench` 三者都在
+`cl /W4 /WX` 下干净；clang `-Wconversion` 不是门槛（不在 `-Wall` 里），按约定不修。
+“CI 化”按约定指 `just` 一条命令能在 Windows 上跑 example/bench/test，已在 wx-miku 上
+逐条验证；GitHub Actions 矩阵不属于 M2（见 2.5，排在 M5 之后）。
 
 剩余：
 
-1. C4 的 `zn_lua.c` 严格 C89 审计；
-2. C2 的 MSVC `/W4` 收窄分类与 Windows CI；
-3. B3/B4/B13；
-4. U1/U10。
+1. U1（`zn_deque.h`）：修还是删，仍待决定（第 7.5 节）——不阻塞 C3 与 M3 的签名重构；
+2. C3（签名 <80 不换行）是 M3 的前置，不在 M2 收尾。
 
 ### M3 — 签名重构 + 全量 clang-format（未开始）
 
-前置：M2 完成、测试绿、工作区干净。步骤与验收沿用旧计划：
+前置：M2 完成、测试绿、工作区干净。
+
+**2026-10-28 评估：现在还不能跑全量 clang-format。** 实测数据：
+
+- 配置本身要改（F1）：`SortIncludes: CaseSensitive` + `IncludeBlocks: Regroup` 会重排
+  `znet.h` 的平台 include —— 实测把 `<Windows.h> <WinSock2.h> <WS2Tcpip.h>` 排成
+  `<WS2Tcpip.h> <WinSock2.h> <Windows.h>`（`WS2Tcpip.h` 依赖 `WinSock2.h`），POSIX 段
+  也被重排。必须先改成 `SortIncludes: Never`、`IncludeBlocks: Preserve`。
+- `AlignAfterOpenBracket: AlwaysBreak` 会把签名折行，而硬约束要求单行 <80 —— 实测
+  `zn_sendto`/`zn_recvfrom`/`zn_RecvFromHandler` 等全部被折。必须先做 C3。
+- 当前仍有约 20 个签名 ≥80 列或已折行：4 个回调 typedef（`zn_AcceptHandler` 87、
+  `zn_SendHandler` 82、`zn_RecvHandler` 82、`zn_RecvFromHandler` 119）、5 个公共函数
+  声明+定义（`zn_connect` 114、`zn_sendto` 100、`zn_recvfrom` 97、`zn_send` 95、
+  `zn_recv` 89）、`znT_newtimer` 81、`znU_ntop` 81、三个 `znP_sendto` 85–87。
+  `zn_addrinfo.h` 另有 4 个（`zn_AddrInfoHandler` 92、`znA_makereq` 133、
+  `zn_getaddrinfo` 123 的声明+定义），`zn_lua.c` 有 `lzn_ongetaddr` 87。
+- 预期 diff（实测改动的行数）：`znet.h` 1454、`zn_lua.c` 412、`zn_addrinfo.h` 240、
+  `znet.hpp` 236、`zn_buffer.h` 209、`zn_task.h` 209、`example.c` 118、`tests/` 约 833、
+  `bench/` 约 435；`lbind.h` 2118 行必须排除（第三方）。
+- clang-format 会按扩展名猜语言：对 `tests/test.lua` 实测改了 3 行，所以格式化脚本只能
+  喂 `.c/.h`，并排除 `lbind.h`、`tests/*.gen.inc`、`*.bat`、`*.lua`、`*.md`。
+- 结论：顺序仍是 **C3 签名重构 → 改配置 → 全量格式化单独提交**。M2 的代码修复已经稳定，
+  但在 C3 之前跑格式化只会产生违反硬约束的折行。
+
+步骤与验收沿用旧计划：
 
 1. 决定格式策略：把 `.clang-format.new` 改回 `.clang-format`；`AlignAfterOpenBracket`
    从 `AlwaysBreak` 改为 `Align`；审查 `IncludeBlocks`/`SortIncludes`（建议
@@ -381,7 +580,12 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 | B9 | `tcp_select_send_spurious_ready` / `tcp_select_recv_spurious_ready` | 就绪后 `EAGAIN` 保持 armed（park），随后同样的就绪完成操作 |
 | L8 | 待补 | 两个 fd 同批就绪、回调删除另一个，ASan 干净 |
 | L9 | 待补（Windows） | 五处所有权修复仅代码审查，未在 Windows 验证（1.8） |
-| B13 | `tcp_send_error` | 对端断开后 send 回调收到错误；测试临时忽略 SIGPIPE，库侧修复待做 |
+| B13 | `tcp_send_error` / `tcp_nosigpipe_option` | 对端断开后 send 回调收到错误且进程不被 SIGPIPE 杀死；macOS 上 `SO_NOSIGPIPE` 确实为 1 |
+| B3 | `udp_sendto_error` | 发送失败的 `zn_sendto` 返回 `ZN_ERROR`，不是 `ZN_OK` |
+| B4 | `udp_sendto_max_payload` | `ZN_MAX_UDPSEND` 可发；`+1` 返回 `ZN_EPARAM` |
+| U10 | `tests/test.lua` 第 4 节 | 返回 false 的 accept 关闭监听 socket，后续连接被拒绝 |
+| U16/1.14 | `addrinfo_close_state_keeps_worker` / `addrinfo_stop_all` | `zn_closeaddrinfo(S)` 只丢该 state 的请求、worker 仍为 1；`zn_closeaddrinfo(NULL)` 返回调用者（看门狗兜底不挂住），之后能重新起 worker 并完成查询 |
+| 1.14 | `tests\check.bat` 的判定 | 每个测试进程必须打印 ` OK`/` SKIP`（否则失败）；`zn_task.h` 用 `cl /W4 /WX` 编译通过 |
 
 ---
 
@@ -393,6 +597,8 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 4. **不要用“加一个 NULL 检查”解决 L8**：对象内存可能已被复用；要延迟释放或引入
    代际/活跃检查。
 5. **不要在没有 Windows/Linux 环境时声称 IOCP/epoll 已验证**：只写“代码审阅 + 待 CI”。
+   （2026-10-28 起 IOCP 已在 wx-miku 上跑过 `tests\check.bat`，见 1.12；换了机器/工具集
+   仍要重新验证。）
 6. **不要退回 32 位 `zn_Time`，也不要重新引入 `ZN_USE_64BIT_TIMER`**：1.7 已决定
    `zn_Time` = `size_t`；这是刻意的 ABI 变更，调用方必须用 `zn_Time`。
 7. **不要把格式化提交和语义提交混在一起**；格式化提交必须能用 `git diff -w` 验证为空。
@@ -405,6 +611,10 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 11. **不要把 `znet.hpp` 拉进 Clean C**：它是显式 C++11 可选包装。
 12. **不要用 `long long` 表示 `zn_Time`**：宽度靠 `size_t` 自适应，默认配置必须 Clean C。
 13. **不要用 fd 耗尽/信号关闭等脆弱手段硬凑覆盖率**：见 `tests/COVERAGE.md` 的取舍。
+14. **不要用 `TerminateThread`/`pthread_cancel` 给线程池或 DNS worker 收尾**：前者跳过
+    `_endthreadex`（CRT 每线程块不回收，线程持有的 critical section/堆锁也不释放），后者在
+    取消点之外同样不会归还资源；收尾只能是“置标志 → 唤醒 → join”。语义与代价见 1.14、
+    `notes/utils.md`。
 
 ---
 
@@ -413,8 +623,8 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
 1. **虚假 `EAGAIN`**：已决策（1.8/1.9）：`EAGAIN` 绝不静默消费操作 —— 有 park 状态的
    TCP 方向保持 armed，没有 park 状态的 accept/recvfrom 报 `ZN_ERROR` 但不关 socket；
    `ECONNABORTED`/`EINTR` 保持 armed。不设重试预算。理由见 `notes/backends.md`。
-2. **UDP `zn_sendto` 长度上限**：保留 1200 作为保守默认，还是改成 65507 并由调用者负责
-   MTU？推荐保留可配置常量，默认 1200，文档说明分片风险。
+2. **UDP `zn_sendto` 长度上限**：已决策（B4，1.10）：保留 1200 作为 `ZN_MAX_UDPSEND` 的
+   默认值，可在包含 `znet.h` 前覆盖；文档说明“默认不产生 IP 分片”，分片风险归调用者。
 3. **`zn_buffer` 默认 packet handler**：默认丢弃（现状）还是默认收包？推荐默认收包，
    否则 `zn_recvfinish` 的默认行为是“静默丢数据”，太容易踩。
 4. **公共 API 列对齐**：formatter 化后是否保留 `zn_connect (` 的空格？二选一，写进
@@ -429,6 +639,6 @@ B1、L3、L4、L2、L5、L1 已修并配回归；L8 仍在待做清单。IOCP �
    64 位平台得到 64 位时间，32 位回绕按文档化限制处理；不再有 opt-in 分支。
 9. **MSVC C4100（未使用参数）**：用 `(void)` 全覆盖，还是构建脚本 `/wd4100`？用户要求
    `/W4` 无警告；建议 `(void)`，豁免必须在构建文件里写明。
-10. **B13 的 SIGPIPE 策略**：库自己忽略 `SIGPIPE`（进程级副作用），还是在 macOS 上
-    显式启用 `SO_NOSIGPIPE`（需要处理 `_XOPEN_SOURCE` 的可见性）？推荐后者；不要悄悄
-    改全局信号处理。
+10. **B13 的 SIGPIPE 策略**：已决策（1.10）：只给 socket 设 `SO_NOSIGPIPE`，不改全局信号
+    处理；`_XOPEN_SOURCE=600` 隐藏该常量时用 Darwin 的 ABI 值（`ZN_SO_NOSIGPIPE`），
+    并在建 socket 时就设置，避免 connect 完成前的 send 窗口。

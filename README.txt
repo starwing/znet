@@ -23,6 +23,22 @@ Build and test (just is the only build driver; there is no make wrapper):
     just bench      build the benchmark programs in bench/
     just bench echo 5   run the echo benchmark for 5 seconds
 
+Windows (works from a Developer Command Prompt, a plain cmd window or an ssh
+session: misc\msvc-env.bat finds Visual Studio with vswhere and loads the MSVC
+environment when cl.exe is not on PATH.  lua must be on PATH for the runner
+generator; just is optional):
+
+    tests\check.bat      full suite with cl /W4 /WX (IOCP; select is POSIX-only)
+    tests\run.bat tcp    one suite; tests\run.bat tcp tcp_connect for one test
+    bench\build.bat      build the benchmarks with cl
+    bench\run.bat echo 5 run the echo benchmark for 5 seconds
+
+The IOCP suite passes on a Windows machine (VS2022 x64, `cl /W4 /WX`,
+2026-10-28).  `znet.h` always uses IOCP on `_WIN32`, so there is no separate
+select run there.  Re-run `tests\check.bat` after changing platform code: it
+runs one process per test and rejects a run whose output has no " OK" line
+(a test that dies without aborting would otherwise exit 0).
+
 tests/README.md documents the suite, bench/README.md the benchmarks.
 
 Utils:
@@ -38,6 +54,11 @@ API to fetch the front and back items from deque.
 zn_task.h: a task thread pool implement. you can create a task pool and post
 tasks to pool, task will run in other thread, you can use zn_deque.h to notice
 original thread the completion of tasks.
+
+zn_sendto() rejects datagrams larger than ZN_MAX_UDPSEND (default 1200 bytes,
+which stays under the IPv6 minimum MTU, so a datagram is never fragmented by
+the IP layer).  Define ZN_MAX_UDPSEND to a larger value before including
+znet.h if the application wants to own the fragmentation risk.
 
 The znet library and utils have the same license when Lua[3], have fun :)
 
