@@ -38,13 +38,13 @@ send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 
   `--coverage -g -O0` 重建每个 suite，再逐个测试进程运行，最后用 `lcov` 合并
   `tests/build/cov-native` 与 `tests/build/cov-select`。
 - “行覆盖”是 `lcov` 的 `DA` 行：只统计**当前平台实际编译进二进制**的行。
-  macOS 上 `zn_use_backend_iocp` 和 `zn_use_backend_epoll` 不编译，所以 IOCP 和
+  macOS 上 `ZN_USE_BACKEND_IOCP` 和 `ZN_USE_BACKEND_EPOLL` 不编译，所以 IOCP 和
   epoll 的行不在 macOS 的数字里；Linux 上反之（kqueue 不编译）。跨平台不能直接把
   两边的 `.gcda` 混在一起（编译器版本/格式不同），但两边各自生成的 `.info`
   tracefile 可以在同一台机器上 `lcov --add-tracefile` 合并；上表的“POSIX 合并”
   就是这样得到的（kqueue + epoll + select 的行取并集）。
-- `lcov` 的 `inconsistent` 警告来自 `znet.h` 的三次自包含（同一函数在文件里出现多次，
-  行号不同），是本项目单头文件结构的已知噪声，不影响 `DA` 统计。
+- `lcov` 的 `inconsistent` 警告曾来自 `znet.h` 的三次自包含（同一源文件被预处理三次，
+  行号不同）。单次展开后这个来源已经没有了。
 - `just uncovered` 按函数列出未覆盖行（函数边界来自源码扫描：合并后的 FN 区间会跨到
   无关代码，不能直接用）；`just cov-lines` / `just cov-unbranched` 是平铺的行/分支版本。
 - 分支覆盖只作为参考：本任务的门槛是行覆盖；分支低是因为大量 `&&`/`||` 的短路组合

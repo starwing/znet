@@ -21,12 +21,11 @@ CC  := env("CC", "cc")
 CXX := env("CXX", "c++")
 LUA := env("LUA", "lua")
 
-# Defines the generator needs but the compiler already knows: znet.h #undefs
-# its internal zn_use_* macros, but zn_have_kqueue / zn_have_info survive and
-# tests use them to select backend-specific cases.  Keep this in sync with
-# tests/README.md ("conditional compilation").
+# Defines the generator needs but the compiler already knows: the suites use
+# the platform switches to select backend-specific cases.  Keep this in sync
+# with tests/README.md ("conditional compilation").
 GEN_DEFS := if os() == "macos" {
-    "-Dzn_have_kqueue"
+    "-DZN_HAVE_KQUEUE"
 } else if os() == "linux" {
     "-D__linux__"
 } else if os() == "windows" {

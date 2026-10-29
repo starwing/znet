@@ -86,22 +86,23 @@ unused (-Werror). It supports `#if/#ifdef/#ifndef/#elif/#else/#endif` with
 `defined(X)`, `!`, `&&`, `||`, parentheses, integer literals and identifiers,
 and it is given the same `-D` flags as the compiler.
 
-znet.h `#undef`s its internal `zn_use_*` macros at the end of each
-implementation section, so **they are not visible in a test file**. Use the
-macros that survive instead:
+znet.h defines its internal `ZN_USE_*` selectors once in the implementation
+preamble and leaves them defined, so they are visible in a test file. The
+suites still key off the platform switches that misc/gen_entries.lua can also
+mirror with `-D`:
 
 | want | guard |
 | --- | --- |
 | POSIX | `#if !defined(_WIN32)` |
 | select backend | `#if defined(ZN_USE_SELECT)` |
 | reactive backend (kqueue/epoll) | `#if !defined(ZN_USE_SELECT) && !defined(_WIN32)` |
-| kqueue backend | `#if defined(zn_have_kqueue) && !defined(ZN_USE_SELECT)` |
+| kqueue backend | `#if defined(ZN_HAVE_KQUEUE) && !defined(ZN_USE_SELECT)` |
 | epoll backend | `#if defined(__linux__) && !defined(ZN_USE_SELECT)` |
 
-`zn_have_kqueue` and `zn_have_info` are defined by znet.h on the matching
-platforms and are not undefined, so they are safe to test after the include.
-The justfile passes the platform ones to the generator (`GEN_DEFS`); keep
-that list in sync with this table.
+`ZN_HAVE_KQUEUE` and `ZN_HAVE_INFO` are defined by znet.h on the matching
+platforms and are safe to test after the include. The justfile passes the
+platform ones to the generator (`GEN_DEFS`); keep that list in sync with this
+table.
 
 ## Style
 

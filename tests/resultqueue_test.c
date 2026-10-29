@@ -15,12 +15,10 @@
  * blocking in epoll_wait/kevent -- that is the fix from commit 4380d8b
  * (znet.h:2561, znet.h:2762).
  *
- * znet.h #undefs its internal zn_use_* backend selectors at the end of the
- * section that consumes them (znet.h:1138, :2143, :2402, :2597), so after
- * #include "ztest.h" they are gone on every backend: a test file cannot test
- * `zn_use_resultqueue` directly.  ZN_USE_SELECT is the only backend switch
- * that reaches both misc/gen_entries.lua (the -D mirror) and the compiler, so
- * it is what keys this suite; on select the generator emits no tests at all.
+ * znet.h's internal selectors survive the include now, but ZN_USE_SELECT is
+ * still the switch that reaches both misc/gen_entries.lua (the -D mirror) and
+ * the compiler, so it is what keys this suite; on select the generator emits
+ * no tests at all.
  * For an IOCP build the generator must also be given -D_WIN32 (the current
  * justfile only drives POSIX), because Windows has no result queue either.
  *

@@ -13,11 +13,10 @@
  * per-test runner (`just check` / the justfile "run" recipe) so one abort
  * cannot hide the rest.
  *
- * Backend selection: znet.h #undefs its internal zn_use_* selectors after
- * using them, so a test file cannot test those.  The result-queue (reactive)
- * backends are "POSIX and no ZN_USE_SELECT"; ZN_HAVE_KQUEUE and ZN_USE_SELECT
- * both survive znet.h and misc/gen_entries.lua is given the same platform
- * defines as the compiler (see tests/README.md, "conditional compilation").
+ * Backend selection: znet.h's internal ZN_USE_* selectors survive the include,
+ * but the portable guards below key off ZN_USE_SELECT, _WIN32 and __linux__,
+ * because misc/gen_entries.lua is given the same platform defines as the
+ * compiler (see tests/README.md, "conditional compilation").
  */
 
 #include "ztest.h"
@@ -1454,8 +1453,8 @@ TEST(tcp_listen_conflict) {
  * retain unreleased; S->waitings never reached 0 and zn_run(ZN_RUN_LOOP)
  * never returned.  close now cancels exactly the parked directions.
  * Only the result-queue backends have can_write and the parked-send state,
- * hence the guard; znet.h #undefs its zn_use_* selectors, so the reactive
- * backend is identified the portable way: POSIX without ZN_USE_SELECT. */
+ * hence the guard; the reactive backend is identified the portable way:
+ * POSIX without ZN_USE_SELECT. */
 #if !defined(ZN_USE_SELECT) && !defined(_WIN32)
 
 #define BLOCKED_SEND_SIZE 65536

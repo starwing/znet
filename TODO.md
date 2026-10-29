@@ -242,7 +242,7 @@ IOCP）：**全绿**。之前的所有“未在 Windows 验证”条目现在有
 | `dispatch_test` 编译失败：`zn_State` 没有 `result_queue` | 该断言只对 reactive 后端成立，守卫漏了 `_WIN32` | 守卫改成 `!ZN_USE_SELECT && !_WIN32` |
 | 假绿：套件里 abort 了却报 “all suites passed” | MSVC 的 `abort()` 退出码是 `0xC0000409`（负数），cmd 的 `if errorlevel 1` 按有符号比较 | `check.bat` 改判 `if not "!errorlevel!"=="0"`；并且每个测试一个进程，abort 不再隐藏同一套件后面的用例 |
 | `cl: error D8003 缺少源文件名` | `/I"%SRC%"` 的 `%SRC%` 以 `\` 结尾，`\"` 吃掉参数 | `/I"%SRC%/."` |
-| Windows 上的 “select 那一遍” 是假的 | `znet.h` 在 `_WIN32` 上固定 `zn_use_backend_iocp`，`-DZN_USE_SELECT` 只影响测试宏 | `check.bat` 只跑 native；`select` 参数明确报错退出 2 |
+| Windows 上的 “select 那一遍” 是假的 | `znet.h` 在 `_WIN32` 上固定 `ZN_USE_BACKEND_IOCP`，`-DZN_USE_SELECT` 只影响测试宏 | `check.bat` 只跑 native；`select` 参数明确报错退出 2 |
 | `tcp_send_after_close`：close 后立刻 reconnect 返回 `ZN_EBUSY` | IOCP 的挂起 connect 完成仍持有 handler/retain，直到完成被取出 | 测试按平台断言（见 B14）；`waitings == 0` 也只在 POSIX 断言 |
 
 ### 1.13 验证基线更新（2026-10-28，Windows 并入）
@@ -573,8 +573,11 @@ C2 的 MSVC `/W4` 部分随 1.15 关闭：`tests\check.bat`、`example.c`、`ben
   `register*` 改 `reg*`；`znBC_*`/`znRB_*` → `znZ_*`/`znX_*`；`zn_initialized` →
   `znP_started`。验证：macOS `just check`、`orb just check`（epoll + select）、
   `just check-c89`、`just check-cpp03`、`just smoke` 全绿。
-- **B2（待用户用 LSP 批量做）**：`zn_use_*` → `zuU_*`（只剩这一项，守卫已改完）；表见
-  `notes/refine.md` §1.6。用户决定先保留旧名（一眼可辨），后期一起改。
+- **B2（完成，2026-10-29）**：`zn_use_*` → `ZN_USE_*`（大写下划线，保留
+  `backend`/`platform` 前缀）；同时把三次自包含折叠成单次展开，无条件段去掉开关。
+  派生 flag `ZN_USE_BACKEND_SELECT` 没有再保留：select 段用
+  `POSIX && !ZN_USE_BACKEND_REACTIVE` 守卫（select 也是无 epoll/kqueue 平台的兜底，
+  并不等于用户开关 `ZN_USE_SELECT`）。表见 `notes/refine.md` §1.6。
 - **B3**：控制流（44 处**带工作的**裸 `return;`、6 处带工作的循环 `break`/`continue`、
   3 处 `for(;;)`、7 处 bool 形参、5 个 do-while 宏）、一次性 helper 内联、函数前注释压缩。
   按文件/后端分片提交。

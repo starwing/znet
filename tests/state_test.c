@@ -533,11 +533,10 @@ TEST(objects_after_close_begins) {
  * so a successfully queued post reports ZN_ERROR.  Desired behaviour:
  * zn_post() returns ZN_OK and the handler runs.  Kept last: it aborts.
  *
- * `#ifdef zn_use_backend_epoll` cannot be used: znet.h #undef's that macro in
- * its implementation pass (znet.h:2402), so it is never visible here.  Use the
- * backend selection condition instead (see tests/README.md): Linux + epoll.
- * The justfile hands __linux__ to gen_entries.lua, so the runner table and the
- * compiler agree: compiled only on the Linux native (epoll) build. */
+ * `#ifdef ZN_USE_BACKEND_EPOLL` would work now, but the suite keys off the
+ * same condition misc/gen_entries.lua sees (see tests/README.md): Linux +
+ * epoll. The justfile hands __linux__ to gen_entries.lua, so the runner table
+ * and the compiler agree: compiled only on the Linux native (epoll) build. */
 #if defined(__linux__) && !defined(ZN_USE_SELECT)
 
 TEST(post_returns_ok_epoll) {
