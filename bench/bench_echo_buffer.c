@@ -95,8 +95,7 @@ static void new_connection(void *ud, zn_State *state) {
     zn_recvonheader(&data->recv, on_header, data);
     zn_recvonpacket(&data->recv, on_client_packet, data);
     data->tcp = zn_newtcp(state);
-    if (zn_connect(data->tcp, addr, port, SOCK_STREAM, on_connect, data)
-        != ZN_OK)
+    if (zn_connect(data->tcp, addr, port, on_connect, data) != ZN_OK)
         zn_post(state, new_connection, NULL);
 }
 
@@ -272,7 +271,7 @@ int main(int argc, const char **argv) {
         for (i = 0; i < client_count; ++i) zn_post(S, new_connection, NULL);
     } else {
         zn_Accept *accept;
-        if ((accept = zn_newaccept(S, SOCK_STREAM)) == NULL) return 2;
+        if ((accept = zn_newaccept(S)) == NULL) return 2;
         zn_listen(accept, addr, port);
         zn_accept(accept, on_accept, NULL);
         printf("listening at %s:%d ...\n", addr, port);

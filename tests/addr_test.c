@@ -1,7 +1,7 @@
 /* addr_test.c -- address conversion helpers (znU_*).
  *
  * Covers znP_parseaddr (IPv4/IPv6 literals and rejected input),
- * znP_setinfo round-trips, znP_ipproto, znP_ntop and znP_error.  These are
+ * znP_setinfo round-trips, znP_ntop and znP_error.  These are
  * pure string/struct conversions: no zn_State, no socket and no
  * zn_initialize() is needed (InetPtonA/InetNtopA work without WSAStartup).
  *
@@ -126,13 +126,6 @@ TEST(addr_setinfo_ipv6) {
     znP_setinfo(&sa, &info);
     assertstreq(info.addr, "2001:db8::1");
     asserteq(info.port, 80u);
-}
-
-/* ---- socket type -> protocol ---- */
-
-TEST(addr_ipproto) {
-    asserteq(znP_ipproto(SOCK_STREAM), IPPROTO_TCP);
-    asserteq(znP_ipproto(SOCK_DGRAM), IPPROTO_UDP);
 }
 
 /* ---- address -> text ---- */

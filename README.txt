@@ -55,10 +55,20 @@ zn_task.h: a task thread pool implement. you can create a task pool and post
 tasks to pool, task will run in other thread, you can use zn_deque.h to notice
 original thread the completion of tasks.
 
-zn_sendto() rejects datagrams larger than ZN_MAX_UDPSEND (default 1200 bytes,
-which stays under the IPv6 minimum MTU, so a datagram is never fragmented by
-the IP layer).  Define ZN_MAX_UDPSEND to a larger value before including
-znet.h if the application wants to own the fragmentation risk.
+UDP sockets are datagram sockets: zn_newudp() creates and binds one (port 0
+asks the OS for an ephemeral port), and there is no listen/accept for UDP.
+zn_connectudp() sets or changes the default peer; it is a plain synchronous
+connect(), with no callback and no "one connect per object" rule.  After it,
+zn_sendto(udp, buf, len, NULL, 0) sends to the connected peer, while
+zn_sendto(udp, buf, len, addr, port) is the unconnected form and is not
+supported on a connected socket.  zn_recvfrom() receives in both cases.
+zn_newaccept()/zn_connect() are TCP-only and no longer take a socket type.
+
+zn_sendto(), including the NULL/0 connected form, rejects datagrams larger
+than ZN_MAX_UDPSEND (default 1200 bytes, which stays under the IPv6 minimum
+MTU, so a datagram is never fragmented by the IP layer).  Define
+ZN_MAX_UDPSEND to a larger value before including znet.h if the application
+wants to own the fragmentation risk.
 
 zn_starttimer() rejects a delay of ZN_FOREVER or larger with ZN_EPARAM: a delay
 must stay below the "wait forever" sentinel, which doubles as "no deadline"

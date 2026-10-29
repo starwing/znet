@@ -88,7 +88,7 @@ static zn_Time on_client(void *ud, zn_Timer *timer, zn_Time elapsed) {
     zn_recvonpacket(&node->recv, on_packet, node);
     node->user_data = 0;
     node->tcp = tcp;
-    zn_connect(tcp, addr, port, SOCK_STREAM, on_connect, node);
+    zn_connect(tcp, addr, port, on_connect, node);
     return 1;
 }
 

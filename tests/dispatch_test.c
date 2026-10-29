@@ -141,7 +141,7 @@ static void dt_start(dt_Ctx *c, int max_accept) {
     memset(c, 0, sizeof(*c));
     c->S = zt_open();
     c->max_accept = max_accept;
-    c->a = zn_newaccept(c->S, SOCK_STREAM);
+    c->a = zn_newaccept(c->S);
     assertok(c->a != NULL);
     asserteq(zn_listen(c->a, "127.0.0.1", 0), ZN_OK);
     c->port = zt_accept_port(c->a);
@@ -152,9 +152,7 @@ static void dt_start(dt_Ctx *c, int max_accept) {
 static void dt_newclient(dt_Ctx *c, zn_Tcp **out) {
     *out = zn_newtcp(c->S);
     assertok(*out != NULL);
-    asserteq(zn_connect(*out, "127.0.0.1", c->port, SOCK_STREAM, dt_on_connect,
-                        c),
-             ZN_OK);
+    asserteq(zn_connect(*out, "127.0.0.1", c->port, dt_on_connect, c), ZN_OK);
 }
 
 /* ---- portable tests ---- */
@@ -346,7 +344,7 @@ static void dt_on_accept_nop(void *ud, zn_Accept *a, unsigned err, zn_Tcp *t) {
 
 TEST(dispatch_select_disarm_drops_snapshot) {
     zn_State  *S = zt_open();
-    zn_Accept *a = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *a = zn_newaccept(S);
     int        fd;
     assertok(a != NULL);
     asserteq(zn_listen(a, "127.0.0.1", 0), ZN_OK);
@@ -458,9 +456,7 @@ static void dt_l8_on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
         asserteq(zn_closetcp(c->c2), ZN_OK);
         c->n = c->c2;
     }
-    asserteq(zn_connect(c->n, "127.0.0.1", c->dead, SOCK_STREAM, dt_l8_on_new,
-                        c),
-             ZN_OK);
+    asserteq(zn_connect(c->n, "127.0.0.1", c->dead, dt_l8_on_new, c), ZN_OK);
 }
 
 static void dt_l8_case(int mode) {
@@ -470,7 +466,7 @@ static void dt_l8_case(int mode) {
     memset(&c, 0, sizeof(c));
     c.mode = mode;
     c.S = zt_open();
-    c.a = zn_newaccept(c.S, SOCK_STREAM);
+    c.a = zn_newaccept(c.S);
     assertok(c.a != NULL);
     asserteq(zn_listen(c.a, "127.0.0.1", 0), ZN_OK);
     c.port = zt_accept_port(c.a);
@@ -484,12 +480,10 @@ static void dt_l8_case(int mode) {
 
     /* queue c1's completion first, then c2's: both are pending when the
      * test's first poll runs, and the batch order follows that order */
-    asserteq(zn_connect(c.c1, "127.0.0.1", c.port, SOCK_STREAM,
-                        dt_l8_on_connect, &c),
+    asserteq(zn_connect(c.c1, "127.0.0.1", c.port, dt_l8_on_connect, &c),
              ZN_OK);
     dt_l8_wait_write(c.c1);
-    asserteq(zn_connect(c.c2, "127.0.0.1", c.port, SOCK_STREAM,
-                        dt_l8_on_connect, &c),
+    asserteq(zn_connect(c.c2, "127.0.0.1", c.port, dt_l8_on_connect, &c),
              ZN_OK);
     dt_l8_wait_write(c.c2);
 

@@ -122,7 +122,7 @@ int main(int argc, const char **argv) {
 
     zn_initbuffpool(&pool);
 
-    if ((accept = zn_newaccept(S, SOCK_STREAM)) == NULL) return 2;
+    if ((accept = zn_newaccept(S)) == NULL) return 2;
     zn_listen(accept, addr, port);
     zn_accept(accept, on_accept, NULL);
     printf("listening at %s:%d ...\n", addr, port);

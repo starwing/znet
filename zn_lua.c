@@ -161,7 +161,6 @@ typedef struct lzn_Tcp {
     int           onerror_ref;
     int           ref;
     unsigned      closing : 1;
-    unsigned      packet : 1;
     zn_SendBuffer send;
     zn_RecvBuffer recv;
 } lzn_Tcp;
@@ -295,8 +294,7 @@ static void lzn_ongetaddr(void *ud, unsigned err, unsigned count,
     lzn_Tcp *obj = (lzn_Tcp *)ud;
     (void)count;
     if (err == ZN_OK)
-        err = zn_connect(obj->tcp, peers[0].addr, peers[0].port,
-                         obj->packet ? SOCK_DGRAM : SOCK_STREAM, lzn_onconnect,
+        err = zn_connect(obj->tcp, peers[0].addr, peers[0].port, lzn_onconnect,
                          obj);
     else
         err += ZN_ERROR_COUNT;
@@ -308,7 +306,6 @@ static int Ltcp_connect(lua_State *L) {
     const char *addr = luaL_optstring(L, 2, "127.0.0.1");
     const char *port = luaL_optstring(L, 3, "http");
     int         ret;
-    obj->packet = lua_toboolean(L, 5);
     luaL_checktype(L, 4, LUA_TFUNCTION);
     lzn_ref(L, 4, &obj->onconnect_ref);
     lzn_ref(L, 1, &obj->ref);
@@ -358,13 +355,12 @@ static int Ltcp_send(lua_State *L) {
     lua_Integer i = lzn_posrelat(luaL_optinteger(L, 3, 1), len);
     lua_Integer j = lzn_posrelat(luaL_optinteger(L, 4, len), len);
     int         ret = ZN_OK;
+    int         prep;
     len = (size_t)(i > j ? 0 : j - i + 1);
     if (!obj->tcp || obj->closing) return 0;
-    {
-        int prep = zn_sendprepare(&obj->send, data + i - 1, len);
-        if (prep < 0) return_result(L, ZN_ERROR);
-        if (!prep) lbind_returnself(L);
-    }
+    prep = zn_sendprepare(&obj->send, data + i - 1, len);
+    if (prep < 0) return_result(L, ZN_ERROR);
+    if (!prep) lbind_returnself(L);
     lzn_ref(L, 1, &obj->ref);
     ret = zn_send(obj->tcp, zn_sendbuff(&obj->send), zn_sendsize(&obj->send),
                   lzn_onsend, obj);
@@ -468,12 +464,11 @@ static void lzn_freeaccept(lua_State *L, lzn_Accept *obj) {
 static int Laccept_new(lua_State *L) {
     zn_State   *S = (zn_State *)lbind_check(L, 1, &lbT_State);
     lzn_Accept *obj;
-    int         packet = lua_toboolean(L, 3);
     luaL_checktype(L, 2, LUA_TFUNCTION);
     obj = (lzn_Accept *)lbind_new(L, sizeof(lzn_Accept), &lbT_Accept);
     obj->S = S;
     obj->L = L;
-    obj->accept = zn_newaccept(S, packet ? SOCK_DGRAM : SOCK_STREAM);
+    obj->accept = zn_newaccept(S);
     obj->onaccept_ref = LUA_NOREF;
     obj->ref = LUA_NOREF;
     if (obj->accept != NULL) {
@@ -606,6 +601,24 @@ static int Ludp_sendto(lua_State *L) {
     return_result(L, ret);
 }
 
+static int Ludp_connect(lua_State *L) {
+    lzn_Udp    *obj = (lzn_Udp *)lbind_check(L, 1, &lbT_Udp);
+    const char *addr = luaL_checkstring(L, 2);
+    lua_Integer port = luaL_checkinteger(L, 3);
+    if (port < 0 || port > 65535) luaL_argerror(L, 3, "port out of range");
+    return_result(L, zn_connectudp(obj->udp, addr, (unsigned)port));
+}
+
+static int Ludp_send(lua_State *L) {
+    lzn_Udp    *obj = (lzn_Udp *)lbind_check(L, 1, &lbT_Udp);
+    size_t      len;
+    const char *data = luaL_checklstring(L, 2, &len);
+    lua_Integer i = lzn_posrelat(luaL_optinteger(L, 3, 1), len);
+    lua_Integer j = lzn_posrelat(luaL_optinteger(L, 4, len), len);
+    len = (size_t)(i > j ? 0 : j - i + 1);
+    return_result(L, zn_sendto(obj->udp, data + i - 1, len, NULL, 0));
+}
+
 static int Ludp_receivefrom(lua_State *L) {
     lzn_Udp *obj = (lzn_Udp *)lbind_check(L, 1, &lbT_Udp);
     int      ret;
@@ -622,6 +635,8 @@ static void open_udp(lua_State *L) {
 #define ENTRY(name) {#name, Ludp_##name}
                        ENTRY(new),
                        ENTRY(delete),
+                       ENTRY(connect),
+                       ENTRY(send),
                        ENTRY(sendto),
                        ENTRY(receivefrom),
 #undef ENTRY

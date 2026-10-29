@@ -66,7 +66,7 @@ static void reset_recorders(void) {
  * for accept, so it produces no callbacks and holds no retain; zn_close()
  * deletes it with every other object.  Port 0 keeps the test self-contained. */
 static int state_anchor(zn_State *S) {
-    zn_Accept *a = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *a = zn_newaccept(S);
     if (a == NULL) return 0;
     return zn_listen(a, "127.0.0.1", 0) == ZN_OK;
 }
@@ -116,7 +116,7 @@ static void cb_post_new_objects(void *ud, zn_State *S) {
     g_posts++;
     zn_close(S);
     assertok(zn_newtcp(S) == NULL);
-    assertok(zn_newaccept(S, SOCK_STREAM) == NULL);
+    assertok(zn_newaccept(S) == NULL);
     assertok(zn_newudp(S, "127.0.0.1", 0) == NULL);
     assertok(zn_newtimer(S, cb_timer_count, NULL) == NULL);
 }
@@ -487,7 +487,7 @@ TEST(close_in_tcp_callback) {
     reset_recorders();
     g_close_state = S;
 
-    a = zn_newaccept(S, SOCK_STREAM);
+    a = zn_newaccept(S);
     assertok(a != NULL);
     asserteq(zn_listen(a, "127.0.0.1", 0), ZN_OK);
     port = zt_accept_port(a);
@@ -496,8 +496,7 @@ TEST(close_in_tcp_callback) {
 
     client = zn_newtcp(S);
     assertok(client != NULL);
-    asserteq(zn_connect(client, "127.0.0.1", port, SOCK_STREAM, cb_connect_send,
-                        NULL),
+    asserteq(zn_connect(client, "127.0.0.1", port, cb_connect_send, NULL),
              ZN_OK);
 
     asserteq(zt_run(S), 0);
@@ -507,7 +506,7 @@ TEST(close_in_tcp_callback) {
 
 TEST(close_with_pending_accept) {
     zn_State  *S = zt_open();
-    zn_Accept *a = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *a = zn_newaccept(S);
 
     assertok(a != NULL);
     asserteq(zn_listen(a, "127.0.0.1", 0), ZN_OK);

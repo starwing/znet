@@ -3,10 +3,10 @@
  * Covers: parameter/state guards, the four TCP callbacks (connect, accept,
  * send, recv), IPv4 and IPv6 loopback echo, repeated timer-driven echo,
  * refused/immediate connect failures, per-direction EBUSY, send/recv after
- * close, close with a pending recv, reconnect after close, close from each
- * callback, peer close (ZN_ECLOSED), 10 back-to-back messages, the L2
- * parked-send regressions, and the select/kqueue-visible I/O error paths
- * (EPIPE, RST, OOB).
+ * close, close with a pending recv, reconnect after close, a listen retried
+ * after a bind failure, close from each callback, peer close (ZN_ECLOSED), 10
+ * back-to-back messages, the L2 parked-send regressions, and the
+ * select/kqueue-visible I/O error paths (EPIPE, RST, OOB).
  *
  * All tests are expected to pass.  The L2 tests sit in their own guarded
  * section because they are white box and reactive-only; run them through the
@@ -71,8 +71,7 @@ TEST(tcp_params) {
     unsigned   port;
 
     /* NULL object guards */
-    asserteq(zn_connect(NULL, "127.0.0.1", 1, SOCK_STREAM, cb_noop_connect,
-                        NULL),
+    asserteq(zn_connect(NULL, "127.0.0.1", 1, cb_noop_connect, NULL),
              ZN_EPARAM);
     asserteq(zn_send(NULL, "x", 1, cb_noop_send, NULL), ZN_EPARAM);
     asserteq(zn_recv(NULL, buf, 1, cb_noop_recv, NULL), ZN_EPARAM);
@@ -80,12 +79,11 @@ TEST(tcp_params) {
     asserteq(zn_accept(NULL, cb_noop_accept, NULL), ZN_EPARAM);
 
     tcp = zn_newtcp(S);
-    accept = zn_newaccept(S, SOCK_STREAM);
+    accept = zn_newaccept(S);
     assertok(tcp != NULL && accept != NULL);
 
     /* NULL callback and zero length guards */
-    asserteq(zn_connect(tcp, "127.0.0.1", 1, SOCK_STREAM, NULL, NULL),
-             ZN_EPARAM);
+    asserteq(zn_connect(tcp, "127.0.0.1", 1, NULL, NULL), ZN_EPARAM);
     asserteq(zn_send(tcp, "x", 1, NULL, NULL), ZN_EPARAM);
     asserteq(zn_send(tcp, "x", 0, cb_noop_send, NULL), ZN_EPARAM);
     asserteq(zn_recv(tcp, buf, sizeof(buf), NULL, NULL), ZN_EPARAM);
@@ -93,8 +91,7 @@ TEST(tcp_params) {
     asserteq(zn_accept(accept, NULL, NULL), ZN_EPARAM);
 
     /* unparsable address strings */
-    asserteq(zn_connect(tcp, "", 1, SOCK_STREAM, cb_noop_connect, NULL),
-             ZN_EPARAM);
+    asserteq(zn_connect(tcp, "", 1, cb_noop_connect, NULL), ZN_EPARAM);
     asserteq(zn_listen(accept, "", 0), ZN_EPARAM);
 
     /* accept before listen */
@@ -110,14 +107,12 @@ TEST(tcp_params) {
      * to complete for this: while it is still in flight the same guard
      * returns ESTATE too, but the contract there is EBUSY (see
      * tcp_connect_twice). */
-    asserteq(zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, cb_flag_connect,
-                        &connected),
+    asserteq(zn_connect(tcp, "127.0.0.1", port, cb_flag_connect, &connected),
              ZN_OK);
     zt_begin(&L, S, 2000);
     ZT_WAIT(L, connected == 1);
     zt_end(&L);
-    asserteq(zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, cb_noop_connect,
-                        NULL),
+    asserteq(zn_connect(tcp, "127.0.0.1", port, cb_noop_connect, NULL),
              ZN_ESTATE);
 
     /* the delete helpers are no-ops on NULL */
@@ -230,7 +225,7 @@ static int echo_run(const char *addr) {
     memset(&c, 0, sizeof(c));
     c.addr = addr;
     c.S = zt_open();
-    c.listener = zn_newaccept(c.S, SOCK_STREAM);
+    c.listener = zn_newaccept(c.S);
     assertok(c.listener != NULL);
 
     ret = zn_listen(c.listener, addr, 0);
@@ -246,8 +241,7 @@ static int echo_run(const char *addr) {
 
     c.client = zn_newtcp(c.S);
     assertok(c.client != NULL);
-    asserteq(zn_connect(c.client, addr, c.port, SOCK_STREAM, echo_connect, &c),
-             ZN_OK);
+    asserteq(zn_connect(c.client, addr, c.port, echo_connect, &c), ZN_OK);
 
     asserteq(zt_run(c.S), 0);
     asserteq(c.connected, 1);
@@ -392,8 +386,7 @@ static zn_Time echo_loop_tick(void *ud, zn_Timer *timer, zn_Time elapsed) {
         free(c);
         zt_fail("zn_newtcp() returned NULL");
     }
-    asserteq(zn_connect(c->tcp, "127.0.0.1", l->port, SOCK_STREAM,
-                        echo_loop_connect, c),
+    asserteq(zn_connect(c->tcp, "127.0.0.1", l->port, echo_loop_connect, c),
              ZN_OK);
     l->started++;
     return 20;
@@ -404,7 +397,7 @@ TEST(tcp_echo_loop) {
 
     memset(&l, 0, sizeof(l));
     l.S = zt_open();
-    l.listener = zn_newaccept(l.S, SOCK_STREAM);
+    l.listener = zn_newaccept(l.S);
     assertok(l.listener != NULL);
     asserteq(zn_listen(l.listener, "127.0.0.1", 0), ZN_OK);
     l.port = zt_accept_port(l.listener);
@@ -519,14 +512,14 @@ static void ioerr_open(ioerr_ctx *c, zn_AcceptHandler *accept_cb,
                        zn_ConnectHandler *connect_cb) {
     memset(c, 0, sizeof(*c));
     c->S = zt_open();
-    c->listener = zn_newaccept(c->S, SOCK_STREAM);
+    c->listener = zn_newaccept(c->S);
     assertok(c->listener != NULL);
     asserteq(zn_listen(c->listener, "127.0.0.1", 0), ZN_OK);
     asserteq(zn_accept(c->listener, accept_cb, c), ZN_OK);
     c->client = zn_newtcp(c->S);
     assertok(c->client != NULL);
     asserteq(zn_connect(c->client, "127.0.0.1", zt_accept_port(c->listener),
-                        SOCK_STREAM, connect_cb, c),
+                        connect_cb, c),
              ZN_OK);
 }
 
@@ -793,14 +786,14 @@ TEST(tcp_send_recv_twice) {
     memset(&c, 0, sizeof(c));
     S = zt_open();
     c.S = S;
-    c.listener = zn_newaccept(S, SOCK_STREAM);
+    c.listener = zn_newaccept(S);
     assertok(c.listener != NULL);
     asserteq(zn_listen(c.listener, "127.0.0.1", 0), ZN_OK);
     asserteq(zn_accept(c.listener, busy_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
     asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        SOCK_STREAM, busy_connect, &c),
+                        busy_connect, &c),
              ZN_OK);
 
     asserteq(zt_run(S), 0);
@@ -829,7 +822,7 @@ TEST(tcp_send_after_close) {
     char       buf[8];
     unsigned   port;
 
-    listener = zn_newaccept(S, SOCK_STREAM);
+    listener = zn_newaccept(S);
     assertok(listener != NULL);
     asserteq(zn_listen(listener, "127.0.0.1", 0), ZN_OK);
     port = zt_accept_port(listener);
@@ -837,9 +830,7 @@ TEST(tcp_send_after_close) {
 
     tcp = zn_newtcp(S);
     assertok(tcp != NULL);
-    asserteq(zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, cb_noop_connect,
-                        NULL),
-             ZN_OK);
+    asserteq(zn_connect(tcp, "127.0.0.1", port, cb_noop_connect, NULL), ZN_OK);
     asserteq(zn_closetcp(tcp), ZN_OK);
 
     /* after a close the socket is gone: send and recv are state errors */
@@ -852,13 +843,10 @@ TEST(tcp_send_after_close) {
      * keeps the handler of a connect that was in flight when close ran until
      * its completion is dequeued, so an immediate reconnect is EBUSY (B14). */
 #ifdef _WIN32
-    asserteq(zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, cb_noop_connect,
-                        NULL),
+    asserteq(zn_connect(tcp, "127.0.0.1", port, cb_noop_connect, NULL),
              ZN_EBUSY);
 #else
-    asserteq(zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, cb_noop_connect,
-                        NULL),
-             ZN_OK);
+    asserteq(zn_connect(tcp, "127.0.0.1", port, cb_noop_connect, NULL), ZN_OK);
 #endif
 
     zn_deltcp(tcp);
@@ -922,14 +910,14 @@ TEST(tcp_close_pending_recv) {
     memset(&c, 0, sizeof(c));
     S = zt_open();
     c.S = S;
-    c.listener = zn_newaccept(S, SOCK_STREAM);
+    c.listener = zn_newaccept(S);
     assertok(c.listener != NULL);
     asserteq(zn_listen(c.listener, "127.0.0.1", 0), ZN_OK);
     asserteq(zn_accept(c.listener, pend_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
     asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        SOCK_STREAM, pend_connect, &c),
+                        pend_connect, &c),
              ZN_OK);
 
     asserteq(zt_run(S), 0);
@@ -979,9 +967,7 @@ static void reconn_connect1(void *ud, zn_Tcp *tcp, unsigned err) {
     c->first = 1;
     /* close but keep the object, then connect again on the same object */
     asserteq(zn_closetcp(tcp), ZN_OK);
-    asserteq(zn_connect(tcp, "127.0.0.1", c->port, SOCK_STREAM, reconn_connect2,
-                        c),
-             ZN_OK);
+    asserteq(zn_connect(tcp, "127.0.0.1", c->port, reconn_connect2, c), ZN_OK);
 }
 
 TEST(tcp_reconnect_after_close) {
@@ -991,7 +977,7 @@ TEST(tcp_reconnect_after_close) {
     memset(&c, 0, sizeof(c));
     S = zt_open();
     c.S = S;
-    c.listener = zn_newaccept(S, SOCK_STREAM);
+    c.listener = zn_newaccept(S);
     assertok(c.listener != NULL);
     asserteq(zn_listen(c.listener, "127.0.0.1", 0), ZN_OK);
     c.port = zt_accept_port(c.listener);
@@ -999,8 +985,7 @@ TEST(tcp_reconnect_after_close) {
     asserteq(zn_accept(c.listener, reconn_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
-    asserteq(zn_connect(c.client, "127.0.0.1", c.port, SOCK_STREAM,
-                        reconn_connect1, &c),
+    asserteq(zn_connect(c.client, "127.0.0.1", c.port, reconn_connect1, &c),
              ZN_OK);
 
     asserteq(zt_run(S), 0);
@@ -1094,14 +1079,14 @@ static void close_phase(int mode) {
     c.mode = mode;
     S = zt_open();
     c.S = S;
-    c.listener = zn_newaccept(S, SOCK_STREAM);
+    c.listener = zn_newaccept(S);
     assertok(c.listener != NULL);
     asserteq(zn_listen(c.listener, "127.0.0.1", 0), ZN_OK);
     asserteq(zn_accept(c.listener, close_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
     asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        SOCK_STREAM, close_connect, &c),
+                        close_connect, &c),
              ZN_OK);
 
     asserteq(zt_run(S), 0); /* the delete inside the callback ends the loop */
@@ -1185,14 +1170,14 @@ TEST(tcp_peer_echo_peer_close) {
     memset(&c, 0, sizeof(c));
     S = zt_open();
     c.S = S;
-    c.listener = zn_newaccept(S, SOCK_STREAM);
+    c.listener = zn_newaccept(S);
     assertok(c.listener != NULL);
     asserteq(zn_listen(c.listener, "127.0.0.1", 0), ZN_OK);
     asserteq(zn_accept(c.listener, eof_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
     asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        SOCK_STREAM, eof_connect, &c),
+                        eof_connect, &c),
              ZN_OK);
 
     asserteq(zt_run(S), 0);
@@ -1281,14 +1266,14 @@ TEST(tcp_many_messages) {
     c.byte = 'z';
     S = zt_open();
     c.S = S;
-    c.listener = zn_newaccept(S, SOCK_STREAM);
+    c.listener = zn_newaccept(S);
     assertok(c.listener != NULL);
     asserteq(zn_listen(c.listener, "127.0.0.1", 0), ZN_OK);
     asserteq(zn_accept(c.listener, many_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
     asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        SOCK_STREAM, many_connect, &c),
+                        many_connect, &c),
              ZN_OK);
 
     asserteq(zt_run(S), 0);
@@ -1330,7 +1315,7 @@ TEST(tcp_connect_refused) {
     int         ret;
 
     memset(&c, 0, sizeof(c));
-    listener = zn_newaccept(S, SOCK_STREAM);
+    listener = zn_newaccept(S);
     assertok(listener != NULL);
     asserteq(zn_listen(listener, "127.0.0.1", 0), ZN_OK);
     port = zt_accept_port(listener);
@@ -1339,7 +1324,7 @@ TEST(tcp_connect_refused) {
 
     tcp = zn_newtcp(S);
     assertok(tcp != NULL);
-    ret = zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, refused_connect, &c);
+    ret = zn_connect(tcp, "127.0.0.1", port, refused_connect, &c);
     if (ret == ZN_OK) {
         /* loopback usually refuses asynchronously; the loop delivers it */
         asserteq(zt_run(S), 0);
@@ -1367,8 +1352,7 @@ TEST(tcp_connect_unreachable) {
     int       ret;
 
     assertok(tcp != NULL);
-    ret = zn_connect(tcp, "255.255.255.255", 80, SOCK_STREAM, cb_noop_connect,
-                     NULL);
+    ret = zn_connect(tcp, "255.255.255.255", 80, cb_noop_connect, NULL);
     test_log("  connect broadcast: ret=%d (%s)\n", ret, zn_strerror(ret));
     asserteq(ret, ZN_ECONNECT);
     asserteq(S->waitings, 0);
@@ -1391,7 +1375,7 @@ TEST(tcp_connect_twice) {
     int        conn_ok = 0;
     int        ret;
 
-    listener = zn_newaccept(S, SOCK_STREAM);
+    listener = zn_newaccept(S);
     assertok(listener != NULL);
     asserteq(zn_listen(listener, "127.0.0.1", 0), ZN_OK);
     port = zt_accept_port(listener);
@@ -1399,12 +1383,10 @@ TEST(tcp_connect_twice) {
 
     tcp = zn_newtcp(S);
     assertok(tcp != NULL);
-    asserteq(zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, cb_flag_connect,
-                        &conn_ok),
+    asserteq(zn_connect(tcp, "127.0.0.1", port, cb_flag_connect, &conn_ok),
              ZN_OK);
 
-    ret = zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, cb_noop_connect,
-                     NULL);
+    ret = zn_connect(tcp, "127.0.0.1", port, cb_noop_connect, NULL);
     test_log("  connect twice: second zn_connect -> %d (%s), waitings=%u\n",
              ret, zn_strerror(ret), S->waitings);
     asserteq(ret, ZN_EBUSY);
@@ -1412,8 +1394,7 @@ TEST(tcp_connect_twice) {
     /* the rejected second connect must not have broken the first one */
     asserteq(zt_run(S), 0);
     asserteq(conn_ok, 1);
-    verified = (zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, cb_noop_connect,
-                           NULL)
+    verified = (zn_connect(tcp, "127.0.0.1", port, cb_noop_connect, NULL)
                 == ZN_ESTATE);
     asserteq(verified, 1);
     asserteq(S->waitings, 0);
@@ -1426,8 +1407,8 @@ TEST(tcp_connect_twice) {
  * zn_listen() must report EBIND and leave the accept object unusable. */
 TEST(tcp_listen_conflict) {
     zn_State  *S = zt_open();
-    zn_Accept *a = zn_newaccept(S, SOCK_STREAM);
-    zn_Accept *b = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *a = zn_newaccept(S);
+    zn_Accept *b = zn_newaccept(S);
     unsigned   port;
 
     assertok(a != NULL && b != NULL);
@@ -1438,6 +1419,63 @@ TEST(tcp_listen_conflict) {
     asserteq(zn_accept(b, cb_noop_accept, NULL), ZN_ESTATE);
     zn_delaccept(a);
     zn_delaccept(b);
+    zt_close(S);
+}
+
+typedef struct retry_ctx {
+    int accepted;
+    int connected;
+} retry_ctx;
+
+static void retry_onaccept(void *ud, zn_Accept *accept, unsigned err,
+                           zn_Tcp *tcp) {
+    retry_ctx *c = (retry_ctx *)ud;
+    (void)accept;
+    asserteq(err, ZN_OK);
+    assertok(tcp != NULL);
+    c->accepted = 1;
+    zn_deltcp(tcp);
+}
+
+static void retry_onconnect(void *ud, zn_Tcp *tcp, unsigned err) {
+    retry_ctx *c = (retry_ctx *)ud;
+    asserteq(err, ZN_OK);
+    c->connected = 1;
+    zn_deltcp(tcp);
+}
+
+/* a failed listen committed nothing, so the accept object is reusable: the
+ * retry succeeds and its events still reach this object. */
+TEST(tcp_listen_retry_after_bind_failure) {
+    zn_State  *S = zt_open();
+    zn_Accept *busy = zn_newaccept(S);
+    zn_Accept *retry = zn_newaccept(S);
+    zn_Tcp    *client;
+    retry_ctx  c;
+    unsigned   port;
+
+    memset(&c, 0, sizeof(c));
+    assertok(busy != NULL && retry != NULL);
+    asserteq(zn_listen(busy, "127.0.0.1", 0), ZN_OK);
+    port = zt_accept_port(busy);
+    assertok(port != 0);
+
+    asserteq(zn_listen(retry, "127.0.0.1", port), ZN_EBIND);
+    asserteq(zn_listen(retry, "127.0.0.1", 0), ZN_OK);
+    asserteq(zn_accept(retry, retry_onaccept, &c), ZN_OK);
+
+    client = zn_newtcp(S);
+    assertok(client != NULL);
+    asserteq(zn_connect(client, "127.0.0.1", zt_accept_port(retry),
+                        retry_onconnect, &c),
+             ZN_OK);
+
+    asserteq(zt_run(S), 0);
+    asserteq(c.connected, 1);
+    asserteq(c.accepted, 1);
+    asserteq(S->waitings, 0);
+    zn_delaccept(busy);
+    zn_delaccept(retry);
     zt_close(S);
 }
 
@@ -1538,14 +1576,14 @@ TEST(tcp_close_blocked_send) {
     memset(blocked_buf, 'x', sizeof(blocked_buf));
     S = zt_open();
     c.S = S;
-    c.listener = zn_newaccept(S, SOCK_STREAM);
+    c.listener = zn_newaccept(S);
     assertok(c.listener != NULL);
     asserteq(zn_listen(c.listener, "127.0.0.1", 0), ZN_OK);
     asserteq(zn_accept(c.listener, blocked_accept, &c), ZN_OK);
     c.client = zn_newtcp(S);
     assertok(c.client != NULL);
     asserteq(zn_connect(c.client, "127.0.0.1", zt_accept_port(c.listener),
-                        SOCK_STREAM, blocked_connect, &c),
+                        blocked_connect, &c),
              ZN_OK);
 
     /* regressed by L2: close did not cancel the parked send, so its retain
@@ -1688,7 +1726,7 @@ TEST(tcp_close_both_parked) {
  * connect would enqueue the same node twice (D's failure surface #4). */
 TEST(tcp_connect_after_close_queued) {
     zn_State  *S = zt_open();
-    zn_Accept *listener = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *listener = zn_newaccept(S);
     zn_Tcp    *tcp = zn_newtcp(S);
     char       buf[8];
     int        fd;
@@ -1707,7 +1745,7 @@ TEST(tcp_connect_after_close_queued) {
     znR_add(S, ZN_OK, &tcp->send_result);
 
     asserteq(zn_closetcp(tcp), ZN_OK);
-    asserteq(zn_connect(tcp, "127.0.0.1", zt_accept_port(listener), SOCK_STREAM,
+    asserteq(zn_connect(tcp, "127.0.0.1", zt_accept_port(listener),
                         cb_noop_connect, NULL),
              ZN_EBUSY);
 
@@ -1765,7 +1803,7 @@ TEST(tcp_retry_send_after_eagain) {
  * deliberately not pumped, so the state is torn down with zn_close() only. */
 TEST(tcp_accept_twice) {
     zn_State  *S = zt_open();
-    zn_Accept *accept = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *accept = zn_newaccept(S);
     int        ret;
 
     assertok(accept != NULL);
@@ -1854,7 +1892,7 @@ static void sp_connect_and_abort(unsigned port) {
  * used to hang the loop; the guard turns that into a failure, not a stall */
 TEST(tcp_listener_is_nonblocking) {
     zn_State  *S = zt_open();
-    zn_Accept *accept = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *accept = zn_newaccept(S);
 
     asserteq(zn_listen(accept, "127.0.0.1", 0), ZN_OK);
     assertok((fcntl(accept->socket, F_GETFL) & O_NONBLOCK) != 0);
@@ -1864,7 +1902,7 @@ TEST(tcp_listener_is_nonblocking) {
 
 TEST(tcp_accept_spurious_ready) {
     zn_State  *S = zt_open();
-    zn_Accept *accept = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *accept = zn_newaccept(S);
     sp_ctx     c;
     zt_Loop    L;
     unsigned   port;
@@ -1903,7 +1941,7 @@ TEST(tcp_accept_spurious_ready) {
  * is not proof that the listening socket is unusable. */
 TEST(tcp_accept_error_event) {
     zn_State  *S = zt_open();
-    zn_Accept *accept = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *accept = zn_newaccept(S);
     sp_ctx     c;
     zt_Loop    L;
     unsigned   port;
@@ -1939,7 +1977,7 @@ TEST(tcp_accept_error_event) {
  * would fail this test, which is one reason there is none.) */
 TEST(tcp_accept_after_aborted_clients) {
     zn_State  *S = zt_open();
-    zn_Accept *accept = zn_newaccept(S, SOCK_STREAM);
+    zn_Accept *accept = zn_newaccept(S);
     sp_ctx     c;
     zt_Loop    L;
     unsigned   port;

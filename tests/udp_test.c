@@ -30,11 +30,12 @@
  * callback runs, and the callback runs after the arming code has returned,
  * so the recorder lives at file scope (same shape as timer_test.c). */
 
-static int      g_fired;
-static unsigned g_client_port;
-static unsigned g_server_port;
-static char     g_sbuf[64];
-static char     g_cbuf[64];
+static int         g_fired;
+static unsigned    g_client_port;
+static unsigned    g_server_port;
+static char        g_sbuf[64];
+static char        g_cbuf[64];
+static const char *g_expect; /* payload expected by the connected tests */
 
 static void reset_recorder(void) {
     g_fired = 0;
@@ -210,6 +211,183 @@ TEST(udp_multiple_datagrams) {
     asserteq(g_fired, MSG_COUNT); /* no packet loss on loopback */
     /* the server saw all five, so the client may be deleted now */
     zn_deludp(cli);
+    zt_close(S);
+}
+
+/* ---- connected UDP: zn_connectudp + zn_sendto(..., NULL, 0) ---- */
+
+static void cb_conn_server(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+                           const char *addr, unsigned port) {
+    (void)ud;
+    asserteq(err, ZN_OK);
+    asserteq(count, 5);
+    assertbytes(g_sbuf, "hello", 5);
+    asserteq(port, g_client_port);
+    g_fired++;
+    asserteq(zn_sendto(udp, "pong", 4, addr, port), ZN_OK);
+    zn_deludp(udp);
+}
+
+static void cb_conn_client(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+                           const char *addr, unsigned port) {
+    (void)ud;
+    (void)addr;
+    asserteq(err, ZN_OK);
+    asserteq(count, 4);
+    assertbytes(g_cbuf, "pong", 4);
+    asserteq(port, g_server_port);
+    g_fired++;
+    zn_deludp(udp);
+}
+
+TEST(udp_connect_sendto_null) {
+    zn_State *S = zt_open();
+    zn_Udp   *srv, *cli;
+
+    reset_recorder();
+    srv = zn_newudp(S, "127.0.0.1", 0);
+    cli = zn_newudp(S, "127.0.0.1", 0);
+    assertok(srv != NULL && cli != NULL);
+    g_server_port = zt_udp_port(srv);
+    g_client_port = zt_udp_port(cli);
+    assertok(g_server_port != 0 && g_client_port != 0);
+
+    assertok(zn_recvfrom(srv, g_sbuf, (unsigned)sizeof(g_sbuf), cb_conn_server,
+                         NULL)
+             == ZN_OK);
+    assertok(zn_connectudp(cli, "127.0.0.1", g_server_port) == ZN_OK);
+    assertok(zn_recvfrom(cli, g_cbuf, (unsigned)sizeof(g_cbuf), cb_conn_client,
+                         NULL)
+             == ZN_OK);
+
+    /* NULL/0 is the connected send; the client's bind port is preserved */
+    asserteq(zn_sendto(cli, "hello", 5, NULL, 0), ZN_OK);
+
+    asserteq(zt_run(S), 0);
+    asserteq(g_fired, 2);
+    zt_close(S);
+}
+
+/* ---- repeat zn_connectudp changes the default peer ---- */
+
+static void cb_repeat_server(void *ud, zn_Udp *udp, unsigned err,
+                             unsigned count, const char *addr, unsigned port) {
+    (void)ud;
+    (void)addr;
+    (void)port;
+    asserteq(err, ZN_OK);
+    asserteq(count, (unsigned)strlen(g_expect));
+    assertbytes(g_sbuf, g_expect, (unsigned)strlen(g_expect));
+    g_fired++;
+    zn_deludp(udp);
+}
+
+TEST(udp_connect_repeat) {
+    zn_State *S = zt_open();
+    zn_Udp   *a, *b, *cli;
+    unsigned  a_port, b_port;
+
+    reset_recorder();
+    a = zn_newudp(S, "127.0.0.1", 0);
+    b = zn_newudp(S, "127.0.0.1", 0);
+    cli = zn_newudp(S, "127.0.0.1", 0);
+    assertok(a != NULL && b != NULL && cli != NULL);
+    a_port = zt_udp_port(a);
+    b_port = zt_udp_port(b);
+    assertok(a_port != 0 && b_port != 0);
+
+    g_expect = "one";
+    assertok(zn_recvfrom(a, g_sbuf, (unsigned)sizeof(g_sbuf), cb_repeat_server,
+                         NULL)
+             == ZN_OK);
+    assertok(zn_connectudp(cli, "127.0.0.1", a_port) == ZN_OK);
+    asserteq(zn_sendto(cli, "one", 3, NULL, 0), ZN_OK);
+    asserteq(zt_run(S), 0);
+    asserteq(g_fired, 1);
+
+    g_expect = "two";
+    assertok(zn_recvfrom(b, g_sbuf, (unsigned)sizeof(g_sbuf), cb_repeat_server,
+                         NULL)
+             == ZN_OK);
+    assertok(zn_connectudp(cli, "127.0.0.1", b_port) == ZN_OK);
+    asserteq(zn_sendto(cli, "two", 3, NULL, 0), ZN_OK);
+    asserteq(zt_run(S), 0);
+    asserteq(g_fired, 2);
+
+    zn_deludp(cli);
+    zt_close(S);
+}
+
+/* ---- connected-send parameter/state errors ---- */
+
+TEST(udp_connect_errors) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    zn_Udp   *peer = zn_newudp(S, "127.0.0.1", 0);
+    unsigned  port;
+
+    assertok(u != NULL && peer != NULL);
+    port = zt_udp_port(peer);
+    assertok(port != 0);
+
+    /* no destination and not connected: send() reports the missing peer */
+    asserteq(zn_sendto(u, "x", 1, NULL, 0), ZN_ESTATE);
+    /* NULL address is only meaningful with port 0 */
+    asserteq(zn_sendto(u, "x", 1, NULL, 1), ZN_EPARAM);
+    asserteq(zn_connectudp(NULL, "127.0.0.1", port), ZN_EPARAM);
+    asserteq(zn_connectudp(u, NULL, 0), ZN_EPARAM);
+
+    /* a v4 socket cannot connect to a v6 literal; connect() rejects it */
+    asserteq(zn_connectudp(u, "::1", port), ZN_EPARAM);
+
+    assertok(zn_connectudp(u, "127.0.0.1", port) == ZN_OK);
+    asserteq(zn_sendto(u, "x", 1, NULL, 0), ZN_OK);
+
+    zn_closeudp(u);
+    asserteq(zn_connectudp(u, "127.0.0.1", port), ZN_ESTATE);
+    asserteq(zn_sendto(u, "x", 1, NULL, 0), ZN_ESTATE);
+
+    zn_deludp(u);
+    zn_deludp(peer);
+    zt_close(S);
+}
+
+/* ---- connect while a recvfrom is armed ---- */
+
+static void cb_pending_client(void *ud, zn_Udp *udp, unsigned err,
+                              unsigned count, const char *addr, unsigned port) {
+    (void)ud;
+    (void)addr;
+    asserteq(err, ZN_OK);
+    asserteq(count, 2);
+    assertbytes(g_cbuf, "hi", 2);
+    asserteq(port, g_server_port);
+    g_fired++;
+    zn_deludp(udp);
+}
+
+TEST(udp_connect_pending_recv) {
+    zn_State *S = zt_open();
+    zn_Udp   *srv, *cli;
+
+    reset_recorder();
+    srv = zn_newudp(S, "127.0.0.1", 0);
+    cli = zn_newudp(S, "127.0.0.1", 0);
+    assertok(srv != NULL && cli != NULL);
+    g_server_port = zt_udp_port(srv);
+    g_client_port = zt_udp_port(cli);
+    assertok(g_server_port != 0 && g_client_port != 0);
+
+    assertok(zn_recvfrom(cli, g_cbuf, (unsigned)sizeof(g_cbuf),
+                         cb_pending_client, NULL)
+             == ZN_OK);
+    /* changing the peer while the recvfrom is pending is allowed */
+    assertok(zn_connectudp(cli, "127.0.0.1", g_server_port) == ZN_OK);
+    asserteq(zn_sendto(srv, "hi", 2, "127.0.0.1", g_client_port), ZN_OK);
+
+    asserteq(zt_run(S), 0);
+    asserteq(g_fired, 1);
+    zn_deludp(srv);
     zt_close(S);
 }
 

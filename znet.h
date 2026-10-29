@@ -146,7 +146,7 @@ ZN_API void zn_canceltimer(zn_Timer *timer);
 
 /* znet accept routines */
 
-ZN_API zn_Accept *zn_newaccept(zn_State *S, int type);
+ZN_API zn_Accept *zn_newaccept(zn_State *S);
 ZN_API int        zn_closeaccept(zn_Accept *accept);
 ZN_API void       zn_delaccept(zn_Accept *accept);
 
@@ -161,7 +161,7 @@ ZN_API void    zn_deltcp(zn_Tcp *tcp);
 
 ZN_API void zn_getpeerinfo(zn_Tcp *tcp, zn_PeerInfo *info);
 
-ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, int type,
+ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port,
                       zn_ConnectHandler *cb, void *ud);
 
 ZN_API int zn_send(zn_Tcp *tcp, const char *buff, unsigned len,
@@ -174,6 +174,8 @@ ZN_API int zn_recv(zn_Tcp *tcp, char *buff, unsigned len, zn_RecvHandler *cb,
 ZN_API zn_Udp *zn_newudp(zn_State *S, const char *addr, unsigned port);
 ZN_API int     zn_closeudp(zn_Udp *udp);
 ZN_API void    zn_deludp(zn_Udp *udp);
+
+ZN_API int zn_connectudp(zn_Udp *udp, const char *addr, unsigned port);
 
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len,
                      const char *addr, unsigned port);
@@ -618,7 +620,6 @@ ZN_API zn_Time zn_time(void) {
     return r;
 }
 
-/* no process-wide init, and an accept carries no backend state */
 ZN_API void zn_initialize(void) {}
 ZN_API void zn_deinitialize(void) {}
 static void znB_initaccept(zn_Accept *accept) { (void)accept; }
@@ -630,7 +631,6 @@ static void znB_initaccept(zn_Accept *accept) { (void)accept; }
 #define znP_family(sa) ((sa)->addr.sa_family)
 #define znP_isv6(sa)   (znP_family(sa) == AF_INET6)
 #define znP_size(sa)   (znP_isv6(sa) ? sizeof((sa)->ipv6) : sizeof((sa)->ipv4))
-#define znP_ipproto(t) ((t) == SOCK_STREAM ? IPPROTO_TCP : IPPROTO_UDP)
 
 typedef union zn_SockAddr {
     struct sockaddr     addr; /* generic view for syscalls */
@@ -854,8 +854,7 @@ typedef enum zn_RequestType {
     ZN_TRECV,
     ZN_TSEND,
     ZN_TCONNECT,
-    ZN_TRECVFROM,
-    ZN_TSENDTO
+    ZN_TRECVFROM
 } zn_RequestType;
 
 typedef struct zn_Request {
@@ -896,7 +895,6 @@ struct zn_Accept {
     SOCKET            socket;         /* listener */
     SOCKET            client;         /* accepted fd, not yet tcp */
     int               family;         /* v4 or v6 */
-    int               type;           /* stream or dgram */
     DWORD             recv_length;    /* addrs length from AcceptEx */
     char              recv_buffer[(sizeof(zn_SockAddr) + 16) * 2]; /* 2 addrs */
 };
@@ -948,10 +946,10 @@ static int znP_getextension(SOCKET socket, GUID *gid, void *fn) {
                      NULL, NULL);
 }
 
-static int znB_tcpfromfamily(zn_Tcp *tcp, int family, int type) {
+static int znB_tcpfromfamily(zn_Tcp *tcp, int family) {
     SOCKET      fd;
     zn_SockAddr laddr;
-    fd = WSASocket(family, type, znP_ipproto(type), NULL, 0,
+    fd = WSASocket(family, SOCK_STREAM, IPPROTO_TCP, NULL, 0,
                    WSA_FLAG_OVERLAPPED);
     if (fd == INVALID_SOCKET) return ZN_ESOCKET;
     memset(&laddr, 0, sizeof(laddr));
@@ -978,10 +976,10 @@ static int znB_closetcp(zn_Tcp *tcp) {
     return r;
 }
 
-static int znB_connect(zn_Tcp *tcp, zn_SockAddr *addr, int type) {
+static int znB_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
     static LPFN_CONNECTEX lpConnectEx = NULL;
 
-    int         err = znB_tcpfromfamily(tcp, znP_family(addr), type);
+    int         err = znB_tcpfromfamily(tcp, znP_family(addr));
     static GUID gid = WSAID_CONNECTEX;
     DWORD       dwLength = 0;
     char        buf[1];
@@ -1077,14 +1075,13 @@ static int znB_closeaccept(zn_Accept *accept) {
 static int znB_listen(zn_Accept *accept, zn_SockAddr *addr) {
     SOCKET fd;
     accept->family = znP_family(addr);
-    fd = WSASocket(accept->family, accept->type, znP_ipproto(accept->type),
-                   NULL, 0, WSA_FLAG_OVERLAPPED);
+    fd = WSASocket(accept->family, SOCK_STREAM, IPPROTO_TCP, NULL, 0,
+                   WSA_FLAG_OVERLAPPED);
     if (fd == INVALID_SOCKET) return ZN_ESOCKET;
     znP_setexclusiveaddruse(fd);
     if (bind(fd, &addr->addr, znP_size(addr)) != 0)
         return closesocket(fd), ZN_EBIND;
-    if (accept->type == SOCK_STREAM && listen(fd, SOMAXCONN) != 0)
-        return closesocket(fd), ZN_ERROR;
+    if (listen(fd, SOMAXCONN) != 0) return closesocket(fd), ZN_ERROR;
     if (!CreateIoCompletionPort((HANDLE)fd, accept->S->iocp, (ULONG_PTR)accept,
                                 1))
         return closesocket(fd), ZN_EPOLL;
@@ -1097,8 +1094,8 @@ static int znB_accept(zn_Accept *accept) {
     SOCKET               fd;
     if (!lpAcceptEx && !znP_getextension(accept->socket, &gid, &lpAcceptEx))
         return ZN_ERROR;
-    fd = WSASocket(accept->family, accept->type, znP_ipproto(accept->type),
-                   NULL, 0, WSA_FLAG_OVERLAPPED);
+    fd = WSASocket(accept->family, SOCK_STREAM, IPPROTO_TCP, NULL, 0,
+                   WSA_FLAG_OVERLAPPED);
     if (fd == INVALID_SOCKET) return ZN_ESOCKET;
     if (!lpAcceptEx(accept->socket, fd, accept->recv_buffer, 0,
                     sizeof(zn_SockAddr) + 16, sizeof(zn_SockAddr) + 16,
@@ -1126,7 +1123,7 @@ static int znB_onaccept(zn_Accept *accept, BOOL bSuccess) {
     assert(cb != NULL); /* one completion per armed accept */
     if (!bSuccess) return znB_failaccept(accept, cb), ZN_OK;
     znP_updateacceptinfo(accept->socket, accept->client);
-    if (accept->type == SOCK_STREAM) znP_setnodelay(accept->client);
+    znP_setnodelay(accept->client);
     if (!lpGetAcceptExSockaddrs
         && !znP_getextension(accept->client, &gid, &lpGetAcceptExSockaddrs))
         return znB_failaccept(accept, cb), ZN_OK;
@@ -1168,9 +1165,26 @@ static int znB_initudp(zn_Udp *udp, zn_SockAddr *addr) {
     return (udp->socket = fd), ZN_OK;
 }
 
+static int znB_connectudp(zn_Udp *udp, zn_SockAddr *addr) {
+    int e;
+    if (connect(udp->socket, &addr->addr, (int)znP_size(addr)) != SOCKET_ERROR)
+        return ZN_OK;
+    e = (int)WSAGetLastError();
+    if (e == WSAEAFNOSUPPORT || e == WSAEINVAL) return ZN_EPARAM;
+    return znP_error(e);
+}
+
 static int znB_sendto(zn_Udp *udp, const char *buff, unsigned len,
                       zn_SockAddr *addr) {
-    int r = sendto(udp->socket, buff, (int)len, 0, &addr->addr, znP_size(addr));
+    int r, e;
+    if (addr == NULL) {
+        r = send(udp->socket, buff, (int)len, 0);
+        if (r != SOCKET_ERROR) return ZN_OK;
+        e = (int)WSAGetLastError();
+        if (e == WSAENOTCONN || e == WSAEDESTADDRREQ) return ZN_ESTATE;
+        return znP_error(e);
+    }
+    r = sendto(udp->socket, buff, (int)len, 0, &addr->addr, znP_size(addr));
     if (r == SOCKET_ERROR) return znP_error((int)WSAGetLastError());
     return ZN_OK;
 }
@@ -1242,7 +1256,6 @@ static void znB_dispatch(zn_State *S, BOOL bRet, LPOVERLAPPED_ENTRY pEntry) {
     case ZN_TSEND: znB_onsend((zn_Tcp *)upComKey, bRet, dwBytes); break;
     case ZN_TCONNECT: znB_onconnect((zn_Tcp *)upComKey, bRet); break;
     case ZN_TRECVFROM: znB_onrecvfrom((zn_Udp *)upComKey, bRet, dwBytes); break;
-    case ZN_TSENDTO: /* do not have this operation */
     default:;
     }
 }
@@ -1355,7 +1368,6 @@ struct zn_Accept {
     void             *accept_ud;      /* handler userdata */
     zn_AcceptHandler *accept_handler; /* armed until done */
     int               socket;         /* listener */
-    int               type;           /* stream or dgram */
     zn_SocketInfo     info;           /* poll tag: type + owner */
 };
 
@@ -1415,8 +1427,8 @@ static int znB_closetcp(zn_Tcp *tcp) {
     return r;
 }
 
-static int znB_connect(zn_Tcp *tcp, zn_SockAddr *addr, int type) {
-    int r, fd = socket(znP_family(addr), type, 0);
+static int znB_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
+    int r, fd = socket(znP_family(addr), SOCK_STREAM, 0);
     if (fd < 0) return ZN_ESOCKET;
     if (fd >= FD_SETSIZE) return close(fd), ZN_ESOCKET;
     if (tcp->S->nfds < fd) tcp->S->nfds = fd;
@@ -1517,13 +1529,12 @@ static int znB_closeaccept(zn_Accept *accept) {
 }
 
 static int znB_listen(zn_Accept *accept, zn_SockAddr *addr) {
-    int fd = socket(znP_family(addr), accept->type, znP_ipproto(accept->type));
+    int fd = socket(znP_family(addr), SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) return ZN_ESOCKET;
     if (accept->S->nfds < fd) accept->S->nfds = fd;
     znP_setnonblock(fd), znP_setreuseaddr(fd);
     if (bind(fd, &addr->addr, znP_size(addr)) != 0) return close(fd), ZN_EBIND;
-    if (accept->type == SOCK_STREAM && listen(fd, SOMAXCONN) != 0)
-        return close(fd), ZN_ERROR;
+    if (listen(fd, SOMAXCONN) != 0) return close(fd), ZN_ERROR;
     return (accept->socket = fd), ZN_OK;
 }
 
@@ -1575,9 +1586,22 @@ static int znB_closeudp(zn_Udp *udp) {
     return (udp->socket = ZN_INVALID_SOCKET), r;
 }
 
+static int znB_connectudp(zn_Udp *udp, zn_SockAddr *addr) {
+    if (connect(udp->socket, &addr->addr, znP_size(addr)) == 0) return ZN_OK;
+    if (errno == EAFNOSUPPORT || errno == EINVAL) return ZN_EPARAM;
+    return znP_error(errno);
+}
+
 static int znB_sendto(zn_Udp *udp, const char *buff, unsigned len,
                       zn_SockAddr *addr) {
-    int r = sendto(udp->socket, buff, len, 0, &addr->addr, znP_size(addr));
+    int r;
+    if (addr == NULL) {
+        r = send(udp->socket, buff, len, ZN_NOSIGNAL);
+        if (r >= 0) return ZN_OK;
+        if (errno == EDESTADDRREQ || errno == ENOTCONN) return ZN_ESTATE;
+        return znP_error(errno);
+    }
+    r = sendto(udp->socket, buff, len, 0, &addr->addr, znP_size(addr));
     return r < 0 ? znP_error(errno) : ZN_OK;
 }
 
@@ -1714,7 +1738,6 @@ struct zn_Accept {
     void             *accept_ud;      /* handler userdata */
     zn_AcceptHandler *accept_handler; /* armed until done */
     int               socket;         /* listener */
-    int               type;           /* stream or dgram */
     zn_SocketInfo     info;           /* poll tag: type + owner */
 };
 
@@ -1776,11 +1799,11 @@ static int znB_closetcp(zn_Tcp *tcp) {
     return r;
 }
 
-static int znB_connect(zn_Tcp *tcp, zn_SockAddr *addr, int type) {
+static int znB_connect(zn_Tcp *tcp, zn_SockAddr *addr) {
     int r, fd;
     /* a handler left behind by close still owns a result slot here */
     if (tcp->send_handler || tcp->recv_handler) return ZN_EBUSY;
-    if ((fd = socket(znP_family(addr), type, 0)) < 0) return ZN_ESOCKET;
+    if ((fd = socket(znP_family(addr), SOCK_STREAM, 0)) < 0) return ZN_ESOCKET;
     znP_setnonblock(fd), znP_setnosigpipe(fd); /* before the first send() */
     r = connect(fd, &addr->addr, znP_size(addr));
     if (r != 0 && errno != EINPROGRESS) return close(fd), ZN_ECONNECT;
@@ -1885,14 +1908,13 @@ static int znB_closeaccept(zn_Accept *accept) {
 }
 
 static int znB_listen(zn_Accept *accept, zn_SockAddr *addr) {
-    int fd = socket(znP_family(addr), accept->type, znP_ipproto(accept->type));
+    int fd = socket(znP_family(addr), SOCK_STREAM, IPPROTO_TCP);
     if (fd < 0) return ZN_ESOCKET;
-    if (!znF_regread(accept->S, fd, &accept->info)) return close(fd), ZN_EPOLL;
     /* accept() must never block the loop: readiness can go stale */
     znP_setnonblock(fd), znP_setreuseaddr(fd);
     if (bind(fd, &addr->addr, znP_size(addr)) != 0) return close(fd), ZN_EBIND;
-    if (accept->type == SOCK_STREAM && listen(fd, SOMAXCONN) != 0)
-        return close(fd), ZN_ERROR;
+    if (listen(fd, SOMAXCONN) != 0) return close(fd), ZN_ERROR;
+    if (!znF_regread(accept->S, fd, &accept->info)) return close(fd), ZN_EPOLL;
     return (accept->socket = fd), ZN_OK;
 }
 
@@ -1916,9 +1938,22 @@ static int znB_closeudp(zn_Udp *udp) {
     return (udp->socket = ZN_INVALID_SOCKET), r;
 }
 
+static int znB_connectudp(zn_Udp *udp, zn_SockAddr *addr) {
+    if (connect(udp->socket, &addr->addr, znP_size(addr)) == 0) return ZN_OK;
+    if (errno == EAFNOSUPPORT || errno == EINVAL) return ZN_EPARAM;
+    return znP_error(errno);
+}
+
 static int znB_sendto(zn_Udp *udp, const char *buff, unsigned len,
                       zn_SockAddr *addr) {
-    int r = sendto(udp->socket, buff, len, 0, &addr->addr, znP_size(addr));
+    int r;
+    if (addr == NULL) {
+        r = send(udp->socket, buff, len, ZN_NOSIGNAL);
+        if (r >= 0) return ZN_OK;
+        if (errno == EDESTADDRREQ || errno == ENOTCONN) return ZN_ESTATE;
+        return znP_error(errno);
+    }
+    r = sendto(udp->socket, buff, len, 0, &addr->addr, znP_size(addr));
     return r < 0 ? znP_error(errno) : ZN_OK;
 }
 
@@ -2372,10 +2407,10 @@ ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *h, void *ud) {
     return znT_new(&S->ts, h, ud);
 }
 
-ZN_API zn_Accept *zn_newaccept(zn_State *S, int type) {
+ZN_API zn_Accept *zn_newaccept(zn_State *S) {
     znS_getobject(zn_Accept, S, accept);
     accept->socket = ZN_INVALID_SOCKET;
-    znS_setinfo(accept, ZN_ACCEPT), accept->type = type;
+    znS_setinfo(accept, ZN_ACCEPT);
     return znB_initaccept(accept), accept;
 }
 
@@ -2418,7 +2453,7 @@ ZN_API void zn_deltcp(zn_Tcp *tcp) {
         znS_putobject(tcp);
 }
 
-ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, int type,
+ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port,
                       zn_ConnectHandler *cb, void *ud) {
     zn_SockAddr raddr;
     int         r;
@@ -2426,7 +2461,7 @@ ZN_API int zn_connect(zn_Tcp *tcp, const char *addr, unsigned port, int type,
     if (tcp->connect_handler != NULL) return ZN_EBUSY;
     if (znS_valid(tcp)) return ZN_ESTATE;
     if (!znP_parseaddr(&raddr, addr, port)) return ZN_EPARAM;
-    if ((r = znB_connect(tcp, &raddr, type)) != ZN_OK) return r;
+    if ((r = znB_connect(tcp, &raddr)) != ZN_OK) return r;
     assert(strlen(addr) < ZN_MAX_ADDRLEN);
     strcpy(tcp->peer_info.addr, addr);
     tcp->peer_info.port = port;
@@ -2479,11 +2514,24 @@ ZN_API void zn_deludp(zn_Udp *udp) {
     if (udp->recv_handler == NULL) znS_putobject(udp);
 }
 
+ZN_API int zn_connectudp(zn_Udp *udp, const char *addr, unsigned port) {
+    zn_SockAddr raddr;
+    if (udp == NULL || addr == NULL) return ZN_EPARAM;
+    if (!znS_valid(udp)) return ZN_ESTATE;
+    if (!znP_parseaddr(&raddr, addr, port)) return ZN_EPARAM;
+    return znB_connectudp(udp, &raddr);
+}
+
 ZN_API int zn_sendto(zn_Udp *udp, const char *buff, unsigned len,
                      const char *addr, unsigned port) {
     zn_SockAddr raddr;
-    if (udp == NULL || len == 0 || len > ZN_MAX_UDPSEND) return ZN_EPARAM;
+    if (udp == NULL || buff == NULL || len == 0 || len > ZN_MAX_UDPSEND)
+        return ZN_EPARAM;
     if (!znS_valid(udp)) return ZN_ESTATE;
+    if (addr == NULL) {
+        if (port != 0) return ZN_EPARAM;
+        return znB_sendto(udp, buff, len, NULL);
+    }
     if (!znP_parseaddr(&raddr, addr, port)) return ZN_EPARAM;
     return znB_sendto(udp, buff, len, &raddr);
 }

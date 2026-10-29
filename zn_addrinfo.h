@@ -112,7 +112,6 @@ static struct znA_AddrRequest_qlist znA_failed; /* done, but zn_post failed */
 
 static void znA_makepeers(znA_AddrRequest *req, void *info);
 static void znA_makehints(znA_AddrRequest *req, void *info);
-/* platform hooks, both called with the lock held */
 static void znA_wake(void);
 static void znA_waitidle(zn_State *S);
 

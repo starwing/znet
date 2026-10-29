@@ -86,8 +86,7 @@ ZN_API void zn_resetbuffer(zn_Buffer *b);
 ZN_API size_t zn_resizebuffer(zn_Buffer *b, size_t len);
 
 ZN_API char *zn_prepbuffsize(zn_Buffer *b, size_t len);
-/* 1 on success, 0 when the buffer could not grow (OOM) */
-ZN_API int zn_addlstring(zn_Buffer *b, const char *s, size_t len);
+ZN_API int   zn_addlstring(zn_Buffer *b, const char *s, size_t len);
 
 /* recv buffer */
 

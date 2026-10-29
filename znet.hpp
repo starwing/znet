@@ -122,9 +122,10 @@ struct UdpSocket : public std::enable_shared_from_this<UdpSocket> {
 
     bool initialize(EventLoopPtr const& summer, std::string const& ip,
                     unsigned short port);
+    bool doConnect(std::string const& remoteIP, unsigned short remotePort);
+    bool doSend(char const* buf, unsigned len);
     bool doSendTo(char const* buf, unsigned len, std::string const& remoteIP,
                   unsigned short remotePort);
-    ;
     bool doRecvFrom(char* buf, unsigned len, OnRecvFromHandler&& h);
 };
 
@@ -188,8 +189,7 @@ inline bool TcpAccept::openAccept(std::string const& ip, unsigned short port) {
 }
 
 inline bool TcpAccept::initialize(EventLoopPtr const& summer) {
-    if (accept == nullptr)
-        return (accept = zn_newaccept(summer->S, 0)) != nullptr;
+    if (accept == nullptr) return (accept = zn_newaccept(summer->S)) != nullptr;
     return true;
 }
 
@@ -237,7 +237,7 @@ static inline void connect_cb(void* ud, zn_Tcp* tcp, unsigned err) {
 inline bool TcpSocket::doConnect(std::string const& remoteIP,
                                  unsigned short     remotePort,
                                  OnConnectHandler&& h) {
-    if (zn_connect(tcp, remoteIP.c_str(), remotePort, 0, connect_cb, this)
+    if (zn_connect(tcp, remoteIP.c_str(), remotePort, connect_cb, this)
         == ZN_OK) {
         connectHandler = std::move(h);
         return true;
@@ -276,6 +276,15 @@ inline bool TcpSocket::doRecv(char* buf, unsigned len, OnRecvHandler&& h) {
         return true;
     }
     return false;
+}
+
+inline bool UdpSocket::doConnect(std::string const& remoteIP,
+                                 unsigned short     remotePort) {
+    return zn_connectudp(udp, remoteIP.c_str(), remotePort) == ZN_OK;
+}
+
+inline bool UdpSocket::doSend(char const* buf, unsigned len) {
+    return zn_sendto(udp, buf, len, nullptr, 0) == ZN_OK;
 }
 
 inline bool UdpSocket::doSendTo(char const* buf, unsigned len,

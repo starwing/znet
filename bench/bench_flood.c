@@ -65,7 +65,7 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
 static void on_error(void *ud, zn_State *state) {
     zn_Tcp *tcp = zn_newtcp(state);
     (void)ud;
-    if (zn_connect(tcp, addr, port, SOCK_STREAM, on_connect, &client) != ZN_OK)
+    if (zn_connect(tcp, addr, port, on_connect, &client) != ZN_OK)
         zn_post(state, on_error, NULL);
 }
 
@@ -206,11 +206,11 @@ int main(int argc, const char **argv) {
     if (is_client) {
         zn_Tcp *tcp;
         if ((tcp = zn_newtcp(S)) == NULL) return 2;
-        zn_connect(tcp, addr, port, SOCK_STREAM, on_connect, NULL);
+        zn_connect(tcp, addr, port, on_connect, NULL);
         printf("connecting to %s:%d ...\n", addr, port);
     } else {
         zn_Accept *accept;
-        if ((accept = zn_newaccept(S, SOCK_STREAM)) == NULL) return 2;
+        if ((accept = zn_newaccept(S)) == NULL) return 2;
         zn_listen(accept, addr, port);
         zn_accept(accept, on_accept, NULL);
         printf("listening at %s:%d ...\n", addr, port);
