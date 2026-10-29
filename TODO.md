@@ -8,7 +8,7 @@
 > [`notes/et-vs-lt.md`](notes/et-vs-lt.md)（ET/LT、per-arm 注册、系统调用与吞吐）和
 > [`notes/m4-4ary-heap.md`](notes/m4-4ary-heap.md)（timer 堆结构与键拷贝）。
 >
-> 定位用函数名，行号只作提示（多处已漂移，见 F3）。验证以 `just check`（macOS
+> 定位用函数名（笔记与本文都不再引用行号）。验证以 `just check`（macOS
 > kqueue + select）、`orb just check`（epoll + select）、`wx-miku just check`（IOCP，
 > `cl /W4 /WX`）三条矩阵为准；当前矩阵与覆盖率见 `notes/changes.md` §4。
 
@@ -16,8 +16,7 @@
 
 - **P1**：C3/B4、U1、B8 —— 硬约束（签名 <80）、工具头不能编译、监听失败路径留下
   stale 表项。
-- **P2**：L10、B14、L11、U15、T5、U8、U11、F3、CI —— 健壮性、资源边界、误导性
-  文档/测试。
+- **P2**：L10、B14、L11、U15、T5、U8、U11、CI —— 健壮性、资源边界、文档/测试。
 - **P3**：B3、M5、format-check、覆盖率门槛 —— 清理与收尾，不动语义。
 - **决策**：见 §5。D3/D4 方向已定（操作结构体重构，不阻塞 C3 的非 API 部分先做），
   D5 决定 U1，D1/D2 不影响顺序。
@@ -111,25 +110,13 @@
 
 ## 4. 文档、验证与 CI
 
-- [ ] **F3**（P2）行号与过时注释
-  ① 本文件以外的文档里行号已漂移：`notes/backends.md` 自己的提示写着“见 TODO F3”；
-  实测例子：L10 现在 `znet.h:303–305`（旧文写 316）、B8 现在 reactive `znB_listen`
-  （旧文写 2352）。`notes/changes.md` §4 的“22 处折行签名”也已过时（实际 36 处，见 C3）。
-  建议：统一改成“函数名 + 可选行号”，计数只在 §4 保留一处。
-  ② 已清理（2026-10-29）：`tests/` 里描述“未实现/expected failure”的注释共 **5** 处
-  （原记 4 处，漏了 `post_returns_ok_epoll`/B1），连同 `state_test.c` 的文件头段落与
-  小节标题一起改成回归注释，见 `notes/changes.md` §1.21。
-  ③ 仍未清理：`tests/` 里 6 处引用**已关闭**的 ID（`state_test.c` T3×2、`timer_test.c`
-  T3/T4/B6、`buffer_test.c` U4、`dispatch_test.c` L1）。它们不会让人误判“有 bug”，但
-  照 ID 去查会落空；和 ① 一起做，改成函数名或 `changes.md` 章节号。
-  另：`bench/zn_bufferpool.h` 在 HEAD 上就不过 `clang-format --dry-run --Werror`
-  （空行、`# define … user_data; ` 行尾空格、指针写法），格式化提交要单独做、`git diff -w`
-  为空。
-
 - [ ] **M5**（P3）文档与示例收尾
   更新 `README.txt` 的约束矩阵；补 `scripts/check.sh` 或等价入口，写明本机验证范围。
   `test.c` 已删除、`just smoke` 只跑 `example.c`（见 `notes/changes.md` §1.2），不用再做。
-  与 F3 合并做，避免同一批文件改两遍。
+  另有格式收尾：`bench/zn_bufferpool.h` 在 HEAD 上就不过 `clang-format --dry-run --Werror`
+  （空行、`# define … user_data; ` 行尾空格、指针写法），格式化提交要单独做、`git diff -w`
+  为空。还可以顺手评估删掉 `tests/state_test.c` 里已冗余的 `state_anchor`（它只为 select 的
+  nfds bug 存在，删它要动若干 `assertok(state_anchor(S))`）。
 
 - [ ] **CI 矩阵**（P2，独立工作流）
   GitHub Actions 的 ubuntu / macos / windows 三矩阵。Windows job 需要 `cl /W4 /WX` 的
@@ -192,9 +179,8 @@
 排序依据：① 是否崩溃/内存安全；② 是否违反硬约束（AGENTS 的 <80 与 Clean C）；
 ③ 是否让后续工作建立在错误信息上（过时文档/测试）；④ 成本与前置依赖。
 
-已完成的批次记在 `notes/changes.md`（最近一次是 §1.21）；这里只剩未做项，顺序如下：
+已完成的批次记在 `notes/changes.md`（最近一次是 §1.22）；这里只剩未做项，顺序如下：
 
-- **F3（①③，P2）**：文档里的行号与已关 ID 会把人引向已修的 bug，成本最低。前置：无。
 - **C3（P1）**：硬约束，且挡住 `format-check`；非 API 部分现在就能清，公共 API 那 5 个
   入口等操作结构体重构。前置：API 部分等 D3/D4。
 - **U1（P1）**：头文件编不过；选“删”几乎是分钟级，留着就得修 3 个缺陷。前置：D5。
@@ -211,9 +197,8 @@
 - **CI（P2，独立）**：现在全靠三台机器手工跑，可与前四项并行。前置：无。
 - **B3（P3）**：纯精炼，量大且机械；放语义修复之后，免得 diff 淹没 bug。前置：C3 的
   API 决策。
-- **M5 + format-check（P3）**：收尾；与 F3 合并做文档，检查脚本在 C3 之后才有意义。
-  前置：C3。
+- **M5 + format-check（P3）**：收尾；检查脚本在 C3 之后才有意义。前置：C3。
 - **覆盖率门槛（P3）**：依赖 CI 或 fault-injection 构建。前置：CI。
 
-如果只做三件事：F3（①③）→ C3 的非 API 部分 → U1。下一个迭代建议前四项（F3、C3、U1、
-B8），一次只碰一个契约面；CI 作为并行轨道，别等全部修完才铺。
+如果只做三件事：C3 的非 API 部分 → U1 → B8。下一个迭代建议前四项（C3、U1、B8、U15），
+一次只碰一个契约面；CI 作为并行轨道，别等全部修完才铺。
