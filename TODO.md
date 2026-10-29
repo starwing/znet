@@ -76,8 +76,8 @@
 
 | ID | 修复 | 回归 / 验证 |
 | --- | --- | --- |
-| T3 | 空堆时 `znT_gettimeout` 返回 `ZN_FOREVER`，不再返回 `ZN_FOREVER - now` | `timer_nexttime_and_timeout` |
-| T4 | 取消根节点/最后一个 timer 时同步 `nexttime`，不再提前唤醒 | `timer_cancel_updates_nexttime` |
+| T3 | 空堆时 `znT_gettimeout` 返回 `ZN_FOREVER`，不再返回 `ZN_FOREVER - now` | `timer_root_and_timeout` |
+| T4 | 取消根节点/最后一个 timer 后最早 deadline 不失效（后改为直接读 `keys[0]`，缓存已删） | `timer_cancel_updates_root` |
 | T8 | 删掉 `zn_MemPool timers;` 行末多余的 `\` | 编译 |
 | B6 | epoll 超时经 `znB_timeoutms` 钳到 `INT_MAX`，>24.8 天不再回绕成“永久等待” | `epoll_timeout_clamp`（Linux） |
 | B7 | select/reactive 的 `znB_initudp` 对 UDP socket 调用 `znU_set_nonblock` | `udp_socket_is_nonblocking`（POSIX） |
@@ -368,7 +368,7 @@ user 0.17 s、sys 1.93 s，约 33.5 万条消息 → **用户态 0.08 µs/条（
 | T6 | `zn_starttimer` 值域：`delayms >= ZN_FOREVER` 返回 `ZN_EPARAM`，失败零副作用（先校验后 cancel）；`delayms == 0` 仍合法；handler 返回哨兵不重挂。Lua `Ltimer_start` 的反向 ref 判断一并修掉 | `timer_start_param` |
 | T7 | 相同 deadline 的触发顺序不定义（只文档化）；测试改成"组间有序、组内不比" | `timer_fire_same_deadline` |
 | 基准 | 新增 `bench/bench_timer.c`：arm/cancel/fire/clock，无网络；`just bench timer` | `just bench`、严格 C89/C++03 |
-| property | 256 个 timer × 2000 次随机 arm/cancel/fire，检查堆序、index、used、nexttime 和触发顺序；确认写错 sift-up/sift-down 都会红 | `timer_heap_property` |
+| property | 256 个 timer × 2000 次随机 arm/cancel/fire，检查堆序、index、used、root（`keys[0]`）和触发顺序；确认写错 sift-up/sift-down 都会红 | `timer_heap_property` |
 | M4 | 4 叉实现完成并实测，`fire` 全面退化超过 5% 门槛 → **回退**，保留二叉堆 | 7 轮交替 A/B |
 
 4 叉实验（4 叉/二叉的比值中位数，越小越好，7 轮交替 A/B，macOS arm64）：
@@ -411,6 +411,10 @@ timer heap`、`bench: document what arm actually measures`。4 叉实现没有�
 保留：fire 快 32-36%，代价是每个 timer 多 8 B（100k 时 +0.8 MB）和 arm 约 5%
 （每层多一次 8 B 存储）。4 叉堆仍不采用（1.16）；稳定 id / 索引堆留给 B4
 （结论和原型数据见 `notes/m4-4ary-heap.md` §8）。
+
+同轮还删掉了 `zn_TimerState.nexttime` 缓存：它恒等于 `used ? keys[0] : ZN_FOREVER`，
+是 T3/T4 两个 bug 的来源；`znT_gettimeout`/`znT_update` 改成直接读 `keys[0]`，测试相应
+改名（`timer_root_and_timeout`、`timer_cancel_updates_root`）。
 
 验证：macOS `just check` / `check-c89` / `check-cpp03` / `smoke` / `test-lua`、
 `orb just check`（epoll + select）、`wx-miku just check`（IOCP，`/W4 /WX`）。
@@ -632,9 +636,9 @@ C2 的 MSVC `/W4` 部分随 1.15 关闭：`tests\check.bat`、`example.c`、`ben
 | T1 | `timer_64bit_handler_return` | handler 返回值不被截断 |
 | U2/U3 | `buffcache_boundaries` / `buffer_append_oom` | 越界档位拒绝；OOM 不写坏内存 |
 | U5 | `recv_split_header` | 跨读 header 正确解码 |
-| T3 | `timer_nexttime_and_timeout` | 空堆时 `znT_gettimeout` 恰好返回 `ZN_FOREVER` |
+| T3 | `timer_root_and_timeout` | 空堆时 `znT_gettimeout` 恰好返回 `ZN_FOREVER` |
 | T3/收窄 | `timer_timeout_clamp` | `znS_clampms` 把非 `ZN_FOREVER` 等待钳到 `INT_MAX`，`ZN_FOREVER` 原样保留 |
-| T4 | `timer_cancel_updates_nexttime` | 取消根后 `nexttime` 指向新根；清空后为 `ZN_FOREVER` |
+| T4 | `timer_cancel_updates_root` | 取消根后 `keys[0]` 是新根；清空后 `gettimeout` 为 `ZN_FOREVER` |
 | B6 | `epoll_timeout_clamp`（Linux） | 超时 > `INT_MAX` 被钳位，不回绕成负数 |
 | B7 | `udp_socket_is_nonblocking`（POSIX） | UDP fd 带 `O_NONBLOCK` |
 | U4/U6 | `recv_default_handlers` / `buffcache_alloc_free` | `packet_ud` 初始化；预分配返回实际块数 |

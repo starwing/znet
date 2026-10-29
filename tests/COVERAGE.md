@@ -63,7 +63,7 @@ send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 
 | `tcp_recv_result_after_close` | recv 结果在 close 后完成 |
 | `state_newstate_init_failure` | `RLIMIT_NOFILE=0` 使后端初始化失败 |
 | `timer_cancel_sift_up` | 手工构造堆，取消节点后最后元素需要上筛 |
-| `timer_cancel_updates_nexttime` | 取消根节点后 `nexttime` 指向新根 |
+| `timer_cancel_updates_root` | 取消根节点后 `keys[0]` 是新根 |
 | `epoll_timeout_clamp` | epoll 的 `int` 超时钳到 `INT_MAX` |
 | `recv_default_handlers`（扩展） | 默认 packet handler / `packet_ud` 初始化 |
 | `sendbuffer_merge_oom` | `sendfinish` 合并 pending 时分配失败 |

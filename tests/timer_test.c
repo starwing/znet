@@ -2,7 +2,7 @@
  *
  * Covers: ordering, 0 delay, same deadline, re-arm from the handler, delete
  * from the handler, cancel root/middle/last, cancel twice, cancel unarmed,
- * restart armed/after fire, nexttime/timeout accounting (T3/T4), the epoll
+ * restart armed/after fire, root/timeout accounting (T3/T4), the epoll
  * integer timeout clamp (B6), and the zn_Time width (T1/T2 truncation
  * regressions, skipped on 32-bit builds).
  *
@@ -238,7 +238,6 @@ TEST(timer_cancel_sift_up) {
         S->ts.keys[i] = emit[i], S->ts.nodes[i] = t[i];
     }
     S->ts.used = 6;
-    S->ts.nexttime = emit[0];
     assertok(S->ts.size >= 6);
 
     /* removing slot 4 (emit 11) moves the last timer (emit 5) into slot 1,
@@ -251,7 +250,7 @@ TEST(timer_cancel_sift_up) {
     asserteq(S->ts.keys[1], emit[5]);
     asserteq(S->ts.nodes[3], t[3]);
     asserteq(S->ts.nodes[4], t[1]);
-    asserteq(S->ts.nexttime, emit[0]);
+    asserteq(S->ts.keys[0], emit[0]);
     zt_close(S);
 }
 
@@ -367,13 +366,12 @@ TEST(timer_deltimer_armed) {
     zt_close(S);
 }
 
-/* ---- nexttime / timeout accounting ---- */
+/* ---- root / timeout accounting ---- */
 
-TEST(timer_nexttime_and_timeout) {
+TEST(timer_root_and_timeout) {
     zn_State *S = zt_open();
 
     asserteq(S->ts.used, 0);
-    asserteq(S->ts.nexttime, ZN_FOREVER);
 
     /* empty heap: gettimeout must report ZN_FOREVER, so every backend waits
      * without a timeout instead of blocking for ~49.7 days (TODO T3). */
@@ -386,7 +384,7 @@ TEST(timer_nexttime_and_timeout) {
         asserteq(zn_starttimer(t, 100), ZN_OK);
         asserteq(S->ts.used, 1);
         asserteq(t->index, 0);
-        asserteq(S->ts.nexttime, t->emit);
+        asserteq(S->ts.keys[0], t->emit);
         asserteq(znT_gettimeout(&S->ts, t->emit - 10), 10);
         asserteq(znT_gettimeout(&S->ts, t->emit + 1), 0);
         zn_canceltimer(t);
@@ -407,9 +405,9 @@ TEST(timer_timeout_clamp) {
     asserteq(znS_clampms(ZN_FOREVER), ZN_FOREVER);
 }
 
-/* Cancelling the root must move nexttime to the new root: a stale nexttime
- * wakes the loop on every poll until the cancelled deadline (TODO T4). */
-TEST(timer_cancel_updates_nexttime) {
+/* Cancelling the root must leave the next smallest timer at keys[0]: the old
+ * nexttime cache could go stale here and wake the loop early (TODO T4). */
+TEST(timer_cancel_updates_root) {
     zn_State *S = zt_open();
     zn_Timer *a = zn_newtimer(S, cb_record, NULL);
     zn_Timer *b = zn_newtimer(S, cb_record, NULL);
@@ -417,16 +415,16 @@ TEST(timer_cancel_updates_nexttime) {
     assertok(a != NULL && b != NULL);
     asserteq(zn_starttimer(a, 40), ZN_OK);
     asserteq(zn_starttimer(b, 80), ZN_OK);
-    asserteq(S->ts.nexttime, a->emit);
+    asserteq(S->ts.keys[0], a->emit);
 
     zn_canceltimer(a);
     asserteq(S->ts.used, 1);
-    asserteq(S->ts.nexttime, b->emit);
+    asserteq(S->ts.keys[0], b->emit);
     asserteq(znT_gettimeout(&S->ts, b->emit - 5), 5);
 
     zn_canceltimer(b);
     asserteq(S->ts.used, 0);
-    asserteq(S->ts.nexttime, ZN_FOREVER);
+    asserteq(znT_gettimeout(&S->ts, 0), ZN_FOREVER);
 
     zn_deltimer(a);
     zn_deltimer(b);
@@ -458,7 +456,7 @@ TEST(timer_loop_exits_after_fire) {
     asserteq(zt_run(S), 0);
     asserteq(g_fired, 1);
     asserteq(S->ts.used, 0);
-    asserteq(S->ts.nexttime, ZN_FOREVER);
+    asserteq(znT_gettimeout(&S->ts, 0), ZN_FOREVER);
     zt_close(S);
 }
 
@@ -530,7 +528,7 @@ TEST(timer_64bit_delay) {
     assertok(t != NULL);
     asserteq(zn_starttimer(t, big), ZN_OK);
     asserteq(t->emit, t->start + big);
-    asserteq(S->ts.nexttime, t->emit);
+    asserteq(S->ts.keys[0], t->emit);
     assertok(znT_gettimeout(&S->ts, t->start) > (zn_Time)0xFFFFFFFFu / 2);
     zn_canceltimer(t);
     zn_deltimer(t);
@@ -616,7 +614,7 @@ TEST(timer_start_param) {
     asserteq(zn_starttimer(t, ZN_FOREVER), ZN_EPARAM);
     asserteq(t->index, ZN_TIMER_NOINDEX);
     asserteq(S->ts.used, 0);
-    asserteq(S->ts.nexttime, ZN_FOREVER);
+    asserteq(znT_gettimeout(&S->ts, 0), ZN_FOREVER);
 
     /* a rejected re-arm must leave the armed timer alone */
     asserteq(zn_starttimer(t, 100), ZN_OK);
@@ -625,7 +623,7 @@ TEST(timer_start_param) {
     asserteq(S->ts.used, 1);
     asserteq(t->index, 0);
     asserteq(t->emit, emit);
-    asserteq(S->ts.nexttime, emit);
+    asserteq(S->ts.keys[0], emit);
 
     /* zero is still a valid delay: fire on the next update */
     asserteq(zn_starttimer(t, 0), ZN_OK);
@@ -685,7 +683,7 @@ static zn_Time cb_prop(void *ud, zn_Timer *timer, zn_Time elapsed) {
     return 0;
 }
 
-/* the model and the heap must agree on size, nexttime, every index and the
+/* the model and the heap must agree on size, the root, every index and the
  * parent/child order; a broken sift shows up here even when the test never
  * observes a wrong firing order */
 static void prop_check(zn_State *S) {
@@ -695,7 +693,10 @@ static void prop_check(zn_State *S) {
 
     for (i = 0; i < PROP_TIMERS; ++i) used += (unsigned)g_prop_armed[i];
     asserteq(S->ts.used, used);
-    asserteq(S->ts.nexttime, min);
+    if (used == 0)
+        asserteq(min, ZN_FOREVER);
+    else
+        asserteq(S->ts.keys[0], min);
     for (i = 0; i < PROP_TIMERS; ++i) {
         if (!g_prop_armed[i]) {
             asserteq(g_prop[i]->index, ZN_TIMER_NOINDEX);
@@ -771,7 +772,7 @@ TEST(timer_heap_property) {
         zn_deltimer(g_prop[i]);
     }
     asserteq(S->ts.used, 0);
-    asserteq(S->ts.nexttime, ZN_FOREVER);
+    asserteq(znT_gettimeout(&S->ts, 0), ZN_FOREVER);
     zt_close(S);
 }
 
