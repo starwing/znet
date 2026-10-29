@@ -60,6 +60,10 @@ static void bench_order(unsigned *order, unsigned n) {
     }
 }
 
+/* deadlines increase with i, so every insert appends at the tail and the arm
+ * number is the insert path *without* sift-up.  A k-ary heap's claimed win is
+ * in sift-up, so an arity comparison also needs a decreasing-deadline variant
+ * (worst case); keep that in mind before reading an "arm is neutral" result. */
 static int bench_arm_all(zn_Timer **t, unsigned n) {
     unsigned i;
     for (i = 0; i < n; ++i)

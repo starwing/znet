@@ -39,6 +39,12 @@ pop-min path is timed without a poll loop.  `bench_timer` is not a server+client
 pair, so on Windows the `just bench timer` recipe runs
 `bench\build\msvc\bench_timer.exe` directly instead of `run.bat`.
 
+Caveat for heap-shape comparisons: `arm` inserts with increasing deadlines, so
+every insert appends at the tail and never sifts up.  It measures the insert
+path only; a k-ary heap's sift-up win needs a decreasing-deadline variant (worst
+case) and does not show up in the `arm` line.  `cancel` cancels in a fixed
+seeded permutation, so it mixes leaf (instant) and deep cancels.
+
 `bench_echo.lua` is the original Lua driver; it is not wired into the justfile.
 
 ## Framing contract (why the length prefix is not added by hand)
