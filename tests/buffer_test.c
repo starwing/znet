@@ -392,7 +392,7 @@ TEST(recv_default_handlers) {
     rec_reset(&rec);
     zn_initrecvbuffer(&rb, NULL);
     assertok(rb.header_handler != NULL);
-    /* TODO U4 + section 7.4: init leaves packet_handler NULL (frames are
+    /* TODO D1: init leaves packet_handler NULL (frames are
      * dropped) until the default-delivery policy is decided.  The user-data
      * pointer must be cleared even so: it used to be uninitialised. */
     assertok(rb.packet_ud == NULL);

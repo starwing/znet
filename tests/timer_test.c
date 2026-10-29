@@ -373,7 +373,7 @@ TEST(timer_root_and_timeout) {
     asserteq(S->ts.used, 0);
 
     /* empty heap: gettimeout must report ZN_FOREVER, so every backend waits
-     * without a timeout instead of blocking for ~49.7 days (TODO T3). */
+     * without a timeout instead of blocking for ~49.7 days. */
     asserteq(znT_gettimeout(&S->ts, 0), ZN_FOREVER);
     asserteq(znT_gettimeout(&S->ts, 12345), ZN_FOREVER);
 
@@ -407,7 +407,7 @@ TEST(timer_timeout_clamp) {
 }
 
 /* Cancelling the root must leave the next smallest timer at keys[0]: the old
- * nexttime cache could go stale here and wake the loop early (TODO T4). */
+ * nexttime cache could go stale here and wake the loop early. */
 TEST(timer_cancel_updates_root) {
     zn_State *S = zt_open();
     zn_Timer *a = zn_newtimer(S, cb_record, NULL);
@@ -433,7 +433,7 @@ TEST(timer_cancel_updates_root) {
 }
 
 /* epoll_wait takes an int; a plain cast turned a timeout above INT_MAX into a
- * negative number, i.e. "wait forever" (TODO B6). */
+ * negative number, i.e. "wait forever". */
 #if defined(__linux__) && !defined(ZN_USE_SELECT)
 TEST(epoll_timeout_clamp) {
     asserteq(znB_timeoutms(ZN_FOREVER), -1);

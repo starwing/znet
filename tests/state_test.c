@@ -11,7 +11,7 @@
  * Loop driving: zt_run() is used only when the callback that ends the test
  * also ends the state (a post/tcp close), or when a timer fires while the poll
  * is already blocked.  A close from a timer that is already due at the start of
- * zn_run() would leave the poll with an empty heap (TODO T3), so
+ * zn_run() would leave the poll with an empty heap, so
  * close_in_timer_callback arms a timer that is still in the future.
  * zn_run(ONCE) on an idle state blocks as well; every ONCE below has a pending
  * post to wake it.
@@ -284,7 +284,8 @@ TEST(state_run_invalid_mode) {
 }
 
 /* A fresh state has nothing to poll: ZN_RUN_CHECK must return 0 at once.
- * ZN_RUN_ONCE is not used here; on an idle state it blocks (TODO T3). */
+ * ZN_RUN_ONCE is not used here; on an idle state it waits forever (an empty
+ * heap makes znT_gettimeout() report ZN_FOREVER). */
 TEST(state_run_check_empty) {
     zn_State *S = zt_open();
 

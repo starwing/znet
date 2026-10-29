@@ -10,11 +10,11 @@
  * Everything here is plain loopback TCP on port 0 (no fixed ports, no sleeps):
  * one listener, one or two clients, and a handler that closes/deletes.
  *
- * The last test is select-only and is the regression test for TODO L1: a
- * callback closes another fd that is still queued in the same select() batch,
- * so znB_dispatch() later finds S->infos[fd] == NULL.  Before the fix that
- * was a NULL dereference.  It stays last because a crash would kill the rest
- * of the process when the whole suite runs in one binary.
+ * The last test is select-only and is the regression test for L1 (see
+ * notes/changes.md 1.1): a callback closes another fd that is still queued in
+ * the same select() batch, so znB_dispatch() later finds S->infos[fd] == NULL.
+ * Before the fix that was a NULL dereference.  It stays last because a crash
+ * would kill the rest of the process when the whole suite runs in one binary.
  */
 
 #include "ztest.h"
