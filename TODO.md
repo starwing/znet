@@ -16,7 +16,7 @@
 
 - **P1**：C3/B4、U1、B8 —— 硬约束（签名 <80）、工具头不能编译、监听失败路径留下
   stale 表项。
-- **P2**：B14、L11、U15、T5、U8、U11、CI —— 健壮性、资源边界、文档/测试。
+- **P2**：B14、U15、T5、U8、U11、CI —— 健壮性、资源边界、文档/测试。
 - **P3**：B3、M5、format-check、覆盖率门槛 —— 清理与收尾，不动语义。
 - **决策**：见 §5。D3/D4 方向已定（操作结构体重构，不阻塞 C3 的非 API 部分先做），
   D5 决定 U1，D1/D2 不影响顺序。
@@ -24,13 +24,6 @@
 ---
 
 ## 1. 内存安全与生命周期
-
-- [ ] **L11**（P2）addrinfo 的迟到 post 与失败被忽略
-  位置：`zn_addrinfo.h` 的 `znA_clearreq`/`znA_callback`。
-  不在 `zn_close` 前调用 `zn_closeaddrinfo` 时，迟到的 post 可能触碰已释放 state；
-  `znA_clearreq` 忽略 `zn_post` 失败，请求和它的 retain 会泄漏。
-  建议：post 返回值要处理（失败就本地回收并 release）；state 侧加“已关闭”判据，
-  或在 close 里保证 worker 的请求已排空。
 
 - [ ] **B8**（P1）reactive `znB_listen` 先注册 fd 再 bind/listen
   位置：`znet.h` reactive 的 `znB_listen`。
@@ -166,6 +159,7 @@
 | 删掉 IOCP 每条完成的 `GetOverlappedResult` | 77k/s 下是白白的函数调用，但替代品是未文档化的 `Internal` 字段，不值当 | `notes/et-vs-lt.md` §2 |
 | 用 `TerminateThread`/`pthread_cancel` 收尾线程池/DNS worker | 跳过线程自己的清理、留下被持有的锁；只能“置标志 → 唤醒 → join” | `notes/changes.md` §1.14 |
 | 用 fd 耗尽/信号关闭凑覆盖率 | 脆弱且不可归因 | `tests/COVERAGE.md` |
+| 让 `zn_close` 兜底“忘了调用 `zn_closeaddrinfo`”（排空 `waitings` / close hook） | 都要改 close 契约：前者让 close 阻塞一次解析，后者加公共 API；而“`zn_close` 之后再用 `S`”本来就是用户 UAF | `notes/changes.md` §1.24、`notes/utils.md` |
 | 先跑全量 `clang-format` 再修 bug | 已完成（B5）；此后格式化提交必须单独、`git diff -w` 为空 | `notes/changes.md` §2 |
 
 ## 7. 优先级评估与执行顺序
@@ -181,7 +175,6 @@
 - **B8（P1）**：stale `infos[]` + 未注销，影响所有 listen 失败路径；修法小而确定。
   前置：无。
 - **U15（P2）**：reactive 空转（U10 同类已修）；先定“停止接收”语义。前置：语义先定。
-- **L11（P2）**：生命周期 + retain 泄漏，和 `zn_close` 的契约纠缠。前置：无。
 - **B14（P2）**：IOCP 完成事件所有权，与已修的 L8 不同族；close 后立刻 reconnect 会拿到
   `ZN_EBUSY`。前置：无。
 - **T5（P2）**：资源边界；先定 shrink 还是文档化上限。前置：策略先定。

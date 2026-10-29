@@ -5,10 +5,10 @@
  * hidden 20 ms tick of zt_begin/ZT_WAIT bounds every poll and turns a
  * worker that never posts into a normal test failure.
  *
- * zn_closeaddrinfo(S) must run before zn_close(S): the request keeps a
- * pointer to the state and a late zn_post() would touch freed memory
- * (TODO L11).  Waiting for the handler first also guarantees the worker has
- * already moved past the request, so nothing is still in flight.
+ * zn_closeaddrinfo(S) must run before zn_close(S): it drains this state's
+ * requests and waits the in-flight lookup out, so once it returns no worker
+ * path touches S again.  The helpers below still pump until the handler has
+ * run: that is what makes the assertions read the real result.
  *
  * Only deterministic cases live here: a name that always exists
  * ("localhost"), a numeric literal, and a name in the reserved .invalid
@@ -153,6 +153,39 @@ TEST(addrinfo_close_state_keeps_worker) {
     assertok(ai_count >= 1);
     zn_closeaddrinfo(S);
     zt_close(S);
+}
+
+/* ---- closing with a lookup still running ---- */
+
+/* A lookup cannot be cancelled, so zn_closeaddrinfo(S) has to wait the
+ * in-flight request out.  It used to only drain the queue: the worker posted
+ * the finished request to the freed state afterwards (notes/changes.md §1.24).
+ * A burst of .invalid names keeps one request in flight while the rest stay
+ * queued, so both halves of the drain run; the watchdog turns a missed wait
+ * into a failure instead of the UAF the sanitizers would otherwise trap. */
+TEST(addrinfo_close_while_in_flight) {
+    zn_State *S = zt_open();
+    int       i;
+
+    ai_reset();
+    for (i = 0; i < 200; ++i)
+        asserteq(zn_getaddrinfo(S, "host.invalid", "80", ZN_TCP, ai_handler,
+                                NULL),
+                 ZN_OK);
+    /* pump while spinning: the call keeps the load from being hoisted */
+    zt_guard_start(ZT_TIMEOUT_MS);
+    while (znA_current == NULL) (void)zn_run(S, ZN_RUN_CHECK);
+    zt_guard_stop();
+
+    zn_closeaddrinfo(S); /* must wait for the in-flight request */
+    zt_close(S);         /* the queued ones run as ZN_ERROR from here */
+    /* the worker clears znA_current only after handing the result over, so on
+     * the old code this spin reaches the post to the freed state (a hang here
+     * would mean the wait never returned) */
+    zt_guard_start(ZT_TIMEOUT_MS);
+    while (znA_current != NULL) (void)zn_time();
+    zt_guard_stop();
+    asserteq(znA_started, 1);
 }
 
 /* ---- zn_closeaddrinfo(NULL) stops the worker, not the caller ---- */

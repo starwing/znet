@@ -107,9 +107,14 @@ typedef struct znA_AddrRequest {
 
 static znA_AddrRequest *znA_current;
 static znQ_head(znA_AddrRequest) znA_queue;
+/* znQ_head can only be expanded once per type; reuse the struct it declares */
+static struct znA_AddrRequest_qlist znA_failed; /* done, but zn_post failed */
 
 static void znA_makepeers(znA_AddrRequest *req, void *info);
 static void znA_makehints(znA_AddrRequest *req, void *info);
+/* platform hooks, both called with the lock held */
+static void znA_wake(void);
+static void znA_waitidle(zn_State *S);
 
 static znA_AddrRequest *znA_makereq(zn_State *S, const char *node,
                                     const char *service, int flags,
@@ -141,6 +146,31 @@ static void znA_callback(void *ud, zn_State *S) {
     zn_release(S);
 }
 
+static void znA_drop(znA_AddrRequest *req) {
+    zn_State *S = req->S;
+    free(req->peers), free(req);
+    zn_release(S);
+}
+
+static void znA_post(znA_AddrRequest *req) {
+    /* a post that cannot be woken never runs: park it for the loop thread */
+    if (zn_post(req->S, znA_callback, req) != ZN_OK)
+        znQ_enqueue(&znA_failed, req);
+}
+
+static void znA_dropfailed(zn_State *S) {
+    znA_AddrRequest *req = znA_failed.first;
+    znQ_init(&znA_failed);
+    while (req != NULL) {
+        znA_AddrRequest *next = req->next;
+        if (req->S != S && S != NULL)
+            znQ_enqueue(&znA_failed, req);
+        else
+            znA_drop(req);
+        req = next;
+    }
+}
+
 static void znA_clearreq(zn_State *S) {
     znA_AddrRequest *req = znA_queue.first;
     znQ_init(&znA_queue);
@@ -150,16 +180,22 @@ static void znA_clearreq(zn_State *S) {
             znQ_enqueue(&znA_queue, req);
         else {
             req->ret = ZN_ERROR;
-            zn_post(req->S, znA_callback, req);
+            znA_post(req);
         }
         req = next;
     }
+    /* getaddrinfo cannot be cancelled: wait until the worker lets go of S */
+    if (S != NULL) znA_waitidle(S);
+    znA_dropfailed(S);
 }
 
 static znA_AddrRequest *znA_fetchreq(void) {
     znA_AddrRequest *req = NULL;
-    if (znA_current) zn_post(znA_current->S, znA_callback, znA_current);
-    znA_current = NULL;
+    if (znA_current) {
+        znA_post(znA_current);
+        znA_current = NULL;
+        znA_wake();
+    }
     znQ_dequeue(&znA_queue, req);
     return znA_current = req;
 }
@@ -180,7 +216,18 @@ static LONG             znA_started = 0;
 static volatile LONG    znA_stop = 0;
 static CRITICAL_SECTION znA_lock;
 static HANDLE           znA_event;
+static HANDLE           znA_done; /* a request stopped being in flight */
 static HANDLE           znA_thread;
+
+static void znA_wake(void) { SetEvent(znA_done); }
+
+static void znA_waitidle(zn_State *S) {
+    while (znA_current != NULL && znA_current->S == S) {
+        LeaveCriticalSection(&znA_lock);
+        WaitForSingleObject(znA_done, INFINITE);
+        EnterCriticalSection(&znA_lock);
+    }
+}
 
 static const char *znA_ntop(int af, const void *src, char *dst,
                             socklen_t size) {
@@ -231,19 +278,20 @@ static unsigned __stdcall znA_worker(void *param) {
     return ret;
 }
 
-static int znA_init(zn_State *S, znA_AddrRequest *req) {
-    znQ_init(&znA_queue);
+static int znA_init(void) {
+    znQ_init(&znA_queue), znQ_init(&znA_failed);
     znA_stop = 0;
     InitializeCriticalSection(&znA_lock);
     znA_event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (znA_event != NULL) {
+    znA_done = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (znA_event != NULL && znA_done != NULL) {
         znA_thread = (HANDLE)_beginthreadex(NULL, 0, znA_worker, NULL, 0, NULL);
         if (znA_thread != NULL) return 1;
     }
     if (znA_event != NULL) CloseHandle(znA_event);
+    if (znA_done != NULL) CloseHandle(znA_done);
+    znA_event = NULL, znA_done = NULL;
     DeleteCriticalSection(&znA_lock);
-    zn_release(S);
-    free(req);
     return 0;
 }
 
@@ -255,9 +303,9 @@ ZN_API int zn_getaddrinfo(zn_State *S, const char *node, const char *service,
     while ((ret = InterlockedCompareExchange(&znA_started, -1, 0)) < 0)
         Sleep(1);
     if (ret == 0) {
-        ret = znA_init(S, req);
+        ret = znA_init();
         InterlockedExchange(&znA_started, ret);
-        if (!ret) return ZN_ERROR;
+        if (!ret) return znA_drop(req), ZN_ERROR;
     }
     EnterCriticalSection(&znA_lock);
     znQ_enqueue(&znA_queue, req);
@@ -286,11 +334,17 @@ ZN_API void zn_closeaddrinfo(zn_State *S) {
         return;
     }
     WaitForSingleObject(znA_thread, INFINITE);
+    /* the worker may have parked its last result after clearreq */
+    EnterCriticalSection(&znA_lock);
+    znA_dropfailed(NULL);
+    LeaveCriticalSection(&znA_lock);
     CloseHandle(znA_thread);
     CloseHandle(znA_event);
+    CloseHandle(znA_done);
     DeleteCriticalSection(&znA_lock);
     znA_thread = NULL;
     znA_event = NULL;
+    znA_done = NULL;
     znA_stop = 0;
     InterlockedExchange(&znA_started, 0);
 }
@@ -309,7 +363,16 @@ static int             znA_started = 0;
 static int             znA_stop = 0;
 static pthread_mutex_t znA_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  znA_event = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t  znA_done = PTHREAD_COND_INITIALIZER;
 static pthread_t       znA_thread;
+
+static void znA_wake(void) { pthread_cond_broadcast(&znA_done); }
+
+static void znA_waitidle(zn_State *S) {
+    /* the in-flight lookup cannot be cancelled, only waited out */
+    while (znA_current != NULL && znA_current->S == S)
+        pthread_cond_wait(&znA_done, &znA_lock);
+}
 
 static void *znA_worker(void *param) {
     (void)param;
@@ -325,8 +388,9 @@ static void *znA_worker(void *param) {
         if (znA_stop) {
             if (req != NULL) { /* never processed: report it like clearreq */
                 req->ret = ZN_ERROR;
-                zn_post(req->S, znA_callback, req);
+                znA_post(req);
                 znA_current = NULL;
+                znA_wake();
             }
             pthread_mutex_unlock(&znA_lock);
             break;
@@ -350,9 +414,14 @@ ZN_API int zn_getaddrinfo(zn_State *S, const char *node, const char *service,
     if (!znA_started) {
         znA_stop = 0;
         if (pthread_create(&znA_thread, NULL, znA_worker, NULL) == 0) {
-            znQ_init(&znA_queue);
+            znQ_init(&znA_queue), znQ_init(&znA_failed);
             znA_started = 1;
         }
+    }
+    if (!znA_started) { /* no worker, no delivery: hand the request back */
+        znA_drop(req);
+        pthread_mutex_unlock(&znA_lock);
+        return ZN_ERROR;
     }
     znQ_enqueue(&znA_queue, req);
     pthread_cond_signal(&znA_event);
@@ -377,6 +446,10 @@ ZN_API void zn_closeaddrinfo(zn_State *S) {
     pthread_cond_signal(&znA_event);
     pthread_mutex_unlock(&znA_lock);
     pthread_join(znA_thread, NULL);
+    /* the worker may have parked its last result after clearreq */
+    pthread_mutex_lock(&znA_lock);
+    znA_dropfailed(NULL);
+    pthread_mutex_unlock(&znA_lock);
 }
 
 #endif
