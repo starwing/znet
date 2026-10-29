@@ -38,6 +38,9 @@
 /* ---- shared recorders ---- */
 
 #define MAXORD 32
+/* far past any socketpair buffer: 8192 one-byte sends fit on macOS, 299 on
+ * Linux 6.x -- the posting side must see EAGAIN, not block */
+#define POST_FLOOD 50000
 
 static int       g_posts;
 static void     *g_post_ud;
@@ -336,6 +339,30 @@ TEST(post_many) {
     zt_close(S);
 }
 
+/* A burst larger than the post pipe must neither block the poster nor lose a
+ * post.  Only the read end used to be non-blocking, so this loop parked the
+ * caller in send() once the pipe filled; EAGAIN now means "the pipe is full,
+ * a wakeup byte is already pending". */
+TEST(post_flood_from_caller) {
+    zn_State *S = zt_open();
+    zt_Loop   L;
+    int       i;
+
+    reset_recorders();
+    zt_guard_start(ZT_TIMEOUT_MS); /* a blocked poster fails, not hangs */
+    for (i = 0; i < POST_FLOOD; ++i)
+        asserteq(zn_post(S, cb_post_record, NULL), ZN_OK);
+    zt_guard_stop();
+    asserteq(g_posts, 0); /* every post is queued, none has run yet */
+
+    zt_begin(&L, S, ZT_TIMEOUT_MS);
+    ZT_WAIT(L, g_posts == POST_FLOOD);
+    zt_end(&L);
+    asserteq(g_posts, POST_FLOOD);
+    assertok(g_post_state == S);
+    zt_close(S);
+}
+
 #ifndef _WIN32
 
 TEST(post_from_thread) {
@@ -377,6 +404,29 @@ TEST(post_from_thread_before_run) {
     ZT_WAIT(L, g_posts == 5);
     zt_end(&L);
     asserteq(g_posts, 5);
+    zt_close(S);
+}
+
+/* The same burst, but handed to the loop while the poster is still running:
+ * zn_post() gets a slot out of the pool while the loop thread returns drained
+ * ones, so a pool that is not shared under the post lock corrupts its free
+ * list here (double handout, ASan use-after-free, or a lost post). */
+TEST(post_flood_from_thread) {
+    zn_State    *S = zt_open();
+    zt_Loop      L;
+    pthread_t    th;
+    state_thread arg;
+
+    reset_recorders();
+    arg.S = S;
+    arg.posts = POST_FLOOD;
+    asserteq(pthread_create(&th, NULL, state_thread_main, &arg), 0);
+
+    zt_begin(&L, S, ZT_TIMEOUT_MS);
+    ZT_WAIT(L, g_posts == POST_FLOOD); /* pumps while the poster runs */
+    asserteq(pthread_join(th, NULL), 0);
+    zt_end(&L);
+    asserteq(g_posts, POST_FLOOD);
     zt_close(S);
 }
 

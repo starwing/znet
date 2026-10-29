@@ -265,6 +265,8 @@ ZN_NS_BEGIN
 #if defined(_WIN32)
 # define ZN_USE_PLATFORM_WIN32
 # define ZN_USE_BACKEND_IOCP
+/* IOCP is the only Windows backend, so a select hint is ignored */
+# undef ZN_USE_SELECT
 #else /* POSIX systems */
 # define ZN_USE_PLATFORM_POSIX
 # define ZN_USE_POSTQUEUE
@@ -276,6 +278,8 @@ ZN_NS_BEGIN
 #  define ZN_USE_RESULTQUEUE
 #  define ZN_USE_BACKEND_REACTIVE
 #  define ZN_USE_BACKEND_KQUEUE
+# elif !defined(ZN_USE_SELECT) /* select when no native backend exists */
+#  define ZN_USE_SELECT
 # endif
 #endif /* _WIN32 */
 
@@ -614,6 +618,11 @@ ZN_API zn_Time zn_time(void) {
     return r;
 }
 
+/* no process-wide init, and an accept carries no backend state */
+ZN_API void zn_initialize(void) {}
+ZN_API void zn_deinitialize(void) {}
+static void znB_initaccept(zn_Accept *accept) { (void)accept; }
+
 #endif /* ZN_USE_PLATFORM_POSIX */
 
 /* addr */
@@ -704,7 +713,7 @@ struct zn_State {
     int           kqueue;                /* kqueue fd */
     int           sockpairs[2];          /* [0] wakes [1] for post */
     struct kevent events[ZN_MAX_EVENTS]; /* poll batch buffer */
-#else /* select backend */
+#elif defined(ZN_USE_SELECT)
     int            sockpairs[2];      /* [0] wakes [1] for post */
     int            nfds;              /* highest fd for select */
     fd_set         reg[3];            /* interest: read/write/except */
@@ -757,8 +766,10 @@ static void znS_processposts(zn_State *S) {
     post = znQ_first(&S->post_queue);
     znQ_init(&S->post_queue);
     pthread_mutex_unlock(&S->post_lock);
-    znQ_apply(zn_Post, post, if (cur->handler) cur->handler(cur->ud, cur->S);
-              znM_put(&S->posts, cur));
+    znQ_apply(zn_Post, post, if (cur->handler) cur->handler(cur->ud, cur->S));
+    pthread_mutex_lock(&S->post_lock); /* the pool is shared with zn_post */
+    znQ_apply(zn_Post, post, znM_put(&S->posts, cur));
+    pthread_mutex_unlock(&S->post_lock);
 }
 
 ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
@@ -770,13 +781,27 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *cb, void *ud) {
         post->S = S;
         post->handler = cb, post->ud = ud;
         znQ_enqueue(&S->post_queue, post);
+        /* no wakeup means it can never run: drop it while still locked */
         r = znB_signal(S);
+        if (r != ZN_OK) post->handler = NULL;
     }
     pthread_mutex_unlock(&S->post_lock);
     return r;
 }
 
 #endif /* ZN_USE_POSTQUEUE */
+
+/* select and kqueue wake the post queue with a socketpair; epoll uses an
+ * eventfd and IOCP a completion packet */
+#if defined(ZN_USE_SELECT) || defined(ZN_USE_BACKEND_KQUEUE)
+static int znB_signal(zn_State *S) {
+    char c = 0;
+    int  e, r = (int)send(S->sockpairs[0], &c, 1, 0);
+    while (r < 0 && errno == EINTR) r = (int)send(S->sockpairs[0], &c, 1, 0);
+    e = errno; /* EAGAIN: pipe is full, so a wakeup byte is already pending */
+    return r == 1 || (e == EAGAIN || e == EWOULDBLOCK) ? ZN_OK : ZN_ERROR;
+}
+#endif /* select or kqueue */
 
 #ifdef ZN_USE_RESULTQUEUE /* need: state, list */
 
@@ -1240,7 +1265,9 @@ static int znB_poll(zn_State *S, zn_Time timeout) {
             } else {
                 post = (zn_Post *)S->entries[i].lpOverlapped;
                 if (post->handler) post->handler(post->ud, post->S);
+                EnterCriticalSection(&S->lock); /* the pool is shared */
                 znM_put(&S->posts, post);
+                LeaveCriticalSection(&S->lock);
             }
         }
     } else {
@@ -1257,22 +1284,14 @@ static int znB_poll(zn_State *S, zn_Time timeout) {
 
 #endif /* ZN_USE_BACKEND_IOCP */
 
-/* POSIX without a poll backend falls back to select */
-#if defined(ZN_USE_PLATFORM_POSIX) && !defined(ZN_USE_BACKEND_REACTIVE)
+/* select: forced with ZN_USE_SELECT, or the POSIX fallback */
+#ifdef ZN_USE_SELECT
 
 typedef enum zn_FdSet { ZN_READ, ZN_WRITE, ZN_EXCEPT } zn_FdSet;
 
 static void znB_inittcp(zn_Tcp *tcp) { (void)tcp; }
-static void znB_initaccept(zn_Accept *accept) { (void)accept; }
-ZN_API void zn_initialize(void) {}
-ZN_API void zn_deinitialize(void) {}
 
 ZN_API const char *zn_engine(void) { return "select"; }
-
-static int znB_signal(zn_State *S) {
-    char c = 0;
-    return send(S->sockpairs[0], &c, 1, 0) == 1 ? ZN_OK : ZN_ERROR;
-}
 
 static void znF_regread(zn_State *S, int fd, zn_SocketInfo *info) {
     assert(fd < FD_SETSIZE);
@@ -1649,7 +1668,8 @@ static int znB_init(zn_State *S) {
     FD_SET(S->sockpairs[1], &S->reg[ZN_READ]);
     if (S->nfds < S->sockpairs[1]) S->nfds = S->sockpairs[1];
     S->post.type = ZN_POST, S->infos[S->sockpairs[1]] = &S->post;
-    return znP_setnonblock(S->sockpairs[1]), 1;
+    znP_setnonblock(S->sockpairs[0]), znP_setnonblock(S->sockpairs[1]);
+    return 1;
 }
 
 static void znB_close(zn_State *S) {
@@ -1665,12 +1685,8 @@ static int znF_regread(zn_State *S, int fd, zn_SocketInfo *info);
 static int znF_regall(zn_State *S, int fd, zn_SocketInfo *info);
 static int znF_unregister(zn_State *S, int fd, zn_SocketInfo *info);
 
-ZN_API void zn_initialize(void) {}
-ZN_API void zn_deinitialize(void) {}
-
-static int  znB_accept(zn_Accept *accept) { return (void)accept, ZN_OK; }
-static int  znB_recvfrom(zn_Udp *udp) { return (void)udp, ZN_OK; }
-static void znB_initaccept(zn_Accept *accept) { (void)accept; }
+static int znB_accept(zn_Accept *accept) { return (void)accept, ZN_OK; }
+static int znB_recvfrom(zn_Udp *udp) { return (void)udp, ZN_OK; }
 
 struct zn_Tcp {
     znL_entry(zn_Tcp);                  /* active-list link */
@@ -1912,10 +1928,11 @@ static int znB_sendto(zn_Udp *udp, const char *buff, unsigned len,
 
 ZN_API const char *zn_engine(void) { return "epoll"; }
 
-/* clang-format off */
-static int znB_signal(zn_State *S)
-{ return eventfd_write(S->eventfd, (eventfd_t)1) == 0 ? ZN_OK : ZN_ERROR; }
-/* clang-format on */
+static int znB_signal(zn_State *S) {
+    /* a full counter is still readable: the loop will wake and drain it */
+    if (eventfd_write(S->eventfd, (eventfd_t)1) == 0) return ZN_OK;
+    return errno == EAGAIN ? ZN_OK : ZN_ERROR;
+}
 
 static int znF_regread(zn_State *S, int fd, zn_SocketInfo *info) {
     struct epoll_event event;
@@ -2077,11 +2094,6 @@ static void znB_close(zn_State *S) {
 
 #ifdef ZN_USE_BACKEND_KQUEUE
 
-/* clang-format off */
-static int znB_signal(zn_State *S)
-{ char c = 0; return send(S->sockpairs[0], &c, 1, 0) == 1 ? ZN_OK : ZN_ERROR; }
-/* clang-format on */
-
 ZN_API const char *zn_engine(void) { return "kqueue"; }
 
 static int znF_regread(zn_State *S, int fd, zn_SocketInfo *info) {
@@ -2237,7 +2249,8 @@ static int znB_init(zn_State *S) {
         return close(S->sockpairs[0]), close(S->sockpairs[1]), 0;
     }
     znS_initposts(S), znR_init(S);
-    return znP_setnonblock(S->sockpairs[1]), 1;
+    znP_setnonblock(S->sockpairs[0]), znP_setnonblock(S->sockpairs[1]);
+    return 1;
 }
 
 static void znB_close(zn_State *S) {
@@ -2321,6 +2334,7 @@ ZN_API zn_State *zn_newstate(void) {
 
 ZN_API void zn_close(zn_State *S) {
     int status = S->status;
+    if (status == ZN_STATUS_CLOSING) return; /* already tearing down */
     if (status == ZN_STATUS_IN_RUN || status == ZN_STATUS_CLOSING_IN_RUN) {
         S->status = ZN_STATUS_CLOSING_IN_RUN;
         return;
