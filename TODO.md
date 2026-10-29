@@ -17,11 +17,11 @@
 | --- | --- | --- |
 | **P0** | L8：epoll/kqueue 事件批保存裸 `zn_SocketInfo *`，同批回调删除另一个对象后可能 UAF | 是唯一剩下的崩溃/内存安全项；测试套件目前只覆盖“另一个 fd 不在本批”的情况 |
 | **P1** | C3、U1 | 签名 <80 重构（M3 前置）、`zn_deque.h` 的修/删决定 |
-| **P2** | L10/L11、B8/B14、T5/T6、U7/U8/U11/U15、F1/F3 | 健壮性、可维护性、资源边界 |
-| **P3** | L13、T7、M4（timer 四叉堆）、M5（收尾） | 清理和性能优化；必须先有基准/测试 |
+| **P2** | L10/L11、B8/B14、T5、U7/U8/U11/U15、F1/F3 | 健壮性、可维护性、资源边界 |
+| **P3** | L13、M5（收尾） | 清理；M4 已试并按基准回退（见 1.16） |
 
 **建议执行顺序**：L8 → P1 正确性与平台修复 → Clean C/MSVC/签名（C1–C3）→ M3 全量
-格式化 → M4 timer 四叉堆 → M5 文档/示例收尾。CI（至少 Linux/macOS + Windows
+格式化 → M5 文档/示例收尾（M4 已在 1.16 用基准否决）。CI（至少 Linux/macOS + Windows
 `cl /W4 /WX`）应尽早补上，但它是独立工作流，不阻塞上面的顺序。
 
 ---
@@ -361,6 +361,38 @@ user 0.17 s、sys 1.93 s，约 33.5 万条消息 → **用户态 0.08 µs/条（
 
 ---
 
+### 1.16 M4：T6/T7 修复、timer 基准、property test，4 叉按基准回退（2026-10-29）
+
+| ID | 内容 | 验证 |
+| --- | --- | --- |
+| T6 | `zn_starttimer` 值域：`delayms >= ZN_FOREVER` 返回 `ZN_EPARAM`，失败零副作用（先校验后 cancel）；`delayms == 0` 仍合法；handler 返回哨兵不重挂。Lua `Ltimer_start` 的反向 ref 判断一并修掉 | `timer_start_param` |
+| T7 | 相同 deadline 的触发顺序不定义（只文档化）；测试改成"组间有序、组内不比" | `timer_fire_same_deadline` |
+| 基准 | 新增 `bench/bench_timer.c`：arm/cancel/fire/clock，无网络；`just bench timer` | `just bench`、严格 C89/C++03 |
+| property | 256 个 timer × 2000 次随机 arm/cancel/fire，检查堆序、index、used、nexttime 和触发顺序；确认写错 sift-up/sift-down 都会红 | `timer_heap_property` |
+| M4 | 4 叉实现完成并实测，`fire` 全面退化超过 5% 门槛 → **回退**，保留二叉堆 | 7 轮交替 A/B |
+
+4 叉实验（4 叉/二叉的比值中位数，越小越好，7 轮交替 A/B，macOS arm64）：
+
+| 操作 | 1k | 10k | 100k |
+| --- | --- | --- | --- |
+| arm | 1.004 | 0.997 | 0.993（这项没测到 sift-up） |
+| cancel | 0.841 | 0.768 | **0.456** |
+| fire | **1.368** | **1.087** | **1.055** |
+
+`cancel` 的 2.2 倍收益不抵消 `fire`（每个定时器必经的 pop-min）在所有规模上的退化；
+根因是 sift-down 的比较次数与叉数无关，4 叉只省移动和 cache line。完整数据和三种
+sift-down 变体见 `notes/m4-4ary-heap.md` §5；重新评估的前提（最坏情况 arm 基准、
+键拷贝/索引堆）见 §8。
+
+提交：`timer: reject delays at or above ZN_FOREVER (T6)`、`test: pin the same-deadline
+contract (T7)`、`bench: timer-heap microbenchmark`、`test: randomized model check for the
+timer heap`、`bench: document what arm actually measures`。4 叉实现没有提交。
+
+验证（2026-10-29，最终树）：macOS `just check` / `check-c89` / `check-cpp03` / `smoke` /
+`test-lua`；Linux `orb just check`；Windows `wx-miku just check`（IOCP，`/W4 /WX`）。
+
+---
+
 ## 2. 待做
 
 ### 2.1 P0 — 崩溃/内存安全
@@ -401,7 +433,6 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | L11 | `zn_addrinfo.h:146` | 不在 `zn_close` 前调用 `zn_closeaddrinfo` 时，迟到的 post 可能触碰已释放 state；`znA_clearreq` 忽略 `zn_post` 失败，请求和 retain 会泄漏。 |
 | B8 | `znet.h:2352` | reactive 的 `znB_listen` 先注册 fd 再 bind/listen；失败时不注销，留下 stale `S->infos[fd]`/epoll 注册。 |
 | T5 | `znet.h:53` | 定时器堆只增长、不收缩；没有数量上限。 |
-| T6 | `znet.h:443` | `start + delayms` 没有溢出检查；回绕后 `emit` 顺序错误。 |
 | U7 | `bench/zn_bufferpool.h` | `zn_putbuffer` 回收节点时没有 `zn_resetrecvbuffer`/`zn_resetsendbuffer`；下一个连接继承旧分帧状态。 |
 | U8 | `znet.hpp` | `TcpAccept` 把 client 存在 accept 对象里，连续 accept 会修改同一个 `TcpSocket`；handler 运行一次即被消费，容易误用。 |
 | U11 | `zn_task.h` | `zn_deltaskpool` 遇到永久阻塞的任务会永久阻塞；需要文档化或提供超时/取消语义。**强杀已经否决**（`TerminateThread`/`pthread_cancel` 跳过线程自己的清理，还会留下被持有的 `ws->lock`，见 1.14 的评审修正）；真要能停只能做协作式取消。 |
@@ -415,8 +446,6 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | ID | 位置 | 缺陷与影响 |
 | --- | --- | --- |
 | L13 | `znet.h:256` | `znL_empty(h)` 展开成 `(h)->prev == &(h)`：传头指针或头变量都编不过。当前无人使用；要用先改成 `(void*)(h)->next == (void*)(h)`。 |
-| T7 | `znet.h:390` | 相同 deadline 不保证 FIFO（严格 `>` 比较）；要么文档化，要么改成稳定顺序。 |
-| M4 | `znet.h` timer | 四叉堆（4-ary heap）优化；前置条件是 T1/T2 已修、timer 测试齐全、M3 完成；先写基准，收益不足就回退。 |
 | M6 | `znet.h` reactive 后端 | 每次 arm 操作都发一次 `kevent(EV_ADD)` / `epoll_ctl(MOD)`：1 KiB 回环基准里这是每消息 4 个系统调用之一（1.15 的标定：用户态只占 0.08 µs/条，内核 5.8 µs）。改成“每连接注册一次 + `EV_CLEAR`/`EPOLLET` + `can_*` latch”，或一次 dispatch 里把缓冲读空，预计 1 KiB RTT 20 → ~15 µs，主要收益是每消息 CPU 降 20–25%。风险：动 reactive 状态机与 L2 的 latch 记账，必须和 L8 一起评估，排在 M3 之后。 |
 | M5 | 文档/示例 | 更新 `README.txt` 的约束矩阵、校对 `notes/*` 行号、补 CI 脚本。`test.c` 的清理已完成，`just smoke` 现在只跑 `example.c`。 |
 
@@ -440,7 +469,7 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | 跨后端完成语义 | B3（已修） | UDP 发送失败直接由同步返回值报告，不需要完成事件 |
 | 公共 API/ABI 决策 | C3 | 签名 <80 要重构 `zn_connect`（B4/B13 已在 1.10 决策） |
 | 工具/绑定重构 | U1、U7、U8、U11、U15 | `zn_deque.h` 是修还是删（第 7.5 节）；Lua/pool 的语义要先写进文档 |
-| 记账与资源边界 | L10、L11、B8、T5、T6 | 非法参数/失败路径要引入错误码或上限，属契约改动 |
+| 记账与资源边界 | L10、L11、B8、T5 | 非法参数/失败路径要引入错误码或上限，属契约改动 |
 | 机械但多站点或需外部环境 | M3/F1、F3、CI | 单独提交（格式化）或需要 Windows/CI，不适合混进语义提交 |
 
 ---
@@ -450,7 +479,7 @@ T2 已在 1.7 关闭：`zn_Time` = `size_t`，64 位平台不再回绕。32 位�
 | 用户项 | 优先级 | 放在哪个里程碑 | 说明 |
 | --- | --- | --- | --- |
 | 1. 单测套件 | **P0** | M0（已完成） | 套件、后端矩阵、ASan/UBSan、覆盖率都已落地；余下只有 CI。 |
-| 2. timer 改为四叉树 | **P3** | M4 | 当前二叉堆在常规规模可用；四叉堆只是常数优化。先修 T1/T2 等语义 bug，再拿基准决定。 |
+| 2. timer 改为四叉树 | **P3** | M4 | 已实现并实测（1.16）：pop-min 退化超过门槛，按计划回退，保留二叉堆。 |
 | 3. 跑 clang-format | **P2** | M3 | 必须等 P0/P1 功能修复稳定后单独提交；否则格式 diff 会淹没真正的 bug 修复。 |
 | 4. 修复函数签名折行 | **P1** | M3 | 新约束要求“单行 <80 且不能折行”；`zn_connect` 等需要 API 重构。 |
 | 5. 修复当前可能有的 bug | **P0/P1** | M1/M2 | 只剩 L8（P0）、C3 与 U1；IOCP 已在 wx-miku 上验证（1.12/1.14/1.15）。 |
@@ -545,17 +574,17 @@ C2 的 MSVC `/W4` 部分随 1.15 关闭：`tests\check.bat`、`example.c`、`ben
 - 后续：增加签名/门限检查脚本，接入 `just format-check`；格式化提交若单独做，提交信息写
   “format only” 并加 `.git-blame-ignore-revs`。
 
-### M4 — timer 四叉堆（未开始）
+### M4 — timer 四叉堆（已实测，按门槛回退；见 1.16）
 
-前置：T1/T2 已修、timer 测试齐全、M3 完成。步骤：写不依赖网络的 timer 基准（n=1k/10k/
-100k）→ 改成四叉堆（父 `(i-1)/4`，子 `4*i+1..4*i+4`）→ 用有序数组做随机 property test
-（arm/cancel/re-arm/fire，比较触发顺序和 `nexttime`）→ 只有基准显示明显收益才保留，
-否则回退并在 `notes/timers.md` 记录。
+2026-10-29 完成：基准 → 语义前置（T6/T7）→ property test → 4 叉实现 → 7 轮交替 A/B。
+结论是**保留二叉堆**：`cancel` 在 100k 快 2.2 倍，但 `fire`（pop-min，每个定时器必经）
+在所有规模都更慢（1k +37% / 10k +9% / 100k +5.5%），超过计划的 ≤5% 门槛，
+所以 4 叉实现整体回退（未提交），保留了 T6/T7 修复、property test 和基准。
+数据和根因见 `notes/m4-4ary-heap.md` §5、`notes/timers.md` 的"结构演进"。
 
-**执行计划（2026-10-29 定，按 6 个可独立回退的提交推进）**：
-[`notes/m4-4ary-heap.md`](notes/m4-4ary-heap.md)。其中两条语义已先定：T6 —— 溢出用
-`emit < start` 检测，`ZN_FOREVER` 当 delay 返回 `ZN_EPARAM`，`delayms == 0` 保持合法；
-T7 —— 相同 deadline 的触发顺序不定义，只写文档、改测试口径。
+重新评估的前提（现在都不满足）：① 基准的 `arm` 换成递减 deadline 的最坏情况变体
+（现在的 `arm` 全是尾部追加，没测到 sift-up）；② 先试"键拷贝 / 索引堆"这类和叉数
+正交的方案（`notes/m4-4ary-heap.md` §8）。
 
 ### M5 — 文档、示例、过时测试收尾（未开始）
 
