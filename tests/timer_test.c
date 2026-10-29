@@ -233,7 +233,6 @@ TEST(timer_cancel_sift_up) {
         t[i] = zn_newtimer(S, cb_record, (void *)(size_t)i);
         assertok(t[i] != NULL);
         t[i]->start = 0;
-        t[i]->emit = emit[i];
         t[i]->index = (unsigned)i;
         S->ts.keys[i] = emit[i], S->ts.nodes[i] = t[i];
     }
@@ -380,13 +379,15 @@ TEST(timer_root_and_timeout) {
 
     {
         zn_Timer *t = zn_newtimer(S, cb_record, NULL);
+        zn_Time   emit;
         assertok(t != NULL);
         asserteq(zn_starttimer(t, 100), ZN_OK);
         asserteq(S->ts.used, 1);
         asserteq(t->index, 0);
-        asserteq(S->ts.keys[0], t->emit);
-        asserteq(znT_gettimeout(&S->ts, t->emit - 10), 10);
-        asserteq(znT_gettimeout(&S->ts, t->emit + 1), 0);
+        emit = S->ts.keys[0];
+        asserteq(emit, t->start + 100);
+        asserteq(znT_gettimeout(&S->ts, emit - 10), 10);
+        asserteq(znT_gettimeout(&S->ts, emit + 1), 0);
         zn_canceltimer(t);
         asserteq(S->ts.used, 0);
         zn_deltimer(t);
@@ -415,12 +416,12 @@ TEST(timer_cancel_updates_root) {
     assertok(a != NULL && b != NULL);
     asserteq(zn_starttimer(a, 40), ZN_OK);
     asserteq(zn_starttimer(b, 80), ZN_OK);
-    asserteq(S->ts.keys[0], a->emit);
+    asserteq(S->ts.keys[0], a->start + 40);
 
     zn_canceltimer(a);
     asserteq(S->ts.used, 1);
-    asserteq(S->ts.keys[0], b->emit);
-    asserteq(znT_gettimeout(&S->ts, b->emit - 5), 5);
+    asserteq(S->ts.keys[0], b->start + 80);
+    asserteq(znT_gettimeout(&S->ts, b->start + 80 - 5), 5);
 
     zn_canceltimer(b);
     asserteq(S->ts.used, 0);
@@ -527,8 +528,7 @@ TEST(timer_64bit_delay) {
     t = zn_newtimer(S, cb_record, NULL);
     assertok(t != NULL);
     asserteq(zn_starttimer(t, big), ZN_OK);
-    asserteq(t->emit, t->start + big);
-    asserteq(S->ts.keys[0], t->emit);
+    asserteq(S->ts.keys[0], t->start + big);
     assertok(znT_gettimeout(&S->ts, t->start) > (zn_Time)0xFFFFFFFFu / 2);
     zn_canceltimer(t);
     zn_deltimer(t);
@@ -564,7 +564,7 @@ TEST(timer_64bit_handler_return) {
     zt_begin(&L, S, 1000);
     ZT_WAIT(L, g_fired == 1);
     assertok(t->index != ZN_TIMER_NOINDEX);
-    assertok(t->emit > zn_time() + (zn_Time)1000000000u);
+    assertok(S->ts.keys[t->index] > zn_time() + (zn_Time)1000000000u);
     zn_canceltimer(t);
     zn_deltimer(t);
     zt_end(&L);
@@ -618,16 +618,16 @@ TEST(timer_start_param) {
 
     /* a rejected re-arm must leave the armed timer alone */
     asserteq(zn_starttimer(t, 100), ZN_OK);
-    emit = t->emit;
+    emit = S->ts.keys[t->index];
     asserteq(zn_starttimer(t, ZN_FOREVER), ZN_EPARAM);
     asserteq(S->ts.used, 1);
     asserteq(t->index, 0);
-    asserteq(t->emit, emit);
+    asserteq(S->ts.keys[t->index], emit);
     asserteq(S->ts.keys[0], emit);
 
     /* zero is still a valid delay: fire on the next update */
     asserteq(zn_starttimer(t, 0), ZN_OK);
-    asserteq(t->emit, t->start);
+    asserteq(S->ts.keys[0], t->start);
     zn_canceltimer(t);
     zn_deltimer(t);
 
@@ -656,7 +656,6 @@ static zn_Timer *g_prop[PROP_TIMERS];
 static zn_Time   g_prop_emit[PROP_TIMERS];
 static int       g_prop_armed[PROP_TIMERS];
 static int       g_prop_fired[PROP_TIMERS];
-static zn_Time   g_prop_fired_emit[PROP_TIMERS];
 static int       g_prop_nfired;
 static unsigned  g_prop_seed = 12345u;
 
@@ -674,11 +673,10 @@ static zn_Time prop_min(void) {
 }
 
 static zn_Time cb_prop(void *ud, zn_Timer *timer, zn_Time elapsed) {
+    (void)timer;
     (void)elapsed;
-    if (g_prop_nfired < PROP_TIMERS) {
+    if (g_prop_nfired < PROP_TIMERS)
         g_prop_fired[g_prop_nfired] = (int)(size_t)ud;
-        g_prop_fired_emit[g_prop_nfired] = timer->emit;
-    }
     g_prop_nfired++;
     return 0;
 }
@@ -704,12 +702,11 @@ static void prop_check(zn_State *S) {
         }
         assertok(g_prop[i]->index < S->ts.used);
         assertok(S->ts.nodes[g_prop[i]->index] == g_prop[i]);
-        asserteq(g_prop[i]->emit, g_prop_emit[i]);
+        asserteq(S->ts.keys[g_prop[i]->index], g_prop_emit[i]);
     }
     for (i = 0; i < (int)S->ts.used; ++i) {
         unsigned p;
         asserteq(S->ts.nodes[i]->index, (unsigned)i);
-        asserteq(S->ts.keys[i], S->ts.nodes[i]->emit);
         if (i == 0) continue;
         p = (unsigned)((i - 1) / PROP_ARITY);
         assertok(S->ts.keys[p] <= S->ts.keys[i]);
@@ -728,7 +725,7 @@ TEST(timer_heap_property) {
         assertok(zn_starttimer(g_prop[i], (zn_Time)(prop_rand() % 5000))
                  == ZN_OK);
         g_prop_armed[i] = 1;
-        g_prop_emit[i] = g_prop[i]->emit;
+        g_prop_emit[i] = S->ts.keys[g_prop[i]->index];
     }
     prop_check(S);
 
@@ -740,7 +737,7 @@ TEST(timer_heap_property) {
             assertok(zn_starttimer(g_prop[id], (zn_Time)(prop_rand() % 5000))
                      == ZN_OK);
             g_prop_armed[id] = 1;
-            g_prop_emit[id] = g_prop[id]->emit;
+            g_prop_emit[id] = S->ts.keys[g_prop[id]->index];
         } else if (r == 2) { /* cancel, armed or not */
             zn_canceltimer(g_prop[id]);
             g_prop_armed[id] = 0;
@@ -758,10 +755,10 @@ TEST(timer_heap_property) {
                 assertok(fired >= 0 && fired < PROP_TIMERS);
                 assertok(g_prop_armed[fired]);
                 assertok(g_prop_emit[fired] <= target);
-                assertok(g_prop_fired_emit[j] == g_prop_emit[fired]);
                 g_prop_armed[fired] = 0;
                 if (j > 0)
-                    assertok(g_prop_fired_emit[j - 1] <= g_prop_fired_emit[j]);
+                    assertok(g_prop_emit[g_prop_fired[j - 1]]
+                             <= g_prop_emit[g_prop_fired[j]]);
             }
         }
         prop_check(S);

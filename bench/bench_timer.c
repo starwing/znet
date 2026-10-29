@@ -81,11 +81,11 @@ static void bench_delete_all(zn_Timer **t, unsigned n) {
     for (i = 0; i < n; ++i) zn_deltimer(t[i]);
 }
 
-static zn_Time bench_maxemit(zn_Timer **t, unsigned n) {
+static zn_Time bench_maxemit(zn_State *S) {
     zn_Time  max = 0;
     unsigned i;
-    for (i = 0; i < n; ++i)
-        if (t[i]->emit > max) max = t[i]->emit;
+    for (i = 0; i < S->ts.used; ++i)
+        if (S->ts.keys[i] > max) max = S->ts.keys[i];
     return max;
 }
 
@@ -104,7 +104,7 @@ static double bench_measure(zn_State *S, BenchOp op, zn_Timer **t, unsigned n,
         if (op == BENCH_CANCEL || op == BENCH_FIRE) {
             if (!bench_arm_all(t, n)) return *batches_out = batches, -1.0;
         }
-        if (op == BENCH_FIRE) maxemit = bench_maxemit(t, n);
+        if (op == BENCH_FIRE) maxemit = bench_maxemit(S);
         t0 = clock();
         switch (op) {
         case BENCH_ARM:

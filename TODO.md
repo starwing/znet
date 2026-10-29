@@ -397,7 +397,7 @@ timer heap`、`bench: document what arm actually measures`。4 叉实现没有�
 
 `zn_TimerState.heap`（`zn_Timer **`）拆成 `keys[]`（`zn_Time`，排序键）和 `nodes[]`
 （`zn_Timer *`）：sift 比较只读连续的 key 数组，不再每层解引用 48 B 的 timer。句柄、
-`index`、`emit` 语义都不变；`znT_resize` 改成分配两个数组并复制有效前缀。
+`index`、`emit` 语义都不变；`znT_resize` 用 realloc 扩两个数组（keys 成功后立即提交，nodes 失败时堆仍一致）。
 
 7 轮交替 A/B（键拷贝/原指针堆的中位数比值，macOS arm64）：
 
@@ -408,9 +408,10 @@ timer heap`、`bench: document what arm actually measures`。4 叉实现没有�
 | fire | **0.684** | **0.662** | **0.639** |
 | clock（对照） | 0.998 | 0.998 | 1.000 |
 
-保留：fire 快 32-36%，代价是每个 timer 多 8 B（100k 时 +0.8 MB）和 arm 约 5%
-（每层多一次 8 B 存储）。4 叉堆仍不采用（1.16）；稳定 id / 索引堆留给 B4
-（结论和原型数据见 `notes/m4-4ary-heap.md` §8）。
+保留：fire 快 32-36%；arm 约 5% 的退化来自每层多一次 8 B 存储。随后又删掉了
+`zn_Timer.emit`（deadline 只在 `keys[]`，Timer 48 → 40 B），所以**净内存与改动前持平**
+（40 + 8 + 8 = 56 B/timer，原来 48 + 8），arm 也回到原来的水平。4 叉堆仍不采用
+（1.16）；稳定 id / 索引堆留给 B4（结论和原型数据见 `notes/m4-4ary-heap.md` §8）。
 
 同轮还删掉了 `zn_TimerState.nexttime` 缓存：它恒等于 `used ? keys[0] : ZN_FOREVER`，
 是 T3/T4 两个 bug 的来源；`znT_gettimeout`/`znT_update` 改成直接读 `keys[0]`，测试相应

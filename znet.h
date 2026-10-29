@@ -374,7 +374,6 @@ struct zn_Timer {
     zn_TimerState   *ts;      /* owning state */
     unsigned         index;   /* heap slot, or NOINDEX */
     zn_Time          start;   /* arm time */
-    zn_Time          emit;    /* absolute due time */
 };
 
 static int znT_hastimers(zn_TimerState *ts) { return ts->used != 0; }
@@ -391,8 +390,8 @@ static void znT_update(zn_TimerState *ts, zn_Time current) {
         zn_Timer *timer = ts->nodes[0];
         zn_canceltimer(timer);
         if (timer->handler) {
-            zn_Time r = timer->handler(timer->u.ud, timer,
-                                       current - timer->start);
+            zn_Time r;
+            r = timer->handler(timer->u.ud, timer, current - timer->start);
             if (r > 0) zn_starttimer(timer, r);
         }
     }
@@ -411,25 +410,19 @@ static int znT_resize(zn_TimerState *ts, size_t size) {
     while (realsize < size && realsize < ZN_MAX_SIZET / sizeof(zn_Timer *) / 2)
         realsize <<= 1;
     if (realsize < size) return 0;
-    keys = (zn_Time *)malloc(realsize * sizeof(zn_Time));
+    keys = (zn_Time *)realloc(ts->keys, realsize * sizeof(zn_Time));
     if (keys == NULL) return 0;
-    nodes = (zn_Timer **)malloc(realsize * sizeof(zn_Timer *));
-    if (nodes == NULL) return free(keys), 0;
-    if (ts->used) {
-        memcpy(keys, ts->keys, ts->used * sizeof(zn_Time));
-        memcpy(nodes, ts->nodes, ts->used * sizeof(zn_Timer *));
-    }
-    free(ts->keys), free(ts->nodes);
-    ts->keys = keys, ts->nodes = nodes, ts->size = (unsigned)realsize;
-    return 1;
+    ts->keys = keys; /* committed: the old block is already gone */
+    nodes = (zn_Timer **)realloc(ts->nodes, realsize * sizeof(zn_Timer *));
+    if (nodes == NULL) return 0;
+    return (ts->nodes = nodes, ts->size = (unsigned)realsize), 1;
 }
 
 static zn_Timer *znT_new(zn_TimerState *ts, zn_TimerHandler *cb, void *ud) {
     zn_Timer *timer = (zn_Timer *)znM_get(&ts->timers);
     if (timer == NULL) return NULL;
     timer->u.ud = ud, timer->handler = cb;
-    timer->ts = ts;
-    timer->index = ZN_TIMER_NOINDEX;
+    timer->ts = ts, timer->index = ZN_TIMER_NOINDEX;
     return timer;
 }
 
@@ -447,12 +440,9 @@ ZN_API int zn_starttimer(zn_Timer *timer, zn_Time delayms) {
     if (ts->size == ts->used && !znT_resize(ts, ts->size * 2)) return ZN_ERROR;
     i = ts->used++;
     timer->start = zn_time();
-    key = timer->emit = timer->start + delayms;
-    while (p = (i - 1) >> 1, i > 0 && ts->keys[p] > key) {
-        ts->keys[i] = ts->keys[p];
-        (ts->nodes[i] = ts->nodes[p])->index = i;
-        i = p;
-    }
+    key = timer->start + delayms;
+    for (; p = (i - 1) >> 1, i > 0 && ts->keys[p] > key; i = p)
+        ts->keys[i] = ts->keys[p], (ts->nodes[i] = ts->nodes[p])->index = i;
     ts->keys[i] = key, (ts->nodes[i] = timer)->index = i;
     return ZN_OK;
 }
@@ -466,18 +456,13 @@ ZN_API void zn_canceltimer(zn_Timer *timer) {
     if (ts->used == 0 || timer == ts->nodes[--ts->used]) return;
     timer = ts->nodes[ts->used];
     key = ts->keys[ts->used];
-    while (p = (i - 1) >> 1, i > 0 && ts->keys[p] > key) {
-        ts->keys[i] = ts->keys[p];
-        (ts->nodes[i] = ts->nodes[p])->index = i;
-        i = p;
-    }
-    while ((k = i * 2 + 1) < ts->used) {
+    for (; p = (i - 1) >> 1, i > 0 && ts->keys[p] > key; i = p)
+        ts->keys[i] = ts->keys[p], (ts->nodes[i] = ts->nodes[p])->index = i;
+    for (; (k = i * 2 + 1) < ts->used; i = k) {
         unsigned c = k + 1;
         if (c < ts->used && ts->keys[c] < ts->keys[k]) k = c;
         if (key <= ts->keys[k]) break;
-        ts->keys[i] = ts->keys[k];
-        (ts->nodes[i] = ts->nodes[k])->index = i;
-        i = k;
+        ts->keys[i] = ts->keys[k], (ts->nodes[i] = ts->nodes[k])->index = i;
     }
     ts->keys[i] = key, (ts->nodes[i] = timer)->index = i;
 }
