@@ -14,12 +14,13 @@
 
 ## 0. 优先级总览
 
-| 级别 | 条目 | 一句话 |
-| --- | --- | --- |
-| **P1** | C3/B4、U1、B8 | 硬约束（签名 <80）、工具头不能编译、监听失败路径留下 stale 表项 |
-| **P2** | L10、B14、L11、U15、T5、U7、U8、U11、F3、CI | 健壮性、资源边界、误导性文档/测试 |
-| **P3** | L13、B3、M5、format-check、覆盖率门槛 | 清理与收尾；不动语义 |
-| 决策 | §5 的五项 | D3/D4 已定方向（操作结构体重构，不阻塞 C3 的非 API 部分先做）；D5 决定 U1；D1/D2 不影响顺序 |
+- **P1**：C3/B4、U1、B8 —— 硬约束（签名 <80）、工具头不能编译、监听失败路径留下
+  stale 表项。
+- **P2**：L10、B14、L11、U15、T5、U8、U11、F3、CI —— 健壮性、资源边界、误导性
+  文档/测试。
+- **P3**：B3、M5、format-check、覆盖率门槛 —— 清理与收尾，不动语义。
+- **决策**：见 §5。D3/D4 方向已定（操作结构体重构，不阻塞 C3 的非 API 部分先做），
+  D5 决定 U1，D1/D2 不影响顺序。
 
 ---
 
@@ -69,13 +70,15 @@
 ## 2. 公共 API 与代码精炼
 
 - [ ] **C3 / B4**（P1）函数签名 <80 且不折行
-  现状（2026-10-29 实测）：全树文件作用域的折行签名共 **35 处**——`znet.h` 17
-  （13 函数 + 4 个回调 typedef）、`zn_addrinfo.h` 6（5 + 1 typedef）、`zn_lua.c` 4、
-  `bench/*.c` 6、`example.c` 2（`on_udp_recv` 的声明与定义）。旧文只记了 22 处 +
-  bench“3 个 80–81 列”，低估了 scope。
+  现状（2026-10-29 实测）：全树的折行/超列签名共 **36 处**——`znet.h` 17
+  （10 个公共 API 的声明 + 定义、`znB_sendto` ×3、4 个回调 typedef）、`zn_addrinfo.h` 6
+  （`zn_getaddrinfo` 3 + `znA_makereq` + `znA_ntop` + 1 个 typedef）、`zn_lua.c` 4、
+  `bench/*.c` 7（6 个回调 + `bench_measure`）、`example.c` 2（`on_udp_recv` 的声明与
+  定义）。`znP_ntop` 已修（77 列单行）；`zn_RecvFromHandler` 实测即使把参数全改成单字母
+  也只能压到 ~101 列，靠改名到不了 <80。
   公共 API：`zn_connect`/`zn_send`/`zn_recv`/`zn_sendto`/`zn_recvfrom`（声明 + 定义各
-  一次）、`zn_getaddrinfo`（3 处）；内部：`znB_sendto` ×3、`znP_ntop`、
-  `znA_makereq`/`znA_ntop`、4 个 `lzn_*` 回调。
+  一次）、`zn_getaddrinfo`（3 处）；内部：`znB_sendto` ×3、`znA_makereq`/`znA_ntop`、
+  4 个 `lzn_*` 回调。
   `zn_connect` 必须改 API，不能只折行；方向见 D4，**前置是操作结构体重构**（D3）：
   handler/udp/handler 收进操作体之前，这些签名压不到 <80。做完后
   `notes/changes.md` §2 记的折行遗留才归零。
@@ -86,13 +89,6 @@
   7 处 bool 形参、5 个 `do {} while (0)` 宏；外加一次性 helper 内联与函数前注释压缩。
   机械但量大，按文件/后端分片提交；每片跑 `just check`，闭包/记账相关的片加 `just cov`。
 
-- [ ] **L13**（P3）`znL_empty` 对指针形式是错的
-  位置：`znet.h` 与 `zn_task.h` 各有一份（`#define znL_empty(h) ((void *)(h)->prev ==
-  (void *)&(h))`）。
-  头变量形式正确，但传**头指针**时 `&(h)` 取的是指针变量的地址，比较永远为假——
-  加了 cast 之后不再编译报错，所以变成了静默错误。当前无人使用。
-  建议：改成 `(void *)(h)->next == (void *)(h)`，两处同步；或用 `static` inline 替掉宏。
-
 ## 3. 可选工具与绑定
 
 - [ ] **U1**（P1）`zn_deque.h` 修还是删（§5 的决策项）
@@ -101,12 +97,6 @@
   `pthread_mutex_unlock` 一次（此时未持锁，UB）；③ `pthread_cond_timedwait` 收到的是
   相对 `timespec`，正的 `waitms` 会立即超时。当前无人使用。
   建议：删掉（保留 `notes/utils.md` 的记录）比修便宜；若要留，三处都要补测试。
-
-- [ ] **U7**（P2）`bench/zn_bufferpool.h` 复用节点不重置分帧状态
-  位置：`zn_putbuffer`。
-  回收时不调用 `zn_resetrecvbuffer`/`zn_resetsendbuffer`，下一个连接继承旧的
-  header/packet 状态，会出现“上次的半帧”被当成新数据。基准程序用它，所以这是一个
-  可复现的误导来源。建议：回收时复位，或改成每次 `zn_initrecvbuffer`。
 
 - [ ] **U8**（P2）`znet.hpp` 的 `TcpAccept` 把 client 存在 accept 对象里
   连续 accept 会覆写同一个 `TcpSocket`；handler 运行一次即被消费，容易误用。
@@ -124,14 +114,17 @@
 - [ ] **F3**（P2）行号与过时注释
   ① 本文件以外的文档里行号已漂移：`notes/backends.md` 自己的提示写着“见 TODO F3”；
   实测例子：L10 现在 `znet.h:303–305`（旧文写 316）、B8 现在 reactive `znB_listen`
-  （旧文写 2352）。
-  ② `tests/` 里 4 处“未实现/expected failure”注释已经过时——2026-10-29 重跑
-  `post_wakes_loop_without_sockets`、`objects_after_close_begins`、`tcp_connect_refused`、
-  `tcp_connect_twice` 都 OK：`znB_init` 已把 `nfds` 计入 socketpair、`zn_newtimer` 已有
-  status 守卫、select 的 `znB_onconnect` 已读 `SO_ERROR`、`zn_connect` 已先查
-  `connect_handler`。注释里的“proposed B13/L12”还与已修条目撞号。
-  建议：先改这 4 处注释（它们现在会误导人按已修的 bug 去排查），再统一校对 `notes/*`
-  的行号；行号一律改成“函数名 + 可选行号”。
+  （旧文写 2352）。`notes/changes.md` §4 的“22 处折行签名”也已过时（实际 36 处，见 C3）。
+  建议：统一改成“函数名 + 可选行号”，计数只在 §4 保留一处。
+  ② 已清理（2026-10-29）：`tests/` 里描述“未实现/expected failure”的注释共 **5** 处
+  （原记 4 处，漏了 `post_returns_ok_epoll`/B1），连同 `state_test.c` 的文件头段落与
+  小节标题一起改成回归注释，见 `notes/changes.md` §1.21。
+  ③ 仍未清理：`tests/` 里 6 处引用**已关闭**的 ID（`state_test.c` T3×2、`timer_test.c`
+  T3/T4/B6、`buffer_test.c` U4、`dispatch_test.c` L1）。它们不会让人误判“有 bug”，但
+  照 ID 去查会落空；和 ① 一起做，改成函数名或 `changes.md` 章节号。
+  另：`bench/zn_bufferpool.h` 在 HEAD 上就不过 `clang-format --dry-run --Werror`
+  （空行、`# define … user_data; ` 行尾空格、指针写法），格式化提交要单独做、`git diff -w`
+  为空。
 
 - [ ] **M5**（P3）文档与示例收尾
   更新 `README.txt` 的约束矩阵；补 `scripts/check.sh` 或等价入口，写明本机验证范围。
@@ -199,25 +192,28 @@
 排序依据：① 是否崩溃/内存安全；② 是否违反硬约束（AGENTS 的 <80 与 Clean C）；
 ③ 是否让后续工作建立在错误信息上（过时文档/测试）；④ 成本与前置依赖。
 
-| 顺序 | 条目 | 级别 | 为什么排这里 | 前置 |
-| --- | --- | --- | --- | --- |
-| 1 | **F3** | P2→先做 | 成本最低、回报立刻：4 处测试注释还在描述已修的 bug，谁按它排查就会走错路；撞号会污染 ID 空间 | 无 |
-| 2 | **C3** | P1 | 硬约束，且挡住 M3 收尾与 `format-check`。公共 API 那 5 个入口只能等操作结构体重构（D3/D4 方向已定），但 bench/example/内部函数可以先清 | 非 API 部分无；API 部分等操作体重构 |
-| 3 | **U1** | P1 | 头文件不能编译是硬伤，但当前无人使用；若选“删”几乎是分钟级。留着就必须修 3 个缺陷 | D5 |
-| 4 | **B8** | P1 | 真实泄漏（stale `infos[]` + 未注销），且影响所有 listen 失败路径；修法小而确定 | 无 |
-| 5 | **U15** | P2 | reactive 空转是真实故障（U10 同类已修），影响 Lua 用户；但先要定“停止接收”语义 | 该条内部先定语义 |
-| 6 | **L10** | P2 | `NDEBUG` 下内存破坏，影响的是发布配置，风险高于“健壮性”标签 | 无 |
-| 7 | **L11** | P2 | 生命周期 + retain 泄漏，和 `zn_close` 的契约纠缠 | 无 |
-| 8 | **B14** | P2 | IOCP 语义缺口，用户可见（close 后立刻 reconnect 得 `ZN_EBUSY`）；**与已修的 L8 不同族**（完成事件所有权，不是批次指针），修法要单独定 | 无 |
-| 9 | **T5** | P2 | 资源边界；先定“shrink 还是文档化上限” | 该条内部先定策略 |
-| 10 | **U7/U8/U11** | P2 | 工具与 wrapper 的可用性，不影响库核心；U11 只需要文档化最小改动 | 无 |
-| 11 | **CI** | P2（独立） | 不阻塞上述顺序，但现在每次改动都靠三台机器手工跑；建议与 1–4 并行铺开 | 无 |
-| 12 | **L13** | P3 | 静默错误但无人使用；修法一行 | 无 |
-| 13 | **B3** | P3 | 纯精炼，量大且机械；放在语义修复之后，避免 diff 淹没 bug | C3 的 API 决策先落地 |
-| 14 | **M5 + format-check** | P3 | 收尾；与 F3 合并做文档，检查脚本在 C3 之后才有意义 | C3 |
-| 15 | **覆盖率门槛** | P3 | 依赖 CI 或 fault-injection 构建 | CI |
+已完成的批次记在 `notes/changes.md`（最近一次是 §1.21）；这里只剩未做项，顺序如下：
 
-**如果只做三件事**：F3（止损信息污染）→ C3 的非 API 部分（硬约束；公共 API 那 5 个
-入口等操作结构体重构）→ U1（头文件不能编译）。
-**建议的下一个迭代**：1–4（F3、C3、U1、B8），一次只碰一个契约面；
-CI 作为并行轨道，别等全部修完才铺。
+- **F3（①③，P2）**：文档里的行号与已关 ID 会把人引向已修的 bug，成本最低。前置：无。
+- **C3（P1）**：硬约束，且挡住 `format-check`；非 API 部分现在就能清，公共 API 那 5 个
+  入口等操作结构体重构。前置：API 部分等 D3/D4。
+- **U1（P1）**：头文件编不过；选“删”几乎是分钟级，留着就得修 3 个缺陷。前置：D5。
+- **B8（P1）**：stale `infos[]` + 未注销，影响所有 listen 失败路径；修法小而确定。
+  前置：无。
+- **U15（P2）**：reactive 空转（U10 同类已修）；先定“停止接收”语义。前置：语义先定。
+- **L10（P2）**：`NDEBUG` 下内存破坏，影响发布配置；5 处 `znM_init` 都是编译期常量尺寸，
+  修法小而可测。前置：无。
+- **L11（P2）**：生命周期 + retain 泄漏，和 `zn_close` 的契约纠缠。前置：无。
+- **B14（P2）**：IOCP 完成事件所有权，与已修的 L8 不同族；close 后立刻 reconnect 会拿到
+  `ZN_EBUSY`。前置：无。
+- **T5（P2）**：资源边界；先定 shrink 还是文档化上限。前置：策略先定。
+- **U8 / U11（P2）**：wrapper 与工具的可用性；U11 只需文档化最小改动。前置：无。
+- **CI（P2，独立）**：现在全靠三台机器手工跑，可与前四项并行。前置：无。
+- **B3（P3）**：纯精炼，量大且机械；放语义修复之后，免得 diff 淹没 bug。前置：C3 的
+  API 决策。
+- **M5 + format-check（P3）**：收尾；与 F3 合并做文档，检查脚本在 C3 之后才有意义。
+  前置：C3。
+- **覆盖率门槛（P3）**：依赖 CI 或 fault-injection 构建。前置：CI。
+
+如果只做三件事：F3（①③）→ C3 的非 API 部分 → U1。下一个迭代建议前四项（F3、C3、U1、
+B8），一次只碰一个契约面；CI 作为并行轨道，别等全部修完才铺。
