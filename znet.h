@@ -283,6 +283,7 @@ ZN_NS_BEGIN
 
 #include <assert.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct zn_MemPool {
     void  *pages; /* page chain, link at tail */
@@ -296,11 +297,8 @@ static void znM_put(zn_MemPool *pool, void *obj) {
 }
 
 static void znM_init(zn_MemPool *pool, size_t size) {
-    size_t sp = sizeof(void *);
-    pool->pages = NULL;
-    pool->freed = NULL;
-    pool->size = size;
-    assert(size >= sp && size % sp == 0);
+    memset(pool, 0, sizeof(*pool)), pool->size = size;
+    assert(size >= sizeof(void *) && size % sizeof(void *) == 0);
     assert(ZN_PAGESIZE / size > 2);
 }
 
@@ -328,8 +326,6 @@ static void *znM_get(zn_MemPool *pool) {
 }
 
 /* timer */
-
-#include <string.h>
 
 typedef struct zn_TimerState {
     zn_MemPool timers; /* pool of zn_Timer */
