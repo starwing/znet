@@ -255,11 +255,11 @@ TEST(dispatch_delete_self_in_callback) {
 
 #if defined(ZN_USE_SELECT)
 
-/* L1: select's znB_dispatch() used to dereference S->infos[fd] without a NULL
- * check.  znF_unregister() sets S->infos[fd] = NULL, so when a callback closes
- * another fd that is ready in the *same* select batch, the next dispatch in
- * that batch crashed.  The fix skips NULL entries; the deleted connection must
- * also not deliver a second callback (nrecv == 1).
+/* L1: a callback that closes another fd which is ready in the *same* select
+ * batch must not be dispatched a second time.  znF_unregister() now clears the
+ * fd from the batch (reg and result), and znB_dispatch() still skips a NULL
+ * S->infos[fd] as a guard.  The deleted connection must not deliver a second
+ * callback (nrecv == 1).
  *
  * Both server fds are made ready before the pump, and the batch is walked in
  * ascending fd order, so the callback for the lower (first accepted) fd always
@@ -288,8 +288,8 @@ TEST(dispatch_select_close_other_fd) {
             "pending recv; writing one byte to each client socket so both "
             "server fds are ready in the same select batch.\n");
     test_log(
-            "TODO L1 regression: the first callback closes the other tcp; "
-            "the second event must see S->infos[fd] == NULL and return.\n");
+            "L1 regression: the first callback closes the other tcp; the "
+            "second event must not be dispatched (its batch bits are gone).\n");
     asserteq((int)send(c.c1->socket, "x", 1, 0), 1);
     asserteq((int)send(c.c2->socket, "x", 1, 0), 1);
     usleep(50000);
@@ -335,17 +335,185 @@ TEST(dispatch_select_close_other_fd) {
     zt_close(c.S);
 }
 
+/* disarming a direction drops it from the current batch snapshot: a callback
+ * that re-arms the same fd must not be re-entered from the old bits */
+static void dt_on_accept_nop(void *ud, zn_Accept *a, unsigned err, zn_Tcp *t) {
+    (void)ud;
+    (void)a;
+    (void)err;
+    (void)t;
+}
+
+TEST(dispatch_select_disarm_drops_snapshot) {
+    zn_State  *S = zt_open();
+    zn_Accept *a = zn_newaccept(S, SOCK_STREAM);
+    int        fd;
+    assertok(a != NULL);
+    asserteq(zn_listen(a, "127.0.0.1", 0), ZN_OK);
+    fd = a->socket;
+    asserteq(zn_accept(a, dt_on_accept_nop, NULL), ZN_OK);
+    FD_SET(fd, &S->result[ZN_READ]);
+    FD_SET(fd, &S->result[ZN_EXCEPT]);
+    znB_disarmaccept(a);
+    assertok(!FD_ISSET(fd, &S->result[ZN_READ]));
+    assertok(!FD_ISSET(fd, &S->result[ZN_EXCEPT]));
+    zn_delaccept(a);
+    zt_close(S);
+}
+
 #endif /* ZN_USE_SELECT */
 
-/* TODO L8 (znet.h:2530, :2726) is deliberately not covered here: on kqueue a
- * user recv handler never runs inside the fd event batch.  znB_onevent()
- * re-issues zn_recv(), the completion is queued, and the handler runs later
- * from znR_process() -- i.e. after every event of the batch has been
- * dispatched.  A freeing handler therefore cannot be hit by a later
- * EVFILT_WRITE event of the same batch.  The only user callback that does run
- * during dispatch is znB_onconnect(), and whether both connect events land in
- * one batch (and in which order) is not deterministic, so a same-fd-twice test
- * would be flaky.  No test is better than a flaky one: a deterministic L8
- * reproduction needs the deferred-release queue suggested in TODO.md M1. */
+#if !defined(_WIN32)
+
+/* ---- same-batch invalidation (L8 regression) ----
+ *
+ * A poll batch is a snapshot of readiness.  A connect callback may delete
+ * another object whose connect completion is later in that same batch; the
+ * mempool then returns the same slot to zn_newtcp().  Without invalidation the
+ * stale batch entry finds the new object and reports ZN_OK for a connect that
+ * has not completed (it is aimed at a closed port and must fail).
+ *
+ * Both client completions are queued before the first poll, and c1 is queued
+ * before c2, so the batch order is deterministic without a sleep: readiness is
+ * observed with poll() on the raw client fds, which does not consume the
+ * backend's event.
+ *
+ * The second case closes and reconnects the same object instead of deleting
+ * it; the stale entry then names the same zn_SocketInfo pointer. */
+
+static unsigned dt_l8_deadport(void) {
+    struct sockaddr_in sa;
+    socklen_t          len = (socklen_t)sizeof(sa);
+    unsigned           port;
+    int                fd = socket(AF_INET, SOCK_STREAM, 0);
+    assertok(fd >= 0);
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(0x7f000001u);
+    sa.sin_port = 0;
+    asserteq(bind(fd, (struct sockaddr *)&sa, sizeof(sa)), 0);
+    asserteq(getsockname(fd, (struct sockaddr *)&sa, &len), 0);
+    port = (unsigned)ntohs(sa.sin_port);
+    close(fd);
+    return port;
+}
+
+static void dt_l8_wait_write(zn_Tcp *tcp) {
+    struct pollfd p;
+    p.fd = tcp->socket;
+    p.events = POLLOUT;
+    p.revents = 0;
+    if (poll(&p, 1, 1000) != 1) zt_fail("client fd never became writable");
+}
+
+typedef struct dt_L8 {
+    zn_State  *S;
+    zn_Accept *a;
+    zn_Tcp    *c1;
+    zn_Tcp    *c2;
+    zn_Tcp    *n;
+    unsigned   port;
+    unsigned   dead;
+    int        mode; /* 0: delete + reuse, 1: close + reconnect */
+    int        c1_calls;
+    int        c2_calls;
+    int        new_calls;
+    int        new_err;
+    int        accepted;
+    int        done;
+} dt_L8;
+
+static void dt_l8_on_new(void *ud, zn_Tcp *tcp, unsigned err) {
+    dt_L8 *c = (dt_L8 *)ud;
+    (void)tcp;
+    c->new_calls++;
+    c->new_err = (int)err;
+    c->done = 1;
+}
+
+static void dt_l8_on_accept(void *ud, zn_Accept *a, unsigned e, zn_Tcp *t) {
+    dt_L8 *c = (dt_L8 *)ud;
+    if (e != ZN_OK) return;
+    c->accepted++;
+    zn_deltcp(t);
+    asserteq(zn_accept(a, dt_l8_on_accept, c), ZN_OK);
+}
+
+static void dt_l8_on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
+    dt_L8 *c = (dt_L8 *)ud;
+    if (tcp != c->c1) {
+        c->c2_calls++;
+        return;
+    }
+    c->c1_calls++;
+    assertok(err == ZN_OK);
+    if (c->mode == 0) {
+        zn_deltcp(c->c2);
+        c->n = zn_newtcp(c->S);
+        assertok(c->n != NULL);
+        /* the pool must hand back the victim's slot for the stale entry to
+         * matter; otherwise this test would pass without the fix */
+        assertok(c->n == c->c2);
+    } else {
+        asserteq(zn_closetcp(c->c2), ZN_OK);
+        c->n = c->c2;
+    }
+    asserteq(zn_connect(c->n, "127.0.0.1", c->dead, SOCK_STREAM, dt_l8_on_new,
+                        c),
+             ZN_OK);
+}
+
+static void dt_l8_case(int mode) {
+    dt_L8   c;
+    zt_Loop L;
+
+    memset(&c, 0, sizeof(c));
+    c.mode = mode;
+    c.S = zt_open();
+    c.a = zn_newaccept(c.S, SOCK_STREAM);
+    assertok(c.a != NULL);
+    asserteq(zn_listen(c.a, "127.0.0.1", 0), ZN_OK);
+    c.port = zt_accept_port(c.a);
+    assertok(c.port != 0);
+    c.dead = dt_l8_deadport();
+    asserteq(zn_accept(c.a, dt_l8_on_accept, &c), ZN_OK);
+
+    c.c1 = zn_newtcp(c.S);
+    c.c2 = zn_newtcp(c.S);
+    assertok(c.c1 != NULL && c.c2 != NULL);
+
+    /* queue c1's completion first, then c2's: both are pending when the
+     * test's first poll runs, and the batch order follows that order */
+    asserteq(zn_connect(c.c1, "127.0.0.1", c.port, SOCK_STREAM,
+                        dt_l8_on_connect, &c),
+             ZN_OK);
+    dt_l8_wait_write(c.c1);
+    asserteq(zn_connect(c.c2, "127.0.0.1", c.port, SOCK_STREAM,
+                        dt_l8_on_connect, &c),
+             ZN_OK);
+    dt_l8_wait_write(c.c2);
+
+    zt_begin(&L, c.S, 2000);
+    ZT_WAIT(L, c.done);
+    zt_end(&L);
+
+    /* c1 ran first and consumed c2; c2's stale event must not run */
+    asserteq(c.c1_calls, 1);
+    asserteq(c.c2_calls, 0);
+    asserteq(c.new_calls, 1);
+    asserteq(c.new_err, ZN_ERROR); /* the dead port must not report ZN_OK */
+    assertok(c.accepted >= 1);
+
+    if (c.n != NULL) zn_deltcp(c.n);
+    zn_deltcp(c.c1);
+    zn_delaccept(c.a);
+    asserteq(c.S->waitings, 0);
+    zt_close(c.S);
+}
+
+TEST(dispatch_l8_delete_and_reuse) { dt_l8_case(0); }
+TEST(dispatch_l8_close_and_reconnect) { dt_l8_case(1); }
+
+#endif /* !_WIN32 */
 
 #include "dispatch_test.gen.inc"
