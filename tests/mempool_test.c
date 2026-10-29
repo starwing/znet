@@ -6,10 +6,10 @@
  * own first sizeof(void*) bytes.  These are pure memory tests -- no zn_State
  * is needed.
  *
- * znM_init asserts its precondition (size >= sizeof(void*),
- * size % sizeof(void*) == 0 and ZN_PAGESIZE / size > 2), so every size
- * used here satisfies it: an invalid size aborts, and that abort path must
- * not be exercised here (TODO L10 wants a non-assert failure instead).
+ * znM_init checks its precondition (size >= sizeof(void*),
+ * size % sizeof(void*) == 0 and ZN_PAGESIZE / size > 2) with asserts, so every
+ * size used here satisfies it; an invalid size aborts in a debug build and the
+ * library's own pools cannot violate it at all (notes/changes.md 1.23).
  */
 
 #include "ztest.h"

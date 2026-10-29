@@ -300,7 +300,6 @@ static void znM_init(zn_MemPool *pool, size_t size) {
     pool->pages = NULL;
     pool->freed = NULL;
     pool->size = size;
-    assert(((sp - 1) & sp) == 0);
     assert(size >= sp && size % sp == 0);
     assert(ZN_PAGESIZE / size > 2);
 }
