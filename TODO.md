@@ -393,6 +393,30 @@ timer heap`、`bench: document what arm actually measures`。4 叉实现没有�
 
 ---
 
+### 1.17 M4b：timer 堆键拷贝（SoA，2026-10-29）
+
+`zn_TimerState.heap`（`zn_Timer **`）拆成 `keys[]`（`zn_Time`，排序键）和 `nodes[]`
+（`zn_Timer *`）：sift 比较只读连续的 key 数组，不再每层解引用 48 B 的 timer。句柄、
+`index`、`emit` 语义都不变；`znT_resize` 改成分配两个数组并复制有效前缀。
+
+7 轮交替 A/B（键拷贝/原指针堆的中位数比值，macOS arm64）：
+
+| 操作 | 1k | 10k | 100k |
+| --- | --- | --- | --- |
+| arm | 1.050 | 1.054 | 1.046 |
+| cancel | 0.938 | 0.820 | 0.792 |
+| fire | **0.684** | **0.662** | **0.639** |
+| clock（对照） | 0.998 | 0.998 | 1.000 |
+
+保留：fire 快 32-36%，代价是每个 timer 多 8 B（100k 时 +0.8 MB）和 arm 约 5%
+（每层多一次 8 B 存储）。4 叉堆仍不采用（1.16）；稳定 id / 索引堆留给 B4
+（结论和原型数据见 `notes/m4-4ary-heap.md` §8）。
+
+验证：macOS `just check` / `check-c89` / `check-cpp03` / `smoke` / `test-lua`、
+`orb just check`（epoll + select）、`wx-miku just check`（IOCP，`/W4 /WX`）。
+
+---
+
 ## 2. 待做
 
 ### 2.1 P0 — 崩溃/内存安全
