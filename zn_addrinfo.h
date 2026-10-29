@@ -37,7 +37,7 @@ ZN_NS_END
         znL_entry(T);  \
     }
 #define znL_init(h)  (znL_rawset((h)->prev, h), znL_rawset((h)->next, h))
-#define znL_empty(h) ((void *)(h)->prev == (void *)&(h))
+#define znL_empty(h) ((void *)(h)->next == (void *)(h))
 
 #define znL_insert(h, n)                                                     \
     (znL_rawset((n)->next, h), (n)->prev = (h)->prev, (h)->prev->next = (n), \

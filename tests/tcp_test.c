@@ -1618,9 +1618,8 @@ TEST(tcp_close_parked_and_queued) {
      * (socket == -1) and the object is reclaimed */
     asserteq(znR_process(S, INT_MAX), 0);
     asserteq(S->waitings, 0);
-    /* znL_empty() cannot be called (it takes &(h) of an already expanded
-     * head argument), so compare the head ring directly */
-    assertok(S->active_tcps.next == (zn_Tcp *)(void *)&S->active_tcps);
+    /* the ring is back to just the head: znL_empty() compares next with h */
+    assertok(znL_empty(&S->active_tcps));
     zt_close(S);
 }
 
@@ -1651,7 +1650,7 @@ TEST(tcp_recv_result_after_close) {
 
     asserteq(znR_process(S, INT_MAX), 0);
     asserteq(S->waitings, 0);
-    assertok(S->active_tcps.next == (zn_Tcp *)(void *)&S->active_tcps);
+    assertok(znL_empty(&S->active_tcps));
     zt_close(S);
 }
 
@@ -1687,7 +1686,7 @@ TEST(tcp_close_both_parked) {
     asserteq(zn_closetcp(tcp), ZN_OK); /* idempotent: no second release */
     asserteq(S->waitings, 0);
     zn_deltcp(tcp);
-    assertok(S->active_tcps.next == (zn_Tcp *)(void *)&S->active_tcps);
+    assertok(znL_empty(&S->active_tcps));
     zt_close(S);
 }
 
@@ -1722,7 +1721,7 @@ TEST(tcp_connect_after_close_queued) {
     /* draining the queue releases the last retain and reclaims the object */
     asserteq(znR_process(S, INT_MAX), 0);
     asserteq(S->waitings, 0);
-    assertok(S->active_tcps.next == (zn_Tcp *)(void *)&S->active_tcps);
+    assertok(znL_empty(&S->active_tcps));
     zn_delaccept(listener);
     zt_close(S);
 }
