@@ -23,9 +23,9 @@ POSIX 合并的分支覆盖为 86.8%（685/789）。
 2. 需要故障注入或操作系统资源耗尽的错误路径（macOS 45 行；POSIX 并集再加 9 行）；
 3. 剩下的防御性代码（`znet.h` 0 行；`zn_buffer.h` 2 行，见 §C）。
 
-2026-10-28 的两次修复（TODO 1.3/1.4）之后，原来的“死代码”7 行已经处理完：三处
+2026-10-28 的两次修复（`notes/changes.md` §1.3/§1.4）之后，原来的“死代码”7 行已经处理完：三处
 `default: ;` 删除、select 的重复 `FD_SETSIZE` 检查改成 assert、select 的 except 派发
-send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 L6/L7 修复（TODO 1.8）
+send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 L6/L7 修复（`notes/changes.md` §1.8）
 把 accept/UDP 的 `EAGAIN`、监听器/UDP 的错误事件变成可测分支（4 个新测试），所以行覆盖
 从 93.9/94.2/94.6 升到 95.2/95.1/95.0；B9 覆盖了 select 的 send/recv park 路径。
 新增但不可确定覆盖的只剩 `EINTR`/`ECONNABORTED` 和 `fd >= FD_SETSIZE`/

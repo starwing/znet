@@ -155,7 +155,7 @@ process per test, like the POSIX runner: an MSVC `abort()` exits with
 `0xC0000409` (negative), which `if errorlevel 1` would miss, so failures are
 detected by comparing the exit code as a string.  `check.bat` also requires
 the harness's ` OK`/` SKIP` line in the captured output: a test that kills
-its own thread exits 0 without running to the end (TODO 1.14).  It compiles
+its own thread exits 0 without running to the end (see `notes/changes.md` §1.14).  It compiles
 `zn_task.h` too, because no suite includes that header and its Win32 branch
 would otherwise never reach the compiler.  The IOCP suite passes on Windows
 (VS2022 x64, 2026-10-28); `check.bat select` exits 2 because `znet.h` always

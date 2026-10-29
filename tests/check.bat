@@ -79,7 +79,7 @@ exit /b 0
 :run
 rem one process per test: abort() is 0xC0000409 (negative) and "if errorlevel 1"
 rem compares signed, so the exit code is compared as a string.  A test can also
-rem die with exit code 0 (a killed caller thread, see TODO 1.14), so it must end
+rem die with exit code 0 (a killed caller thread, see notes/changes.md 1.14), so it must end
 rem with the harness's " OK" / " SKIP" line as well.
 set "TAG=%~1"
 set "FAILED=0"

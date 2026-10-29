@@ -20,7 +20,7 @@ and then `kill -9` both: the SIGINT handler in these programs calls `zn_close()`
 from a signal handler, which is not async-signal-safe.  All programs set stdout
 **unbuffered** (`_IONBF`), so the per-second counters survive the kill; plain
 line buffering is not enough because the stream is a pipe, and MSVC aborts on
-`setvbuf(..., _IOLBF, 0)` (TODO 1.15).
+`setvbuf(..., _IOLBF, 0)` (see `notes/changes.md` §1.15).
 
 ## Programs
 
@@ -59,7 +59,7 @@ that contract changed.
 All seven programs are ported to the current API (the `packet` argument of
 `zn_connect`/`zn_newaccept` is `0`) and compile clean under
 `-std=c99 -pedantic -Wall -Wextra`, `-std=c89 -pedantic-errors`, and
-`cl /nologo /W4 /WX` (bench\build.bat runs that, TODO 1.15).  `just bench`
+`cl /nologo /W4 /WX` (bench\build.bat runs that; see `notes/changes.md` §1.15).  `just bench`
 builds them on Windows too, and `just bench <name> <secs>` runs the pair
 headless (ssh/CI) via bench\run.bat.
 
