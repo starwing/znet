@@ -43,6 +43,10 @@ static zn_BufferPoolNode *zn_getbuffer(zn_BufferPool *pool) {
 }
 
 static void zn_putbuffer(zn_BufferPool *pool, zn_BufferPoolNode *node) {
+    /* a recycled node must not inherit the previous connection's framing:
+     * stale header/packet state would treat a half frame as new data */
+    zn_resetrecvbuffer(&node->recv);
+    zn_resetsendbuffer(&node->send);
     node->next = *pool;
     *pool = node;
 }
