@@ -235,7 +235,7 @@ TEST(timer_cancel_sift_up) {
         t[i]->start = 0;
         t[i]->emit = emit[i];
         t[i]->index = (unsigned)i;
-        S->ts.heap[i] = t[i];
+        S->ts.keys[i] = emit[i], S->ts.nodes[i] = t[i];
     }
     S->ts.used = 6;
     S->ts.nexttime = emit[0];
@@ -247,9 +247,10 @@ TEST(timer_cancel_sift_up) {
     asserteq(S->ts.used, 5);
     asserteq(t[4]->index, ZN_TIMER_NOINDEX);
     asserteq(t[5]->index, 1);
-    asserteq(S->ts.heap[1], t[5]);
-    asserteq(S->ts.heap[3], t[3]);
-    asserteq(S->ts.heap[4], t[1]);
+    asserteq(S->ts.nodes[1], t[5]);
+    asserteq(S->ts.keys[1], emit[5]);
+    asserteq(S->ts.nodes[3], t[3]);
+    asserteq(S->ts.nodes[4], t[1]);
     asserteq(S->ts.nexttime, emit[0]);
     zt_close(S);
 }
@@ -701,15 +702,16 @@ static void prop_check(zn_State *S) {
             continue;
         }
         assertok(g_prop[i]->index < S->ts.used);
-        assertok(S->ts.heap[g_prop[i]->index] == g_prop[i]);
+        assertok(S->ts.nodes[g_prop[i]->index] == g_prop[i]);
         asserteq(g_prop[i]->emit, g_prop_emit[i]);
     }
     for (i = 0; i < (int)S->ts.used; ++i) {
         unsigned p;
-        asserteq(S->ts.heap[i]->index, (unsigned)i);
+        asserteq(S->ts.nodes[i]->index, (unsigned)i);
+        asserteq(S->ts.keys[i], S->ts.nodes[i]->emit);
         if (i == 0) continue;
         p = (unsigned)((i - 1) / PROP_ARITY);
-        assertok(S->ts.heap[p]->emit <= S->ts.heap[i]->emit);
+        assertok(S->ts.keys[p] <= S->ts.keys[i]);
     }
 }
 

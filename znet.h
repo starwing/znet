@@ -359,7 +359,8 @@ static void *znM_get(zn_MemPool *pool) {
 
 typedef struct zn_TimerState {
     zn_MemPool timers;   /* pool of zn_Timer */
-    zn_Timer **heap;     /* min-heap by emit */
+    zn_Time   *keys;     /* heap order, emit per slot (parallel to nodes) */
+    zn_Timer **nodes;    /* heap payload, the timers (parallel to keys) */
     zn_Time    nexttime; /* earliest emit, or FOREVER */
     unsigned   used;     /* heap occupancy */
     unsigned   size;     /* heap capacity */
@@ -381,15 +382,15 @@ static int znT_hastimers(zn_TimerState *ts) { return ts->used != 0; }
 
 static void znT_clear(zn_TimerState *ts) {
     znM_free(&ts->timers);
-    free(ts->heap);
+    free(ts->keys), free(ts->nodes);
     memset(ts, 0, sizeof(*ts));
     ts->nexttime = ZN_FOREVER;
 }
 
 static void znT_update(zn_TimerState *ts, zn_Time current) {
     if (ts->nexttime > current) return;
-    while (ts->used && ts->heap[0]->emit <= current) {
-        zn_Timer *timer = ts->heap[0];
+    while (ts->used && ts->keys[0] <= current) {
+        zn_Timer *timer = ts->nodes[0];
         zn_canceltimer(timer);
         if (timer->handler) {
             zn_Time r = timer->handler(timer->u.ud, timer,
@@ -397,7 +398,7 @@ static void znT_update(zn_TimerState *ts, zn_Time current) {
             if (r > 0) zn_starttimer(timer, r);
         }
     }
-    ts->nexttime = ts->used == 0 ? ZN_FOREVER : ts->heap[0]->emit;
+    ts->nexttime = ts->used == 0 ? ZN_FOREVER : ts->keys[0];
 }
 
 static zn_Time znT_gettimeout(zn_TimerState *ts, zn_Time current) {
@@ -408,14 +409,23 @@ static zn_Time znT_gettimeout(zn_TimerState *ts, zn_Time current) {
 }
 
 static int znT_resize(zn_TimerState *ts, size_t size) {
-    zn_Timer **heap;
+    zn_Time   *keys;
+    zn_Timer **nodes;
     size_t     realsize = ZN_MIN_TIMERHEAP;
     while (realsize < size && realsize < ZN_MAX_SIZET / sizeof(zn_Timer *) / 2)
         realsize <<= 1;
     if (realsize < size) return 0;
-    heap = (zn_Timer **)realloc(ts->heap, realsize * sizeof(zn_Timer *));
-    if (heap == NULL) return 0;
-    return (ts->heap = heap, ts->size = (unsigned)realsize), 1;
+    keys = (zn_Time *)malloc(realsize * sizeof(zn_Time));
+    if (keys == NULL) return 0;
+    nodes = (zn_Timer **)malloc(realsize * sizeof(zn_Timer *));
+    if (nodes == NULL) return free(keys), 0;
+    if (ts->used) {
+        memcpy(keys, ts->keys, ts->used * sizeof(zn_Time));
+        memcpy(nodes, ts->nodes, ts->used * sizeof(zn_Timer *));
+    }
+    free(ts->keys), free(ts->nodes);
+    ts->keys = keys, ts->nodes = nodes, ts->size = (unsigned)realsize;
+    return 1;
 }
 
 static zn_Timer *znT_new(zn_TimerState *ts, zn_TimerHandler *cb, void *ud) {
@@ -434,40 +444,51 @@ ZN_API void zn_deltimer(zn_Timer *timer) {
 
 ZN_API int zn_starttimer(zn_Timer *timer, zn_Time delayms) {
     zn_TimerState *ts = timer->ts;
+    zn_Time        key;
     unsigned       i, p;
     if (delayms >= ZN_FOREVER) return ZN_EPARAM;
     if (timer->index != ZN_TIMER_NOINDEX) zn_canceltimer(timer);
     if (ts->size == ts->used && !znT_resize(ts, ts->size * 2)) return ZN_ERROR;
     i = ts->used++;
     timer->start = zn_time();
-    timer->emit = timer->start + delayms;
-    while (p = (i - 1) >> 1, i > 0 && ts->heap[p]->emit > timer->emit)
-        (ts->heap[i] = ts->heap[p])->index = i, i = p;
-    (ts->heap[i] = timer)->index = i;
-    if (i == 0) ts->nexttime = timer->emit;
+    key = timer->emit = timer->start + delayms;
+    while (p = (i - 1) >> 1, i > 0 && ts->keys[p] > key) {
+        ts->keys[i] = ts->keys[p];
+        (ts->nodes[i] = ts->nodes[p])->index = i;
+        i = p;
+    }
+    ts->keys[i] = key, (ts->nodes[i] = timer)->index = i;
+    if (i == 0) ts->nexttime = key;
     return ZN_OK;
 }
 
 ZN_API void zn_canceltimer(zn_Timer *timer) {
     zn_TimerState *ts = timer->ts;
     unsigned       i = timer->index, p, k;
+    zn_Time        key;
     if (i == ZN_TIMER_NOINDEX) return;
     timer->index = ZN_TIMER_NOINDEX;
-    if (ts->used == 0 || timer == ts->heap[--ts->used]) {
+    if (ts->used == 0 || timer == ts->nodes[--ts->used]) {
         if (ts->used == 0) ts->nexttime = ZN_FOREVER;
         return;
     }
-    timer = ts->heap[ts->used];
-    while (p = (i - 1) >> 1, i > 0 && ts->heap[p]->emit > timer->emit)
-        (ts->heap[i] = ts->heap[p])->index = i, i = p;
-    while ((k = i << 1 | 1) < ts->used
-           && timer->emit
-                      > ts->heap[k += k + 1 < ts->used
-                                   && ts->heap[k]->emit > ts->heap[k + 1]->emit]
-                                ->emit)
-        (ts->heap[i] = ts->heap[k])->index = i, i = k;
-    (ts->heap[i] = timer)->index = i;
-    ts->nexttime = ts->heap[0]->emit;
+    timer = ts->nodes[ts->used];
+    key = ts->keys[ts->used];
+    while (p = (i - 1) >> 1, i > 0 && ts->keys[p] > key) {
+        ts->keys[i] = ts->keys[p];
+        (ts->nodes[i] = ts->nodes[p])->index = i;
+        i = p;
+    }
+    while ((k = i * 2 + 1) < ts->used) {
+        unsigned c = k + 1;
+        if (c < ts->used && ts->keys[c] < ts->keys[k]) k = c;
+        if (key <= ts->keys[k]) break;
+        ts->keys[i] = ts->keys[k];
+        (ts->nodes[i] = ts->nodes[k])->index = i;
+        i = k;
+    }
+    ts->keys[i] = key, (ts->nodes[i] = timer)->index = i;
+    ts->nexttime = ts->keys[0];
 }
 
 #endif /* zn_use_timer */
