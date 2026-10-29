@@ -6,6 +6,7 @@
 #   just bench echo 5       echo benchmark, 5 seconds
 #   just bench flood 5      flood benchmark
 #   just bench echo-buffer 5  echo through zn_buffer.h framing
+#   just bench timer [n]    timer-heap microbenchmark (no argument: 1k/10k/100k)
 #   just bench clean
 #
 # Direct use: `just --justfile bench/justfile echo 5`.
@@ -52,6 +53,23 @@ flood secs="5": (pair "bench_flood" secs)
 # run the buffered-echo benchmark for N seconds
 [unix]
 echo-buffer secs="5": (pair "bench_echo_buffer" secs)
+
+# run the timer-heap microbenchmark: arm/cancel/fire/clock, no sockets
+# (n = 0 runs the three default sizes)
+[unix]
+timer n="0":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    exe='{{BUILD}}/bench_timer'
+    if [ ! -x "$exe" ]; then
+        echo "missing $exe: run 'just bench' first" >&2
+        exit 2
+    fi
+    if [ "{{n}}" = "0" ]; then
+        "$exe"
+    else
+        "$exe" "{{n}}"
+    fi
 
 # one server+client pair from the same binary, killed after N seconds
 [unix]
@@ -109,6 +127,11 @@ flood secs="5":
 [windows]
 echo-buffer secs="5":
     @call "{{SRC}}\run.bat" echo-buffer {{secs}}
+
+# no server+client pair: run the microbenchmark directly (build.bat output dir)
+[windows]
+timer n="0":
+    @if "{{n}}"=="0" ( "{{BUILD}}\msvc\bench_timer.exe" ) else ( "{{BUILD}}\msvc\bench_timer.exe" {{n}} )
 
 [windows]
 list:

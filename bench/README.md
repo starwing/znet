@@ -8,6 +8,8 @@ just bench                 # build everything (module default)
 just bench echo 5          # 5 s of ping-pong echo
 just bench flood 5         # 5 s of flood (one direction saturates)
 just bench echo-buffer 5   # 5 s of echo through zn_buffer.h framing
+just bench timer           # timer-heap microbenchmark: 1k/10k/100k
+just bench timer 100000    # one size
 just bench list            # what was built + manual usage
 just bench clean
 ZNET_BENCH_PORT=19000 just bench echo 3
@@ -29,6 +31,13 @@ line buffering is not enough because the stream is a pipe, and MSVC aborts on
 | `bench_echo_buffer.c` | same CLI; same echo but through `zn_buffer.h` send/receive buffering and 2-byte length framing |
 | `bench_server.c` / `bench_client.c` | split pair: `bench_server [port]` + `bench_client [ip [port]]`, uses `zn_bufferpool.h` |
 | `echo_server.c` | minimal echo server, manual runs |
+| `bench_timer.c` | timer-heap microbenchmark, `bench_timer [n]`: arm/cancel/fire/clock, no sockets |
+
+The timer benchmark measures `arm` / `cancel` / `fire` of the timer heap only (no
+sockets, no `zn_run`); `fire` drives the internal `znT_update` directly so the
+pop-min path is timed without a poll loop.  `bench_timer` is not a server+client
+pair, so on Windows the `just bench timer` recipe runs
+`bench\build\msvc\bench_timer.exe` directly instead of `run.bat`.
 
 `bench_echo.lua` is the original Lua driver; it is not wired into the justfile.
 
@@ -41,7 +50,7 @@ that contract changed.
 
 ## Status
 
-All six programs are ported to the current API (the `packet` argument of
+All seven programs are ported to the current API (the `packet` argument of
 `zn_connect`/`zn_newaccept` is `0`) and compile clean under
 `-std=c99 -pedantic -Wall -Wextra`, `-std=c89 -pedantic-errors`, and
 `cl /nologo /W4 /WX` (bench\build.bat runs that, TODO 1.15).  `just bench`
