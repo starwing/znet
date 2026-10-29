@@ -331,23 +331,17 @@ static void znM_free(zn_MemPool *pool) {
 }
 
 static void *znM_get(zn_MemPool *pool) {
-    void *obj = pool->freed;
-    if (obj == NULL) {
-        const size_t offset = ZN_PAGESIZE - sizeof(void *);
-        void        *end, *newpage = malloc(ZN_PAGESIZE);
-        if (newpage == NULL) return NULL;
-        *(void **)((char *)newpage + offset) = pool->pages;
-        pool->pages = newpage;
-        end = (char *)newpage + (offset / pool->size - 1) * pool->size;
-        while (end != newpage) {
-            *(void **)end = pool->freed;
-            pool->freed = (void **)end;
-            end = (char *)end - pool->size;
-        }
-        return end;
-    }
-    pool->freed = *(void **)obj;
-    return obj;
+    const size_t size = pool->size;
+    const size_t offset = ZN_PAGESIZE - sizeof(void *);
+    char        *page, *end, *obj = (char *)pool->freed;
+    if (obj != NULL) return (pool->freed = *(void **)obj), obj;
+    page = (char *)malloc(ZN_PAGESIZE);
+    if (page == NULL) return NULL;
+    end = &page[offset], *(void **)end = pool->pages;
+    pool->pages = page, page += size, end -= size;
+    while ((page += size) <= end) *(void **)(page - size) = page;
+    *(void **)(page - size) = pool->freed;
+    return (pool->freed = (void *)((char *)pool->pages + size)), pool->pages;
 }
 
 #endif /* zn_use_mempool */
