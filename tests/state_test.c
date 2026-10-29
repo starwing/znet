@@ -16,16 +16,16 @@
  * zn_run(ONCE) on an idle state blocks as well; every ONCE below has a pending
  * post to wake it.
  *
- * The post tests keep one inert listening socket open (see state_anchor):
- * select's znB_poll() only watches descriptors <= S->nfds, and znB_init() does
- * not raise nfds to cover the post socketpair, so on select a post cannot wake
- * a state that has no socket at all.  That backend bug has its own regression
- * test, post_wakes_loop_without_sockets, at the end of the file; the post
- * semantics tests below are not weakened by the anchor, they just run on a
- * state that select is able to poll.
+ * The post tests keep one inert listening socket open (see state_anchor).
+ * That anchor predates the nfds fix (notes/changes.md §1.2): select's
+ * znB_poll() only watches descriptors <= S->nfds and znB_init() did not raise
+ * nfds to cover the post socketpair, so a post could not wake a state with no
+ * socket at all.  post_wakes_loop_without_sockets now pins the fix, so the
+ * anchor is redundant.
  *
- * The last three tests assert desired behaviour the library does not have yet;
- * each aborts the process it runs in, so they are last.
+ * The last three tests are regressions for bugs fixed on 2026-10-28
+ * (notes/changes.md §1.2 and §1.1); they stay last so a regression that
+ * aborts the process cannot hide the other results.
  */
 
 #include "ztest.h"
@@ -484,18 +484,14 @@ TEST(close_twice_from_callback) {
     asserteq(g_posts, 1);
 }
 
-/* ---- desired behaviour the library does not implement yet ---- */
+/* ---- regressions for the select/epoll fixes in notes/changes.md §1.2 ---- */
 
-/* select: znB_poll() watches fds 0..S->nfds, but znB_init() (znet.h:2116)
- * never raises S->nfds to cover the post socketpair (S->sockpairs[1]); only
- * znB_connect/znB_listen/znB_recvfrom do.  On a state with no socket object
- * select() therefore never reports the post pipe and zn_post() cannot wake the
- * loop: zn_run() sleeps until some other timer/poll timeout (ZN_FOREVER - now,
- * ~49 days, TODO T3) and the queued post never runs.
- * Desired behaviour: zn_post() wakes zn_run() on its own.
- * TODO (new bug, no TODO.md ID): in znB_init() raise nfds to sockpairs[1]
- * (e.g. `if (S->nfds < S->sockpairs[1]) S->nfds = S->sockpairs[1];`).
- * Kept last: it fails (times out) instead of passing. */
+/* select: znB_poll() watches fds 0..S->nfds, so znB_init() must raise nfds to
+ * cover the post socketpair (S->sockpairs[1]); it used not to, and a state
+ * with no socket object could never be woken by zn_post(): zn_run() slept
+ * until some other timeout (~49 days) and the queued post never ran.  The
+ * fix is pinned here; a regression shows up as a bounded timeout, not a hang,
+ * because zt_begin's 20 ms tick ends each poll. */
 TEST(post_wakes_loop_without_sockets) {
     zn_State *S = zt_open();
     zt_Loop   L;
@@ -513,12 +509,9 @@ TEST(post_wakes_loop_without_sockets) {
 }
 
 /* AGENTS.md invariant 7: once zn_close() has started, every zn_new* must
- * return NULL.  zn_newtcp/newaccept/newudp do that through ZN_GETOBJECT, but
- * zn_newtimer() -> znT_new() (znet.h:417) has no status check and still
- * hands out a timer.  Desired behaviour: zn_newtimer() returns NULL when
- * S->status > ZN_STATUS_READY, exactly like ZN_GETOBJECT.
- * TODO (new bug, no TODO.md ID): add the S->status guard to zn_newtimer().
- * Kept last: it aborts the process. */
+ * return NULL.  zn_newtcp/newaccept/newudp do that through ZN_GETOBJECT;
+ * zn_newtimer() used to hand out a timer from znT_new() and now checks
+ * S->status the same way.  A regression aborts the process. */
 TEST(objects_after_close_begins) {
     zn_State *S = zt_open();
 
@@ -529,9 +522,9 @@ TEST(objects_after_close_begins) {
     asserteq(g_posts, 1);
 }
 
-/* B1: epoll's znB_signal() (znet.h:2407) reverses the eventfd_write() result,
- * so a successfully queued post reports ZN_ERROR.  Desired behaviour:
- * zn_post() returns ZN_OK and the handler runs.  Kept last: it aborts.
+/* epoll: znB_signal() used to reverse the eventfd_write() result, so a
+ * successfully queued post reported ZN_ERROR.  zn_post() must return ZN_OK and
+ * the handler must run (fixed 2026-10-28, notes/changes.md §1.1 "B1").
  *
  * `#ifdef ZN_USE_BACKEND_EPOLL` would work now, but the suite keys off the
  * same condition misc/gen_entries.lua sees (see tests/README.md): Linux +

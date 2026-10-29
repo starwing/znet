@@ -1305,14 +1305,10 @@ TEST(tcp_many_messages) {
     zt_close(S);
 }
 
-/* TODO (new, not in TODO.md; proposed B13): the select backend never maps a
- * failed connect to an error.  znB_dispatch() (znet.h:2079) derives the
- * error from the fd set only ("setno == 2") and znB_onconnect() (znet.h:1854)
- * treats readiness as success without reading SO_ERROR, so a connection to a
- * closed port calls back with ZN_OK while SO_ERROR is ECONNREFUSED.  kqueue
- * reports ZN_ERROR (EV_EOF/EV_ERROR) and passes.  Desired: the callback must
- * never report success; check SO_ERROR in znB_onconnect() for both backends.
- * Kept with the expected failures at the end of the file. */
+/* A refused connect must fail, never report success: select treats writability
+ * as success, so znB_onconnect() reads SO_ERROR there (kqueue gets
+ * EV_EOF/EV_ERROR).  Fixed 2026-10-28, see notes/changes.md §1.2.  The kernel
+ * may also refuse synchronously, hence the two branches. */
 typedef struct refused_ctx {
     int      called;
     unsigned err;
@@ -1381,13 +1377,11 @@ TEST(tcp_connect_unreachable) {
 }
 #endif /* !_WIN32 */
 
-/* The ESTATE guard for an open socket (znet.h:644) runs before the EBUSY
- * guard (znet.h:645) and znB_connect() has already stored the socket, so a
- * second zn_connect() while the first is in flight reports ZN_ESTATE and the
- * EBUSY branch is unreachable.  AGENTS invariant 2 says connect behaves like
- * send/recv, i.e. one in-flight connect per object and ZN_EBUSY for the
- * second one.  Desired: check connect_handler before the socket state.
- * Not in TODO.md: reported as a new finding (proposed L12). */
+/* AGENTS invariant 2: one in-flight connect per object.  zn_connect() checks
+ * connect_handler before the socket state, so the second connect reports
+ * ZN_EBUSY (the ESTATE guard would win otherwise), the first still completes,
+ * and a connect on the connected object is ZN_ESTATE.  Fixed 2026-10-28, see
+ * notes/changes.md §1.2. */
 TEST(tcp_connect_twice) {
     zn_State  *S = zt_open();
     zn_Accept *listener;
@@ -1415,8 +1409,7 @@ TEST(tcp_connect_twice) {
              ret, zn_strerror(ret), S->waitings);
     asserteq(ret, ZN_EBUSY);
 
-    /* only reached once the guard order is fixed: the first connect must
-     * still complete, and a connect on the connected object is ESTATE */
+    /* the rejected second connect must not have broken the first one */
     asserteq(zt_run(S), 0);
     asserteq(conn_ok, 1);
     verified = (zn_connect(tcp, "127.0.0.1", port, SOCK_STREAM, cb_noop_connect,
