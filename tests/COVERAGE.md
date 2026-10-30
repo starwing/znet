@@ -1,5 +1,10 @@
 # znet 行覆盖率报告（2026-10-28）
 
+> **数字已过期（2026-10-31 标注）**：下表是 lifecycle v2 之前（`znet.h` 之后又改了约
+> 1100 行）的快照，只有 §C 的分类随改动更新过。`notes/lifecycle-v2.md` §10 把 `just cov`
+> 的对比列为门限的一部分，所以在下一次 v2 之后的 `just cov` 之前，这里的行数/百分比
+> 不能当作当前基线引用；§A/§B/§C 的分类仍然有效。
+
 ## 结论
 
 `just cov`（macOS，kqueue + select 合并；ASan 关闭、`--coverage` 打开）的结果：
@@ -64,7 +69,6 @@ send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 
 | `state_newstate_init_failure` | `RLIMIT_NOFILE=0` 使后端初始化失败 |
 | `timer_cancel_sift_up` | 手工构造堆，取消节点后最后元素需要上筛 |
 | `timer_cancel_updates_root` | 取消根节点后 `keys[0]` 是新根 |
-| `epoll_timeout_clamp` | epoll 的 `int` 超时钳到 `INT_MAX` |
 | `recv_default_handlers`（扩展） | 默认 packet handler / `packet_ud` 初始化 |
 | `sendbuffer_merge_oom` | `sendfinish` 合并 pending 时分配失败 |
 | `recv_split_header`（扩展） | 慢路径保留不完整头部 |
@@ -93,8 +97,8 @@ send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 
 
 | 失败类型 | 触发行（函数） |
 | --- | --- |
-| 分配/扩容失败 | `zn_starttimer`（堆扩容 `realloc`）、各后端的 `zn_tcpfromfd`（`zn_newtcp` 返回 NULL）、reactive 的 `znF_register_all`/`znF_register_in` 失败 |
-| fd 耗尽 / `FD_SETSIZE` | select 的 `znP_connect`、`zn_onaccept`、`znP_init`（`socketpair` 编号越界） |
+| 分配/扩容失败 | `zn_starttimer`（堆扩容 `realloc`）、`znS_newtcpfd`（state 正在关闭 / 槽位取空 / `znB_adoptfd` 失败，即 `zn_listen` 之后 accept 到的连接无家可归）、reactive 的 `znF_regall`/`znF_regread` 失败 |
+| fd 耗尽 / `FD_SETSIZE` | select 的 `znB_connect`、`znB_onaccept`、`znB_init`（`socketpair` 编号越界） |
 | `accept`/`recvfrom`/`send` 的系统错误 | 各后端的 `zn_onaccept`（EMFILE 等）、`zn_onrecvfrom`（非 EAGAIN）、`zn_onrecv`/`zn_onsend` 的 `znU_error` 分支；`EINTR`/`ECONNABORTED` 的“保持 armed”分支（构造不出确定性的信号/半开连接） |
 | bind/listen/close 失败 | `znP_listen`（`listen` 失败）、`znP_closetcp`/`znP_closeaccept` 的 `close` 失败 |
 | 事件循环本身出错 | select `znP_poll` 的 `select(2)` 错误、kqueue `znP_poll` 的 `kevent(2)` 错误、epoll `znP_poll` 的 `epoll_wait(2)` 错误 |
@@ -107,10 +111,11 @@ EMFILE 路径需要把进程开到约 1024 个 fd，并依赖 `ulimit`、ASan/LS
 容易变成环境相关的 flaky 测试。因此这里停手，把边界写清楚，而不是用脆弱的测试换一个
 数字。
 
-### C. 保留的防御性代码（`znet.h` 0 行；`zn_buffer.h` 2 行）
+### C. 保留的防御性代码（`znet.h` 0 行；`zn_buffer.h` 2 行；另有 1 条分支豁免）
 
 | 行（函数） | 为什么保留 |
 | --- | --- |
+| epoll/IOCP `znB_poll` 里的 timeout 钳位 | 不是死代码：`zn_starttimer` 接受任意小于 `ZN_FOREVER` 的延迟，一个排在 >24.8 天（epoll）或 >49.7 天（IOCP）之后的 timer 就会走进来，避免等待回绕成负数 / `INFINITE` / 0。写法是 `ms` 先取各自的“永久阻塞”值、再在 `if (timeout < ZN_FOREVER)` 里按上限取三元，所以**行覆盖**始终为绿；只有“条件为真”的**分支**在有限时间内不可达（要么真的等那么多天，要么给库里注入时钟）。本任务的门槛是行覆盖，这条分支缺口在此豁免。 |
 | `zn_recvfinish` 快路径的 `return -1` | 唯一的失败条件是累加器扩容失败；快路径要求 `readed.used == 0`，而调用约定保证 `count <= zn_recvsize(b)`，所以尾部一定放得进内联缓冲区。它是数据路径上唯一的错误返回：删掉后若调用方违约（`count` 超过接收缓冲），release 版会静默丢帧。 |
 | `znBC_putcache` 的“超过最大档位”分支 | 不是死代码：`zn_resizebuffer` 对 >2 GiB 的请求走回退分配，`b->size` 可以超过 2 GiB；此时必须把块还给同一个分配器，否则泄漏或错误释放。测试不实际分配 >2 GiB 只是不想让 CI 依赖虚拟内存。 |
 

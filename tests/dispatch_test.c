@@ -23,7 +23,7 @@
 # include <poll.h>
 #endif
 
-typedef void dt_RecvCb(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+typedef void dt_RecvCb(void *ud, zn_Tcp *tcp, int err, unsigned count);
 
 typedef struct dt_Ctx {
     zn_State  *S;
@@ -48,7 +48,7 @@ typedef struct dt_Ctx {
 
 /* ---- callbacks ---- */
 
-static void dt_on_accept(void *ud, zn_Accept *a, unsigned err, zn_Tcp *tcp) {
+static void dt_on_accept(void *ud, zn_Accept *a, int err, zn_Tcp *tcp) {
     dt_Ctx *c = (dt_Ctx *)ud;
     if (err != ZN_OK) {
         c->accept_error = (int)err;
@@ -70,9 +70,9 @@ static void dt_on_accept(void *ud, zn_Accept *a, unsigned err, zn_Tcp *tcp) {
         asserteq(zn_accept(a, dt_on_accept, c), ZN_OK);
 }
 
-static void dt_on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+static void dt_on_send(void *ud, zn_Tcp *tcp, int err, unsigned count);
 
-static void dt_on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
+static void dt_on_connect(void *ud, zn_Tcp *tcp, int err) {
     dt_Ctx *c = (dt_Ctx *)ud;
     if (err != ZN_OK) {
         c->connect_error = (int)err;
@@ -83,7 +83,7 @@ static void dt_on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
         asserteq(zn_send(tcp, c->send_buf[0], 1, dt_on_send, c), ZN_OK);
 }
 
-static void dt_on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void dt_on_send(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     dt_Ctx *c = (dt_Ctx *)ud;
     (void)tcp;
     (void)err;
@@ -93,7 +93,7 @@ static void dt_on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 
 /* delete the *other* accepted connection; it still has a pending recv, so the
  * delete is deferred until its own completion runs */
-static void dt_on_recv_close_other(void *ud, zn_Tcp *tcp, unsigned err,
+static void dt_on_recv_close_other(void *ud, zn_Tcp *tcp, int err,
                                    unsigned count) {
     dt_Ctx *c = (dt_Ctx *)ud;
     zn_Tcp *other;
@@ -107,25 +107,23 @@ static void dt_on_recv_close_other(void *ud, zn_Tcp *tcp, unsigned err,
     else
         c->srv[1] = NULL;
     c->ndeleted++;
-    zn_closetcp(other);
-    zn_deltcp(other);
+    zn_deltcp(other); /* closes the fd, the slot goes back after the result */
 }
 
 /* delete the tcp whose callback is running */
-static void dt_on_recv_delete_self(void *ud, zn_Tcp *tcp, unsigned err,
+static void dt_on_recv_delete_self(void *ud, zn_Tcp *tcp, int err,
                                    unsigned count) {
     dt_Ctx *c = (dt_Ctx *)ud;
     (void)err;
     (void)count;
     c->nrecv++;
     c->ndeleted++;
-    zn_closetcp(tcp);
     zn_deltcp(tcp);
 }
 
 /* close the whole state from a callback: zn_close() only flags the request
  * while zn_run() is on the stack; the loop does the real close afterwards */
-static void dt_on_recv_close_state(void *ud, zn_Tcp *tcp, unsigned err,
+static void dt_on_recv_close_state(void *ud, zn_Tcp *tcp, int err,
                                    unsigned count) {
     dt_Ctx *c = (dt_Ctx *)ud;
     (void)tcp;
@@ -141,18 +139,16 @@ static void dt_start(dt_Ctx *c, int max_accept) {
     memset(c, 0, sizeof(*c));
     c->S = zt_open();
     c->max_accept = max_accept;
-    c->a = zn_newaccept(c->S);
+    c->a = zn_listen(c->S, "127.0.0.1", 0);
     assertok(c->a != NULL);
-    asserteq(zn_listen(c->a, "127.0.0.1", 0), ZN_OK);
     c->port = zt_accept_port(c->a);
     assertok(c->port != 0);
     asserteq(zn_accept(c->a, dt_on_accept, c), ZN_OK);
 }
 
 static void dt_newclient(dt_Ctx *c, zn_Tcp **out) {
-    *out = zn_newtcp(c->S);
+    *out = zn_connect(c->S, "127.0.0.1", c->port, dt_on_connect, c);
     assertok(*out != NULL);
-    asserteq(zn_connect(*out, "127.0.0.1", c->port, dt_on_connect, c), ZN_OK);
 }
 
 /* ---- portable tests ---- */
@@ -335,7 +331,7 @@ TEST(dispatch_select_close_other_fd) {
 
 /* disarming a direction drops it from the current batch snapshot: a callback
  * that re-arms the same fd must not be re-entered from the old bits */
-static void dt_on_accept_nop(void *ud, zn_Accept *a, unsigned err, zn_Tcp *t) {
+static void dt_on_accept_nop(void *ud, zn_Accept *a, int err, zn_Tcp *t) {
     (void)ud;
     (void)a;
     (void)err;
@@ -344,15 +340,15 @@ static void dt_on_accept_nop(void *ud, zn_Accept *a, unsigned err, zn_Tcp *t) {
 
 TEST(dispatch_select_disarm_drops_snapshot) {
     zn_State  *S = zt_open();
-    zn_Accept *a = zn_newaccept(S);
+    zn_Accept *a = zn_listen(S, "127.0.0.1", 0);
     int        fd;
     assertok(a != NULL);
-    asserteq(zn_listen(a, "127.0.0.1", 0), ZN_OK);
     fd = a->socket;
     asserteq(zn_accept(a, dt_on_accept_nop, NULL), ZN_OK);
     FD_SET(fd, &S->result[ZN_READ]);
     FD_SET(fd, &S->result[ZN_EXCEPT]);
-    znB_disarmaccept(a);
+    asserteq(znB_onaccept(a, 1), ZN_OK); /* an except report disarms */
+    assertok(a->accept_handler == NULL);
     assertok(!FD_ISSET(fd, &S->result[ZN_READ]));
     assertok(!FD_ISSET(fd, &S->result[ZN_EXCEPT]));
     zn_delaccept(a);
@@ -376,8 +372,9 @@ TEST(dispatch_select_disarm_drops_snapshot) {
  * observed with poll() on the raw client fds, which does not consume the
  * backend's event.
  *
- * The second case closes and reconnects the same object instead of deleting
- * it; the stale entry then names the same zn_SocketInfo pointer. */
+ * The victim is deleted while its connect completion is still in the batch;
+ * the factory then hands its slot to a fresh object, so the stale entry names
+ * the same zn_SocketInfo pointer as the new registration. */
 
 static unsigned dt_l8_deadport(void) {
     struct sockaddr_in sa;
@@ -412,7 +409,6 @@ typedef struct dt_L8 {
     zn_Tcp    *n;
     unsigned   port;
     unsigned   dead;
-    int        mode; /* 0: delete + reuse, 1: close + reconnect */
     int        c1_calls;
     int        c2_calls;
     int        new_calls;
@@ -421,7 +417,7 @@ typedef struct dt_L8 {
     int        done;
 } dt_L8;
 
-static void dt_l8_on_new(void *ud, zn_Tcp *tcp, unsigned err) {
+static void dt_l8_on_new(void *ud, zn_Tcp *tcp, int err) {
     dt_L8 *c = (dt_L8 *)ud;
     (void)tcp;
     c->new_calls++;
@@ -429,7 +425,7 @@ static void dt_l8_on_new(void *ud, zn_Tcp *tcp, unsigned err) {
     c->done = 1;
 }
 
-static void dt_l8_on_accept(void *ud, zn_Accept *a, unsigned e, zn_Tcp *t) {
+static void dt_l8_on_accept(void *ud, zn_Accept *a, int e, zn_Tcp *t) {
     dt_L8 *c = (dt_L8 *)ud;
     if (e != ZN_OK) return;
     c->accepted++;
@@ -437,7 +433,7 @@ static void dt_l8_on_accept(void *ud, zn_Accept *a, unsigned e, zn_Tcp *t) {
     asserteq(zn_accept(a, dt_l8_on_accept, c), ZN_OK);
 }
 
-static void dt_l8_on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
+static void dt_l8_on_connect(void *ud, zn_Tcp *tcp, int err) {
     dt_L8 *c = (dt_L8 *)ud;
     if (tcp != c->c1) {
         c->c2_calls++;
@@ -445,46 +441,34 @@ static void dt_l8_on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
     }
     c->c1_calls++;
     assertok(err == ZN_OK);
-    if (c->mode == 0) {
-        zn_deltcp(c->c2);
-        c->n = zn_newtcp(c->S);
-        assertok(c->n != NULL);
-        /* the pool must hand back the victim's slot for the stale entry to
-         * matter; otherwise this test would pass without the fix */
-        assertok(c->n == c->c2);
-    } else {
-        asserteq(zn_closetcp(c->c2), ZN_OK);
-        c->n = c->c2;
-    }
-    asserteq(zn_connect(c->n, "127.0.0.1", c->dead, dt_l8_on_new, c), ZN_OK);
+    zn_deltcp(c->c2);
+    c->n = zn_connect(c->S, "127.0.0.1", c->dead, dt_l8_on_new, c);
+    assertok(c->n != NULL);
+    /* the pool must hand back the victim's slot for the stale entry to
+     * matter; otherwise this test would pass without the fix */
+    assertok(c->n == c->c2);
 }
 
-static void dt_l8_case(int mode) {
+static void dt_l8_case(void) {
     dt_L8   c;
     zt_Loop L;
 
     memset(&c, 0, sizeof(c));
-    c.mode = mode;
     c.S = zt_open();
-    c.a = zn_newaccept(c.S);
+    c.a = zn_listen(c.S, "127.0.0.1", 0);
     assertok(c.a != NULL);
-    asserteq(zn_listen(c.a, "127.0.0.1", 0), ZN_OK);
     c.port = zt_accept_port(c.a);
     assertok(c.port != 0);
     c.dead = dt_l8_deadport();
     asserteq(zn_accept(c.a, dt_l8_on_accept, &c), ZN_OK);
 
-    c.c1 = zn_newtcp(c.S);
-    c.c2 = zn_newtcp(c.S);
-    assertok(c.c1 != NULL && c.c2 != NULL);
-
     /* queue c1's completion first, then c2's: both are pending when the
      * test's first poll runs, and the batch order follows that order */
-    asserteq(zn_connect(c.c1, "127.0.0.1", c.port, dt_l8_on_connect, &c),
-             ZN_OK);
+    c.c1 = zn_connect(c.S, "127.0.0.1", c.port, dt_l8_on_connect, &c);
+    assertok(c.c1 != NULL);
     dt_l8_wait_write(c.c1);
-    asserteq(zn_connect(c.c2, "127.0.0.1", c.port, dt_l8_on_connect, &c),
-             ZN_OK);
+    c.c2 = zn_connect(c.S, "127.0.0.1", c.port, dt_l8_on_connect, &c);
+    assertok(c.c2 != NULL);
     dt_l8_wait_write(c.c2);
 
     zt_begin(&L, c.S, 2000);
@@ -505,8 +489,7 @@ static void dt_l8_case(int mode) {
     zt_close(c.S);
 }
 
-TEST(dispatch_l8_delete_and_reuse) { dt_l8_case(0); }
-TEST(dispatch_l8_close_and_reconnect) { dt_l8_case(1); }
+TEST(dispatch_l8_delete_and_reuse) { dt_l8_case(); }
 
 #endif /* !_WIN32 */
 

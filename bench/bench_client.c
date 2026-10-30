@@ -19,7 +19,7 @@ int      send_count = 0;
 int      recv_count = 0;
 int      connect_count = 0;
 
-static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_send(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *node = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         zn_putbuffer(&pool, node);
@@ -34,7 +34,7 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     }
 }
 
-static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_recv(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *node = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         zn_putbuffer(&pool, node);
@@ -63,7 +63,7 @@ static void on_packet(void *ud, const char *buff, size_t len) {
     ++node->user_data;
 }
 
-static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
+static void on_connect(void *ud, zn_Tcp *tcp, int err) {
     zn_BufferPoolNode *node = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         zn_putbuffer(&pool, node);
@@ -80,15 +80,14 @@ static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
 
 static zn_Time on_client(void *ud, zn_Timer *timer, zn_Time elapsed) {
     zn_BufferPoolNode *node = zn_getbuffer(&pool);
-    zn_Tcp            *tcp = zn_newtcp(S);
+    zn_Tcp            *tcp;
     (void)ud;
     (void)timer;
     (void)elapsed;
     zn_recvonheader(&node->recv, on_header, node);
     zn_recvonpacket(&node->recv, on_packet, node);
     node->user_data = 0;
-    node->tcp = tcp;
-    zn_connect(tcp, addr, port, on_connect, node);
+    node->tcp = tcp = zn_connect(S, addr, port, on_connect, node);
     return 1;
 }
 

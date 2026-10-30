@@ -82,6 +82,7 @@ struct TcpAccept : public std::enable_shared_from_this<TcpAccept> {
         if (accept) zn_delaccept(accept);
     }
 
+    zn_State*       S = nullptr;
     zn_Accept*      accept;
     TcpSocketPtr    client;
     OnAcceptHandler acceptHandler;
@@ -97,6 +98,7 @@ struct TcpSocket : public std::enable_shared_from_this<TcpSocket> {
         if (tcp) zn_deltcp(tcp);
     }
 
+    zn_State*        S = nullptr;
     zn_Tcp*          tcp = nullptr;
     OnConnectHandler connectHandler;
     OnSendHandler    sendHandler;
@@ -185,15 +187,15 @@ inline bool EventLoop::cancelTimer(TimerID timerID) {
 }
 
 inline bool TcpAccept::openAccept(std::string const& ip, unsigned short port) {
-    return zn_listen(accept, ip.c_str(), port) == ZN_OK;
+    if (accept != nullptr) return false; /* one listener per object */
+    return (accept = zn_listen(S, ip.c_str(), port)) != nullptr;
 }
 
 inline bool TcpAccept::initialize(EventLoopPtr const& summer) {
-    if (accept == nullptr) return (accept = zn_newaccept(summer->S)) != nullptr;
-    return true;
+    return (S = summer->S) != nullptr;
 }
 
-static inline void accept_cb(void* ud, zn_Accept* accept, unsigned err,
+static inline void accept_cb(void* ud, zn_Accept* accept, int err,
                              zn_Tcp* tcp) {
     auto ta = static_cast<TcpAccept*>(ud);
     auto h(std::move(ta->acceptHandler));
@@ -211,42 +213,51 @@ inline bool TcpAccept::doAccept(TcpSocketPtr const& s, OnAcceptHandler&& h) {
     return false;
 }
 
-inline bool TcpSocket::doClose() { return zn_closetcp(tcp) == ZN_OK; }
+inline bool TcpSocket::doClose() {
+    zn_deltcp(tcp);
+    tcp = nullptr;
+    return true;
+}
 
 inline bool TcpSocket::initialize(EventLoopPtr const& summer) {
-    if (tcp == nullptr) return (tcp = zn_newtcp(summer->S)) != nullptr;
-    return true;
+    return (S = summer->S) != nullptr;
 }
 
 inline bool TcpSocket::getPeerInfo(std::string&    remoteIP,
                                    unsigned short& remotePort) const {
     zn_PeerInfo info;
+    if (tcp == nullptr) return false;
     zn_getpeerinfo(tcp, &info);
     remoteIP = info.addr;
     remotePort = info.port;
     return true;
 }
 
-static inline void connect_cb(void* ud, zn_Tcp* tcp, unsigned err) {
+static inline void connect_cb(void* ud, zn_Tcp* tcp, int err) {
     auto ts = static_cast<TcpSocket*>(ud);
     auto h(std::move(ts->connectHandler));
     (void)tcp;
+    if (err != ZN_OK) {
+        /* a failed connect leaves a broken object behind: drop it so the
+         * wrapper can try again with a fresh one */
+        zn_deltcp(ts->tcp);
+        ts->tcp = nullptr;
+    }
     h(static_cast<NetErrorCode>(err));
 }
 
 inline bool TcpSocket::doConnect(std::string const& remoteIP,
                                  unsigned short     remotePort,
                                  OnConnectHandler&& h) {
-    if (zn_connect(tcp, remoteIP.c_str(), remotePort, connect_cb, this)
-        == ZN_OK) {
-        connectHandler = std::move(h);
-        return true;
-    }
-    return false;
+    if (tcp != nullptr) return false; /* one connection per object */
+    if ((tcp = zn_connect(S, remoteIP.c_str(), remotePort, connect_cb, this))
+        == nullptr)
+        return false;
+    connectHandler = std::move(h);
+    return true;
 }
 
-static inline void send_cb(void* ud, zn_Tcp* tcp, unsigned err,
-                           unsigned count) {
+static inline void send_cb(void* ud, zn_Tcp* tcp, int err, unsigned count) {
     auto ts = static_cast<TcpSocket*>(ud);
     auto h(std::move(ts->sendHandler));
     (void)tcp;
@@ -262,8 +273,7 @@ inline bool TcpSocket::doSend(char const* buf, unsigned len,
     return false;
 }
 
-static inline void recv_cb(void* ud, zn_Tcp* tcp, unsigned err,
-                           unsigned count) {
+static inline void recv_cb(void* ud, zn_Tcp* tcp, int err, unsigned count) {
     auto ts = static_cast<TcpSocket*>(ud);
     auto h(std::move(ts->recvHandler));
     (void)tcp;
@@ -296,12 +306,12 @@ inline bool UdpSocket::doSendTo(char const* buf, unsigned len,
 inline bool UdpSocket::initialize(EventLoopPtr const& summer,
                                   std::string const& ip, unsigned short port) {
     if (udp == nullptr)
-        return (udp = zn_newudp(summer->S, ip.c_str(), port)) != nullptr;
+        return (udp = zn_bind(summer->S, ip.c_str(), port)) != nullptr;
     return true;
 }
 
-static inline void recvfrom_cb(void* ud, zn_Udp* udp, unsigned err,
-                               unsigned count, const char* ip, unsigned port) {
+static inline void recvfrom_cb(void* ud, zn_Udp* udp, int err, unsigned count,
+                               const char* ip, unsigned port) {
     auto us = static_cast<UdpSocket*>(ud);
     auto h(std::move(us->recvFromHandler));
     (void)udp;

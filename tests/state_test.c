@@ -6,15 +6,15 @@
  * an invalid run mode, empty ZN_RUN_CHECK, post basics (deferred, FIFO,
  * NULL handler, from another thread, from a timer), close from a post / timer
  * / tcp callback, close with a pending accept or an armed timer, double close
- * from a callback, and "no new objects after close begins".
+ * from a callback, and "no factory creates objects after close begins"
+ * (including the ZN_ESTATE it reports through zn_lasterror()).
  *
  * Loop driving: zt_run() is used only when the callback that ends the test
- * also ends the state (a post/tcp close), or when a timer fires while the poll
- * is already blocked.  A close from a timer that is already due at the start of
- * zn_run() would leave the poll with an empty heap, so
- * close_in_timer_callback arms a timer that is still in the future.
- * zn_run(ONCE) on an idle state blocks as well; every ONCE below has a pending
- * post to wake it.
+ * also ends the state (a post/tcp/timer close).  A close from a timer that is
+ * already due when znS_poll() starts is close_in_timer_callback: the first
+ * znT_update() runs the handler, so the deferred close must happen before the
+ * poll, not after it.  zn_run(ONCE) on an idle state blocks as well; every
+ * ONCE below has a pending post to wake it.
  *
  * The post tests keep one inert listening socket open (see state_anchor).
  * That anchor predates the nfds fix (notes/changes.md §1.2): select's
@@ -62,13 +62,12 @@ static void reset_recorders(void) {
 
 /* A socket object is what raises S->nfds on the select backend; without one,
  * select() never looks at the post socketpair and a queued post cannot wake
- * zn_run() (see post_wakes_loop_without_sockets).  The listener is never armed
- * for accept, so it produces no callbacks and holds no retain; zn_close()
- * deletes it with every other object.  Port 0 keeps the test self-contained. */
+ * zn_run() (see post_wakes_loop_without_sockets).  zn_listen() returns a
+ * LISTENING object with no armed accept, so it produces no callbacks and holds
+ * no retain; zn_close() deletes it with every other object.  Port 0 keeps the
+ * test self-contained. */
 static int state_anchor(zn_State *S) {
-    zn_Accept *a = zn_newaccept(S);
-    if (a == NULL) return 0;
-    return zn_listen(a, "127.0.0.1", 0) == ZN_OK;
+    return zn_listen(S, "127.0.0.1", 0) != NULL;
 }
 
 /* ---- timer handler shared by several tests ----
@@ -111,14 +110,41 @@ static void cb_post_close_twice(void *ud, zn_State *S) {
     zn_close(S); /* must see CLOSING_IN_RUN and return without doing anything */
 }
 
+/* never called: the factory refuses before the connect is armed */
+static void cb_connect_noop(void *ud, zn_Tcp *tcp, int err) {
+    (void)ud;
+    (void)tcp;
+    (void)err;
+}
+
 static void cb_post_new_objects(void *ud, zn_State *S) {
     (void)ud;
     g_posts++;
     zn_close(S);
-    assertok(zn_newtcp(S) == NULL);
-    assertok(zn_newaccept(S) == NULL);
-    assertok(zn_newudp(S, "127.0.0.1", 0) == NULL);
+    /* the factories refuse while the state is closing; the reason is
+     * ZN_ESTATE, not a leaked slot */
+    assertok(zn_connect(S, "127.0.0.1", 0, cb_connect_noop, NULL) == NULL);
+    asserteq(zn_lasterror(S), ZN_ESTATE);
+    assertok(zn_listen(S, "127.0.0.1", 0) == NULL);
+    asserteq(zn_lasterror(S), ZN_ESTATE);
+    assertok(zn_bind(S, "127.0.0.1", 0) == NULL);
+    asserteq(zn_lasterror(S), ZN_ESTATE);
     assertok(zn_newtimer(S, cb_timer_count, NULL) == NULL);
+}
+
+/* a post that runs inside znB_close()'s drain, not inside a normal poll */
+typedef struct drain_ctx {
+    int ran;
+    int refused;
+    int code;
+} drain_ctx;
+
+static void cb_post_in_drain(void *ud, zn_State *S) {
+    drain_ctx *c = (drain_ctx *)ud;
+    c->ran++;
+    zn_close(S); /* already closing: a second free must not be scheduled */
+    c->refused = zn_listen(S, "127.0.0.1", 0) == NULL;
+    c->code = zn_lasterror(S);
 }
 
 /* ---- timer handlers ---- */
@@ -143,20 +169,20 @@ static zn_Time cb_timer_close(void *ud, zn_Timer *timer, zn_Time elapsed) {
 static const char g_byte = 'x';
 static char       g_srv_buf[8];
 
-static void cb_send_done(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void cb_send_done(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     (void)ud;
     (void)tcp;
     (void)err;
     (void)count;
 }
 
-static void cb_connect_send(void *ud, zn_Tcp *tcp, unsigned err) {
+static void cb_connect_send(void *ud, zn_Tcp *tcp, int err) {
     (void)ud;
     if (err != ZN_OK) return;
     asserteq(zn_send(tcp, &g_byte, 1, cb_send_done, NULL), ZN_OK);
 }
 
-static void cb_recv_close(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void cb_recv_close(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     (void)ud;
     (void)tcp;
     (void)err;
@@ -165,8 +191,7 @@ static void cb_recv_close(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     zn_close(g_close_state);
 }
 
-static void cb_accept_recv(void *ud, zn_Accept *accept, unsigned err,
-                           zn_Tcp *tcp) {
+static void cb_accept_recv(void *ud, zn_Accept *accept, int err, zn_Tcp *tcp) {
     (void)ud;
     (void)accept;
     if (err != ZN_OK || tcp == NULL) return;
@@ -175,8 +200,7 @@ static void cb_accept_recv(void *ud, zn_Accept *accept, unsigned err,
              ZN_OK);
 }
 
-static void cb_accept_noop(void *ud, zn_Accept *accept, unsigned err,
-                           zn_Tcp *tcp) {
+static void cb_accept_noop(void *ud, zn_Accept *accept, int err, zn_Tcp *tcp) {
     (void)ud;
     (void)accept;
     (void)err;
@@ -295,6 +319,15 @@ TEST(state_run_check_empty) {
     asserteq(zn_run(S, ZN_RUN_CHECK), 0);
     asserteq(S->waitings, 0);
     zt_close(S);
+}
+
+/* A missing state cannot hold the reason, but the factories still answer NULL
+ * and zn_lasterror(NULL) names the parameter error. */
+TEST(factory_null_state) {
+    assertok(zn_listen(NULL, "127.0.0.1", 0) == NULL);
+    assertok(zn_connect(NULL, "127.0.0.1", 0, cb_connect_noop, NULL) == NULL);
+    assertok(zn_bind(NULL, "127.0.0.1", 0) == NULL);
+    asserteq(zn_lasterror(NULL), ZN_EPARAM);
 }
 
 /* ---- posts ---- */
@@ -471,9 +504,9 @@ TEST(close_in_timer_callback) {
     g_close_state = S;
     t = zn_newtimer(S, cb_timer_close, NULL);
     assertok(t != NULL);
-    asserteq(zn_starttimer(t, 20), ZN_OK);
-    /* still in the future: the poll returns on its timeout and the handler
-     * runs after it, so the deferred close completes in this same znS_poll */
+    asserteq(zn_starttimer(t, 0), ZN_OK);
+    /* due before the poll: the handler closes the state, so the poll must not
+     * start with an empty timer heap (it would wait forever) */
     asserteq(zt_run(S), 0);
     /* zn_close() freed S inside the loop: never touch it again. */
 }
@@ -487,17 +520,14 @@ TEST(close_in_tcp_callback) {
     reset_recorders();
     g_close_state = S;
 
-    a = zn_newaccept(S);
+    a = zn_listen(S, "127.0.0.1", 0);
     assertok(a != NULL);
-    asserteq(zn_listen(a, "127.0.0.1", 0), ZN_OK);
     port = zt_accept_port(a);
     assertok(port != 0);
     asserteq(zn_accept(a, cb_accept_recv, NULL), ZN_OK);
 
-    client = zn_newtcp(S);
+    client = zn_connect(S, "127.0.0.1", port, cb_connect_send, NULL);
     assertok(client != NULL);
-    asserteq(zn_connect(client, "127.0.0.1", port, cb_connect_send, NULL),
-             ZN_OK);
 
     asserteq(zt_run(S), 0);
     asserteq(g_recv_calls, 1);
@@ -506,10 +536,9 @@ TEST(close_in_tcp_callback) {
 
 TEST(close_with_pending_accept) {
     zn_State  *S = zt_open();
-    zn_Accept *a = zn_newaccept(S);
+    zn_Accept *a = zn_listen(S, "127.0.0.1", 0);
 
     assertok(a != NULL);
-    asserteq(zn_listen(a, "127.0.0.1", 0), ZN_OK);
     asserteq(zn_accept(a, cb_accept_noop, NULL), ZN_OK);
     assertok(S->waitings > 0); /* the pending accept holds a retain */
     zn_close(S); /* cancels the accept and frees S; no loop run afterwards */
@@ -558,10 +587,11 @@ TEST(post_wakes_loop_without_sockets) {
     zt_close(S);
 }
 
-/* AGENTS.md invariant 7: once zn_close() has started, every zn_new* must
- * return NULL.  zn_newtcp/newaccept/newudp do that through ZN_GETOBJECT;
- * zn_newtimer() used to hand out a timer from znT_new() and now checks
- * S->status the same way.  A regression aborts the process. */
+/* AGENTS.md invariant 7: once zn_close() has started, no factory may create
+ * an object.  zn_connect/zn_listen/zn_bind do that through znS_newslot(), which
+ * leaves ZN_ESTATE in S->last_error; zn_newtimer() used to hand out a timer
+ * from znT_new() and now checks S->status the same way.  A regression aborts
+ * the process. */
 TEST(objects_after_close_begins) {
     zn_State *S = zt_open();
 
@@ -570,6 +600,39 @@ TEST(objects_after_close_begins) {
     asserteq(zn_post(S, cb_post_new_objects, NULL), ZN_OK);
     asserteq(zt_run(S), 0);
     asserteq(g_posts, 1);
+}
+
+static void cb_recvfrom_noop(void *ud, zn_Udp *udp, int err, unsigned count,
+                             const char *addr, unsigned port) {
+    (void)ud;
+    (void)udp;
+    (void)err;
+    (void)count;
+    (void)addr;
+    (void)port;
+}
+
+/* The same invariant during the close drain.  zn_close() del's every object
+ * and then waits for the last completions; a post that runs in that window
+ * must see CLOSING (factories refuse, close is a no-op).  The IOCP drain used
+ * to run the general loop, which reset S->status to READY: a factory succeeded
+ * and a second zn_close() freed S under the drain.  The armed recvfrom keeps
+ * waitings > 0 so the drain path is taken; it is cancelled by zn_close(). */
+TEST(close_drain_keeps_factories_out) {
+    zn_State *S = zt_open();
+    zn_Udp   *u;
+    char      byte = 0;
+    drain_ctx c;
+
+    memset(&c, 0, sizeof(c));
+    u = zn_bind(S, "127.0.0.1", 0);
+    assertok(u != NULL);
+    asserteq(zn_recvfrom(u, &byte, 1, cb_recvfrom_noop, NULL), ZN_OK);
+    asserteq(zn_post(S, cb_post_in_drain, &c), ZN_OK);
+    zn_close(S); /* drains the cancelled recvfrom, then runs the post */
+    asserteq(c.ran, 1);
+    asserteq(c.refused, 1);
+    asserteq(c.code, ZN_ESTATE);
 }
 
 /* epoll: znB_signal() used to reverse the eventfd_write() result, so a

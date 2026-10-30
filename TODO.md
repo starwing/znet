@@ -24,13 +24,6 @@
 
 ## 1. 内存安全与生命周期
 
-- [ ] **B14**（P2）IOCP close 时在途 connect 的完成事件
-  位置：`znet.h` IOCP 的 `znB_closetcp` / `zn_connect`。
-  `zn_close` 开始时仍有一个在途 connect，它的完成事件还没被取出；这期间 `zn_connect`
-  返回 `ZN_EBUSY`、`S->waitings` 仍是 1，不变量 6（close 后可以重新 connect）在 IOCP 上
-  要等一次 poll 才成立。POSIX 的 close 会取消 armed 操作。
-  建议：给完成事件加代际/取消（`CancelIoEx`），单独定；不要和已修的 L8 捆绑。
-
 - [ ] **U15**（P2）Lua 绑定停止接收后留下空转的注册 fd
   位置：`zn_lua.c` 的 `lzn_onrecvfrom`。
   回调返回假值时只 unref，不关闭也不注销 fd；reactive 的注册是 per-listen，剩下的
@@ -41,14 +34,16 @@
 ## 2. 公共 API 与代码精炼
 
 - [ ] **C3 / B4**（P1）函数签名 <80 且不折行
-  现状（2026-10-29 实测）：全树的折行/超列签名共 **36 处**——`znet.h` 17
-  （10 个公共 API 的声明 + 定义、`znB_sendto` ×3、4 个回调 typedef）、`zn_addrinfo.h` 6
-  （`zn_getaddrinfo` 3 + `znA_makereq` + `znA_ntop` + 1 个 typedef）、`zn_lua.c` 4、
-  `bench/*.c` 7（6 个回调 + `bench_measure`）、`example.c` 2（`on_udp_recv` 的声明与
-  定义）。`znP_ntop` 已修（77 列单行）；`zn_RecvFromHandler` 实测即使把参数全改成单字母
-  也只能压到 ~101 列，靠改名到不了 <80。
+  现状（2026-10-31，`int err` 之后，`znet.h` 折行 16 处）：`zn_connect` 的工厂形实测
+  **105 列**（地址/端口/回调/ud 四个参数 + 返回类型），仍在折行；`zn_send`/`zn_recv`/
+  `zn_sendto`/`zn_recvfrom` 的声明与定义（85–100 列）、2 个回调 typedef
+  （`zn_AcceptHandler` 81、`zn_RecvFromHandler` 113）、`zn_addrinfo.h` 的 6 处、
+  `zn_lua.c` 的 4 处、`bench/*.c` 的 7 处照旧。`zn_SendHandler`/`zn_RecvHandler` 已随
+  `int err` 回到单行（76）；`zn_RecvFromHandler` 即使把参数全改成单字母也只能压到
+  ~98 列，靠改名到不了 <80。
   公共 API：`zn_connect`/`zn_send`/`zn_recv`/`zn_sendto`/`zn_recvfrom`（声明 + 定义各
-  一次）、`zn_getaddrinfo`（3 处）；内部：`znB_sendto` ×3、`znA_makereq`/`znA_ntop`、
+  一次）、`zn_getaddrinfo`（3 处）；内部：`znB_sendto` ×2、`znS_onudp`（85 列，v2 新增，
+  与 `zn_RecvFromHandler` 同源，等回调收窄后一起解决）、`znA_makereq`/`znA_ntop`、
   4 个 `lzn_*` 回调。
   `zn_connect` 必须改 API，不能只折行；方向见 D4，**前置是操作结构体重构**（D3）：
   handler/udp/handler 收进操作体之前，这些签名压不到 <80。做完后
@@ -104,6 +99,44 @@
   `LCOV_EXCL_LINE`，资源错误做 fault injection 构建，**不要**用 fd 耗尽/信号关闭等脆弱
   手段（见 `tests/COVERAGE.md`）。
 
+- [ ] **Q1**（P2）测试不该直接调内部函数：改成公开 API 断言，或删掉
+  原则（2026-10-31 用户提出）：单测调用/测试内部函数是不合理的，**更不能因为单测可调
+  而保留一个本该内联的 helper**（`znS_clampms` 已因此删掉，见 `changes.md` §1.31）。
+  现状还剩两处直接调内部函数的地方，都要落成"公开 API 可达的行为"或删（v2 引入的
+  白盒用例是另一批，见 Q2）：
+  ① `tests/addr_test.c` 整个文件调 `znP_parseaddr`/`znP_setinfo`/`znP_ntop`/`znP_error`/
+  `znP_family`/`znP_isv6`/`znP_size`。解析失败/IPv6/peer 文本可以用
+  `zn_listen`/`zn_connect`/`zn_sendto`/`zn_connectudp` + `zn_lasterror` +
+  `zn_getpeerinfo` + recvfrom 回调的 `addr/port` 复现；`znP_family`/`znP_isv6`/
+  `znP_size` 的返回值不是 API 可观测的，只能删断言或整个删文件。
+  ② `tests/timer_test.c` 的 `znT_gettimeout` 断言（`timer_root_and_timeout` 的 T3、
+  `timer_cancel_updates_root`、`timer_64bit_delay`）。T3 的修法：空堆的 idle state 调
+  `zn_run(LOOP)` 必须立即返回 0（`state_run_check_empty` 已覆盖）；精确 delta 只剩
+  "timer 不早于 deadline 触发"这一条可观测行为。
+  代价：②会削掉 T3/T4 的精确回归点，所以先记着，等排到 timer/测试批次时一起改。
+  判据：测试文件里不出现 `znT_`/`znS_`/`znB_`/`znR_`/`znP_`/`znF_` 调用（读 `S->` 状态
+  的断言不在此列，它们是泄漏/记账的代理）。
+
+- [ ] **Q2**（P2）v2 白盒用例与三处"测试自己会放宽"的地方
+  2026-10-31 审计登记（用户决定"先记录、后面再改"），等测试批次一起处理：
+  ① v2 新增/改写的用例大量直接调内部函数，与 Q1 的判据冲突：`tcp_test.c` 的
+  `znS_newtcpfd` / `znB_retryrecv` / `znB_retrysend` / `znB_onsend` / `znB_onrecv` /
+  `znR_process` / `znP_parseaddr` / `znP_setnonblock`，`resultqueue_test.c` 整套靠
+  `znR_add`/`znR_process`，`dispatch_test.c` 与 `ztest.h` 的 `zt_dispatch_*` 直接调
+  `znB_onaccept`/`znB_onrecvfrom`，`lifecycle_test.c` 用 `znS_valid` 与 `S->active_*`；
+  `tcp_close_both_parked` 更是手工造对象。其中"就绪不是完成""批次失效""排队结果被压制"
+  确实只能靠注入就绪/手工入队构造，所以要么改成公开 API 可观测的行为，要么把它们写进
+  Q1 的豁免（现在 Q1 只列了 addr/timer 两处，看上去像漏了）。
+  ② 两处核心回归藏在 `test_skip` 后面（runner 把 SKIP 算通过，`just check` 不会红）：
+  `tcp_close_blocked_send` 的"填不满 socket buffer"、`resultqueue_test` 三个批量用例的
+  "120 条 loopback 连接建不起来"。要么改成硬失败并把环境要求写进 `tests/README.md`，
+  要么让用例不依赖环境。
+  ③ `asserteq(zt_run(S), 0)` 恒真（`zn_run(ZN_RUN_LOOP)` 只可能返回 0），新加的
+  `zt_pair_open` / `close_phase` 里也有；真正起作用的是 watchdog 的终止性。
+  另外 `resultqueue_test` 从 dummy socket 改成 120 条真实 loopback 连接，依赖 fd 与
+  临时端口，每个对象还要 pump 一次 loop；`znS_newtcpfd(socketpair())` 是 L2 用例里
+  现成的省法（而它本身就是 ① 要处理的内部调用）。
+
 ## 5. 待定的设计取舍（先拍板，再动手）
 
 - [ ] **D1** `zn_buffer` 的默认 packet handler：默认丢弃（现状）还是默认收包？
@@ -129,7 +162,8 @@
   `zn_connect` 的参数，不保留旧入口的薄封装；这一项和 D3 是同一个重构，等它排期时
   一起做，ABI 只变一次。
   **2026-10-30 更新**：`type`/`packet` 已随 U17 删除，`zn_connect` 只剩
-  addr/port/cb/ud，仍约 101 列；C3 的公共 API 部分继续等操作体。
+  addr/port/cb/ud；lifecycle v2 把它改成工厂（第一个参数从 `zn_Tcp *` 变成 `zn_State *`），
+  实测 105 列，仍折行。C3 的公共 API 部分继续等操作体。
 
 - [ ] **D5** `zn_deque.h`：修好并纳入测试，还是标记为不支持/删除？
   当前没有使用者。删掉最便宜（`notes/utils.md` 保留记录）；要留则三处缺陷都要修并补测试

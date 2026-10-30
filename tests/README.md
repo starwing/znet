@@ -68,8 +68,10 @@ Rules for robust tests:
   a regression is a failure instead of a stalled suite.
 * No `sleep()` when the loop can wait for a callback. `zt_wait(&L, ms)` is the
   escape hatch for "nothing else should fire".
-* Clean up: every `zn_new*` needs a `zn_del*`; close listeners before `zt_run`
-  expects to return. `zt_close(S)` at the end is the safety net.
+* Clean up: every factory call (`zn_listen`/`zn_connect`/`zn_bind`) needs exactly
+  one `zn_del*`; a tcp is never reused or reconnected, so a test that wants a
+  second connection asks the factory again. `zt_close(S)` at the end is the
+  safety net.
 * Assert the desired behaviour, not the current buggy behaviour. If a test
   fails because of a library bug, keep it, put it at the END of the file (an
   abort kills the rest of that process) and add a comment with the TODO ID.

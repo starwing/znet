@@ -2,9 +2,13 @@
  *
  * Covers: ordering, 0 delay, same deadline, re-arm from the handler, delete
  * from the handler, cancel root/middle/last, cancel twice, cancel unarmed,
- * restart armed/after fire, root/timeout accounting (T3/T4), the epoll
- * integer timeout clamp (B6), and the zn_Time width (T1/T2 truncation
- * regressions, skipped on 32-bit builds).
+ * restart armed/after fire, root/timeout accounting (T3/T4), and the zn_Time
+ * width (T1/T2 truncation regressions, skipped on 32-bit builds).
+ *
+ * Each poll backend clamps its wait where it narrows to the syscall type:
+ * epoll to INT_MAX (24.8 days), IOCP to INFINITE - 1 (49.7 days). The clamp
+ * shares the `if` line, so line coverage stays green; only the true branch
+ * needs a timer armed that far out and has no test of its own.
  *
  * Timer callbacks do not retain the state, so the tests drive the loop with
  * zt_begin/ZT_WAIT: the hidden 20 ms tick keeps every poll bounded.  zn_run()
@@ -13,8 +17,6 @@
  */
 
 #include "ztest.h"
-
-#include <limits.h>
 
 /* ---- recorder ---- */
 
@@ -395,17 +397,6 @@ TEST(timer_root_and_timeout) {
     zt_close(S);
 }
 
-/* The poll wait is sized in int/DWORD, so znS_poll clamps it; the internal
- * gettimeout keeps returning the exact delta (see timer_64bit_delay). */
-TEST(timer_timeout_clamp) {
-    asserteq(znS_clampms(0), 0);
-    asserteq(znS_clampms(25), 25);
-    asserteq(znS_clampms((zn_Time)INT_MAX), INT_MAX);
-    asserteq(znS_clampms((zn_Time)INT_MAX + 1), INT_MAX);
-    asserteq(znS_clampms(ZN_FOREVER - 1), INT_MAX);
-    asserteq(znS_clampms(ZN_FOREVER), ZN_FOREVER);
-}
-
 /* Cancelling the root must leave the next smallest timer at keys[0]: the old
  * nexttime cache could go stale here and wake the loop early. */
 TEST(timer_cancel_updates_root) {
@@ -431,19 +422,6 @@ TEST(timer_cancel_updates_root) {
     zn_deltimer(b);
     zt_close(S);
 }
-
-/* epoll_wait takes an int; a plain cast turned a timeout above INT_MAX into a
- * negative number, i.e. "wait forever". */
-#if defined(__linux__) && !defined(ZN_USE_SELECT)
-TEST(epoll_timeout_clamp) {
-    asserteq(znB_timeoutms(ZN_FOREVER), -1);
-    asserteq(znB_timeoutms(0), 0);
-    asserteq(znB_timeoutms(25), 25);
-    asserteq(znB_timeoutms((zn_Time)INT_MAX), INT_MAX);
-    asserteq(znB_timeoutms((zn_Time)INT_MAX + 1), INT_MAX);
-    asserteq(znB_timeoutms(ZN_FOREVER - 1), INT_MAX);
-}
-#endif /* __linux__ && !ZN_USE_SELECT */
 
 /* A fired one-shot timer must leave the loop with nothing to do; this is the
  * path that makes zn_run(LOOP) return normally. */

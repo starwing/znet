@@ -20,8 +20,7 @@ zn_BufferPool pool;
 
 static void client_error(zn_Tcp *tcp, zn_BufferPoolNode *data);
 
-static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err,
-                           unsigned count) {
+static void on_client_send(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         ++send_err;
@@ -35,8 +34,7 @@ static void on_client_send(void *ud, zn_Tcp *tcp, unsigned err,
                 (unsigned)zn_sendsize(&data->send), on_client_send, ud);
 }
 
-static void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err,
-                           unsigned count) {
+static void on_client_recv(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         ++recv_err;
@@ -70,7 +68,7 @@ static void on_client_packet(void *ud, const char *buff, size_t len) {
         client_error(data->tcp, data);
 }
 
-static void on_connect(void *ud, zn_Tcp *tcp, unsigned err) {
+static void on_connect(void *ud, zn_Tcp *tcp, int err) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode *)ud;
 
     if (err != ZN_OK) {
@@ -94,9 +92,8 @@ static void new_connection(void *ud, zn_State *state) {
     (void)ud;
     zn_recvonheader(&data->recv, on_header, data);
     zn_recvonpacket(&data->recv, on_client_packet, data);
-    data->tcp = zn_newtcp(state);
-    if (zn_connect(data->tcp, addr, port, on_connect, data) != ZN_OK)
-        zn_post(state, new_connection, NULL);
+    data->tcp = zn_connect(state, addr, port, on_connect, data);
+    if (data->tcp == NULL) zn_post(state, new_connection, NULL);
 }
 
 static void client_error(zn_Tcp *tcp, zn_BufferPoolNode *data) {
@@ -105,7 +102,7 @@ static void client_error(zn_Tcp *tcp, zn_BufferPoolNode *data) {
     zn_post(S, new_connection, NULL);
 }
 
-static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_send(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         ++send_err;
@@ -120,7 +117,7 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
                 (unsigned)zn_sendsize(&data->send), on_send, ud);
 }
 
-static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_recv(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         ++recv_err;
@@ -146,7 +143,7 @@ static void on_packet(void *ud, const char *buff, size_t len) {
     }
 }
 
-static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
+static void on_accept(void *ud, zn_Accept *accept, int err, zn_Tcp *tcp) {
     zn_BufferPoolNode *data = zn_getbuffer(&pool);
     if (err != ZN_OK) return;
     zn_recvonheader(&data->recv, on_header, data);
@@ -271,8 +268,7 @@ int main(int argc, const char **argv) {
         for (i = 0; i < client_count; ++i) zn_post(S, new_connection, NULL);
     } else {
         zn_Accept *accept;
-        if ((accept = zn_newaccept(S)) == NULL) return 2;
-        zn_listen(accept, addr, port);
+        if ((accept = zn_listen(S, addr, port)) == NULL) return 2;
         zn_accept(accept, on_accept, NULL);
         printf("listening at %s:%d ...\n", addr, port);
     }

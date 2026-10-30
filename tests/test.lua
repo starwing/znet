@@ -159,6 +159,51 @@ local stop_probe = znet:timer(function(self)
 end)
 stop_probe:start(10)
 
+-- 5. UDP: bind + sendto + receivefrom through the Lua factory.  The
+-- constructor used to reject its own address argument, so nothing in this
+-- file had ever reached the UDP path (notes/lifecycle-v2.md §9.2).
+local udp_srv, udp_cli, udp_timer
+local udp_port
+local udp_data
+local udp_done = false
+
+for p = first + 41, first + 60 do
+    local u = znet:udp("127.0.0.1", p)
+    if u then
+        udp_srv = u
+        udp_port = p
+        break
+    end
+end
+if not udp_srv then
+    fail("cannot bind a loopback UDP port")
+    os.exit(1)
+end
+udp_cli = znet:udp("127.0.0.1", 0)
+if not udp_cli then
+    fail("cannot bind the UDP client")
+    os.exit(1)
+end
+
+udp_srv:receivefrom(function(_, data)
+    udp_data = data
+    udp_done = true
+    if udp_timer then udp_timer:cancel() end
+    return false                -- stop receiving: one datagram is enough
+end)
+if not udp_cli:sendto("127.0.0.1", udp_port, "ping") then
+    fail("udp sendto failed")
+end
+
+udp_timer = znet:timer(function(self)
+    if not udp_done then
+        fail("timeout waiting for the UDP datagram")
+        os.exit(1)
+    end
+    return false
+end)
+udp_timer:start(2000)
+
 znet:run()
 
 if not echoed then
@@ -167,6 +212,12 @@ end
 if not stop_refused then
     fail("U10: connecting to a stopped listener did not fail")
 end
+if not udp_done or udp_data ~= "ping" then
+    fail("UDP loopback: done=" .. tostring(udp_done) ..
+         " data=" .. tostring(udp_data))
+end
+udp_srv:delete()
+udp_cli:delete()
 if failures == 0 then
     print("test.lua: OK")
 end

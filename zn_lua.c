@@ -177,14 +177,17 @@ static void lzn_freetcp(lua_State *L, lzn_Tcp *obj) {
     obj->closing = 1;
 }
 
-static void lzn_onconnect(void *ud, zn_Tcp *tcp, unsigned err) {
+static void lzn_onconnect(void *ud, zn_Tcp *tcp, int err) {
     lzn_Tcp   *obj = (lzn_Tcp *)ud;
     lua_State *L = obj->L;
-    (void)tcp;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onconnect_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->ref);
     lzn_unref(L, &obj->ref);
     if (err != ZN_OK) {
+        /* a failed connect leaves a broken object: drop it, so the next
+         * tcp:connect() starts from a fresh one */
+        zn_deltcp(tcp);
+        obj->tcp = NULL;
         lua_pushstring(L, err >= ZN_ERROR_COUNT
                                   ? zn_aierror(err - ZN_ERROR_COUNT)
                                   : zn_strerror(err));
@@ -242,7 +245,7 @@ static void lzn_onpacket(void *ud, const char *buff, size_t len) {
     }
 }
 
-static void lzn_onsend(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void lzn_onsend(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     lzn_Tcp *obj = (lzn_Tcp *)ud;
     if (err == ZN_OK) {
         if (!zn_sendfinish(&obj->send, count)) goto check_close;
@@ -252,12 +255,12 @@ static void lzn_onsend(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     if (err != ZN_OK) lzn_tcperror(obj->L, obj, err);
 check_close:
     if (obj->closing && zn_sendsize(&obj->send) == 0) {
-        zn_closetcp(tcp);
+        zn_deltcp(tcp);
         lzn_freetcp(obj->L, obj);
     }
 }
 
-static void lzn_onrecv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void lzn_onrecv(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     lzn_Tcp *obj = (lzn_Tcp *)ud;
     if (err == ZN_OK) {
         if (zn_recvfinish(&obj->recv, count) < 0) {
@@ -289,14 +292,15 @@ static lzn_Tcp *lzn_newtcp(lua_State *L, zn_State *S, zn_Tcp *tcp) {
     return obj;
 }
 
-static void lzn_ongetaddr(void *ud, unsigned err, unsigned count,
+static void lzn_ongetaddr(void *ud, int err, unsigned count,
                           zn_PeerInfo *peers) {
     lzn_Tcp *obj = (lzn_Tcp *)ud;
     (void)count;
-    if (err == ZN_OK)
-        err = zn_connect(obj->tcp, peers[0].addr, peers[0].port, lzn_onconnect,
-                         obj);
-    else
+    if (err == ZN_OK) {
+        obj->tcp = zn_connect(obj->S, peers[0].addr, peers[0].port,
+                              lzn_onconnect, obj);
+        err = obj->tcp != NULL ? ZN_OK : zn_lasterror(obj->S);
+    } else
         err += ZN_ERROR_COUNT;
     if (err != ZN_OK) lzn_onconnect(ud, obj->tcp, err);
 }
@@ -306,6 +310,7 @@ static int Ltcp_connect(lua_State *L) {
     const char *addr = luaL_optstring(L, 2, "127.0.0.1");
     const char *port = luaL_optstring(L, 3, "http");
     int         ret;
+    if (obj->tcp) return lzn_pushresult(L, ZN_EBUSY); /* already one peer */
     luaL_checktype(L, 4, LUA_TFUNCTION);
     lzn_ref(L, 4, &obj->onconnect_ref);
     lzn_ref(L, 1, &obj->ref);
@@ -316,9 +321,7 @@ static int Ltcp_connect(lua_State *L) {
 static int Ltcp_new(lua_State *L) {
     zn_State *S = (zn_State *)lbind_check(L, 1, &lbT_State);
     int       top = lua_gettop(L);
-    zn_Tcp   *tcp;
-    if ((tcp = zn_newtcp(S)) == NULL) return 0;
-    lzn_newtcp(L, S, tcp);
+    lzn_newtcp(L, S, NULL);
     if (top != 1) {
         lua_replace(L, 1);
         return Ltcp_connect(L);
@@ -385,9 +388,8 @@ static int Ltcp_close(lua_State *L) {
     if (obj->tcp) {
         obj->closing = 1;
         if (zn_sendsize(&obj->send) == 0) {
-            int ret = zn_closetcp(obj->tcp);
+            zn_deltcp(obj->tcp);
             lzn_freetcp(L, obj);
-            return_result(L, ret);
         }
     }
     lbind_returnself(L);
@@ -396,6 +398,7 @@ static int Ltcp_close(lua_State *L) {
 static int Ltcp_getpeerinfo(lua_State *L) {
     lzn_Tcp    *obj = (lzn_Tcp *)lbind_check(L, 1, &lbT_Tcp);
     zn_PeerInfo info;
+    if (!obj->tcp) return lzn_pushresult(L, ZN_ESTATE);
     zn_getpeerinfo(obj->tcp, &info);
     lua_pushstring(L, info.addr);
     lua_pushinteger(L, info.port);
@@ -428,8 +431,9 @@ typedef struct lzn_Accept {
     int        ref;
 } lzn_Accept;
 
-static void lzn_onaccept(void *ud, zn_Accept *accept, unsigned err,
-                         zn_Tcp *tcp) {
+static void lzn_freeaccept(lua_State *L, lzn_Accept *obj);
+
+static void lzn_onaccept(void *ud, zn_Accept *accept, int err, zn_Tcp *tcp) {
     lzn_Accept *obj = (lzn_Accept *)ud;
     lua_State  *L = obj->L;
     lua_rawgeti(L, LUA_REGISTRYINDEX, obj->onaccept_ref);
@@ -443,14 +447,14 @@ static void lzn_onaccept(void *ud, zn_Accept *accept, unsigned err,
     }
     if (lbind_pcall(L, err == ZN_OK ? 2 : 4, 1) != LUA_OK) {
         fprintf(stderr, "%s\n", lua_tostring(L, -1));
-        lzn_unref(L, &obj->ref);
-        zn_closeaccept(accept);
+        zn_delaccept(accept);
+        lzn_freeaccept(L, obj);
     } else if (lua_toboolean(L, -1))
         zn_accept(accept, lzn_onaccept, ud);
     else {
         /* a listener with no handler spins the level-triggered backends */
-        lzn_unref(L, &obj->ref);
-        zn_closeaccept(accept);
+        zn_delaccept(accept);
+        lzn_freeaccept(L, obj);
     }
     lua_pop(L, 1);
 }
@@ -468,14 +472,11 @@ static int Laccept_new(lua_State *L) {
     obj = (lzn_Accept *)lbind_new(L, sizeof(lzn_Accept), &lbT_Accept);
     obj->S = S;
     obj->L = L;
-    obj->accept = zn_newaccept(S);
+    obj->accept = NULL; /* zn_listen() creates it */
     obj->onaccept_ref = LUA_NOREF;
     obj->ref = LUA_NOREF;
-    if (obj->accept != NULL) {
-        lzn_ref(L, 2, &obj->onaccept_ref);
-        return 1;
-    }
-    return 0;
+    lzn_ref(L, 2, &obj->onaccept_ref);
+    return 1;
 }
 
 static int Laccept_delete(lua_State *L) {
@@ -493,21 +494,25 @@ static int Laccept_listen(lua_State *L) {
     const char *addr = luaL_optstring(L, 2, "127.0.0.1");
     lua_Integer port = luaL_checkinteger(L, 3);
     int         ret;
-    if (!obj->accept) return 0;
+    if (obj->accept) return lzn_pushresult(L, ZN_ESTATE);
     if (port < 0) luaL_argerror(L, 2, "port out of range");
-    if ((ret = zn_listen(obj->accept, addr, (unsigned)port)) == ZN_OK)
-        ret = zn_accept(obj->accept, lzn_onaccept, obj);
-    if (ret == ZN_OK) lzn_ref(L, 1, &obj->ref);
-    return_result(L, ret);
+    obj->accept = zn_listen(obj->S, addr, (unsigned)port);
+    if (obj->accept == NULL) return lzn_pushresult(L, zn_lasterror(obj->S));
+    if ((ret = zn_accept(obj->accept, lzn_onaccept, obj)) != ZN_OK) {
+        zn_delaccept(obj->accept);
+        lzn_freeaccept(L, obj);
+        return lzn_pushresult(L, ret);
+    }
+    lzn_ref(L, 1, &obj->ref);
+    lbind_returnself(L);
 }
 
 static int Laccept_close(lua_State *L) {
     lzn_Accept *obj = (lzn_Accept *)lbind_check(L, 1, &lbT_Accept);
-    int         ret;
     if (!obj->accept) return 0;
-    ret = zn_closeaccept(obj->accept);
+    zn_delaccept(obj->accept);
     lzn_freeaccept(L, obj);
-    return_result(L, ret);
+    lbind_returnself(L);
 }
 
 static void open_accept(lua_State *L) {
@@ -532,7 +537,7 @@ typedef struct lzn_Udp {
     zn_Buffer  recv;
 } lzn_Udp;
 
-static void lzn_onrecvfrom(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void lzn_onrecvfrom(void *ud, zn_Udp *udp, int err, unsigned count,
                            const char *addr, unsigned port) {
     lzn_Udp   *obj = (lzn_Udp *)ud;
     lua_State *L = obj->L;
@@ -566,13 +571,13 @@ static int Ludp_new(lua_State *L) {
     const char *addr = luaL_optstring(L, 2, "127.0.0.1");
     lua_Integer port = luaL_optinteger(L, 3, 0);
     lzn_Udp    *obj;
-    luaL_checktype(L, 2, LUA_TFUNCTION);
     if (port < 0) luaL_argerror(L, 2, "port out of range");
     obj = (lzn_Udp *)lbind_new(L, sizeof(lzn_Udp), &lbT_Udp);
-    obj->udp = zn_newudp(S, addr, (unsigned)port);
+    obj->udp = zn_bind(S, addr, (unsigned)port);
     obj->L = L;
     obj->onrecvfrom_ref = LUA_NOREF;
     obj->ref = LUA_NOREF;
+    if (obj->udp == NULL) return lzn_pushresult(L, zn_lasterror(S));
     return 1;
 }
 
@@ -653,7 +658,7 @@ typedef struct lzn_AddrInfo {
     int        ref_func;
 } lzn_AddrInfo;
 
-static void lzn_onaddrinfo(void *ud, unsigned err, unsigned count,
+static void lzn_onaddrinfo(void *ud, int err, unsigned count,
                            zn_PeerInfo *peers) {
     lzn_AddrInfo *info = (lzn_AddrInfo *)ud;
     lua_State    *L = info->L;

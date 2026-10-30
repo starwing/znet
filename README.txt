@@ -13,6 +13,17 @@ used without other headers.
 See example.c for an example, and tests/ plus bench/ for the suite and
 benchmarks.
 
+This release makes three deliberate ABI breaks (the zn_Time widening, the
+factory rewrite and the `int err` change below); the last two land together:
+zn_newtcp/zn_newaccept/zn_newudp,
+zn_closetcp/zn_closeaccept/zn_closeudp and the old zn_listen(accept, addr, port)
+/ zn_connect(tcp, addr, port, cb, ud) are gone, replaced by the factories above
+and zn_lasterror().  Completion callbacks (and zn_AddrInfoHandler) now report
+`int err` instead of `unsigned err`, and zn_aierror() takes it back, so an
+error compares against the ZN_* enum without a cast: every callback signature
+changes too.  Recompile against the new znet.h; there is no compatibility
+layer.
+
 Build and test (just is the only build driver; there is no make wrapper):
 
     just check      full suite: native backend + select (ASan/UBSan)
@@ -55,14 +66,38 @@ zn_task.h: a task thread pool implement. you can create a task pool and post
 tasks to pool, task will run in other thread, you can use zn_deque.h to notice
 original thread the completion of tasks.
 
-UDP sockets are datagram sockets: zn_newudp() creates and binds one (port 0
-asks the OS for an ephemeral port), and there is no listen/accept for UDP.
+Objects are created by factories, and the operation is part of the creation:
+
+    zn_Accept *zn_listen(zn_State *S, const char *addr, unsigned port);
+    zn_Tcp    *zn_connect(zn_State *S, const char *addr, unsigned port,
+                          zn_ConnectHandler *cb, void *ud);
+    zn_Udp    *zn_bind(zn_State *S, const char *addr, unsigned port);
+    int        zn_lasterror(zn_State *S);
+
+Each returns a live object or NULL, and on failure the reason is in
+zn_lasterror(S) (ZN_EPARAM, ZN_ESTATE, ZN_ESOCKET, ZN_EBIND, ZN_ECONNECT,
+ZN_EPOLL); a successful call sets it back to ZN_OK.  zn_lasterror() has to be
+read right after the call: the next factory call overwrites it, like errno.
+The only way to destroy an object is zn_deltcp()/zn_delaccept()/zn_deludp():
+it closes the fd and gives up ownership, and the slot goes back to the pool
+when the last completion it still owes has landed.  Call each of them exactly
+once per object; after the call the pointer is dead, exactly like a freed
+pointer.  zn_del*(NULL) is a no-op.
+
+Objects are not reused and not reconnected: a tcp that has connected, failed
+or been closed is finished.  To connect again, ask the factory for a new one.
+zn_send()/zn_recv() are legal only once the connect callback said ZN_OK
+(while CONNECTING they return ZN_ESTATE); after a terminal error the fd is
+already closed, they return ZN_ESTATE, zn_getpeerinfo() still works, and the
+next step is zn_deltcp().
+
+UDP sockets are datagram sockets: zn_bind() creates and binds one (port 0 asks
+the OS for an ephemeral port), and there is no listen/accept for UDP.
 zn_connectudp() sets or changes the default peer; it is a plain synchronous
 connect(), with no callback and no "one connect per object" rule.  After it,
 zn_sendto(udp, buf, len, NULL, 0) sends to the connected peer, while
 zn_sendto(udp, buf, len, addr, port) is the unconnected form and is not
 supported on a connected socket.  zn_recvfrom() receives in both cases.
-zn_newaccept()/zn_connect() are TCP-only and no longer take a socket type.
 
 zn_sendto(), including the NULL/0 connected form, rejects datagrams larger
 than ZN_MAX_UDPSEND (default 1200 bytes, which stays under the IPv6 minimum

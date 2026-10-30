@@ -12,7 +12,7 @@ unsigned port = 8081;
 zn_State     *S;
 zn_BufferPool pool;
 
-static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_send(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         zn_deltcp(tcp);
@@ -37,7 +37,7 @@ static size_t on_header(void *ud, const char *buff, size_t len) {
     return len;
 }
 
-static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_recv(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *data = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         zn_deltcp(tcp);
@@ -49,7 +49,7 @@ static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
             ud);
 }
 
-static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
+static void on_accept(void *ud, zn_Accept *accept, int err, zn_Tcp *tcp) {
     zn_BufferPoolNode *data = zn_getbuffer(&pool);
     if (err != ZN_OK) return;
     printf("client connected: %p\n", (void *)tcp);
@@ -122,8 +122,7 @@ int main(int argc, const char **argv) {
 
     zn_initbuffpool(&pool);
 
-    if ((accept = zn_newaccept(S)) == NULL) return 2;
-    zn_listen(accept, addr, port);
+    if ((accept = zn_listen(S, addr, port)) == NULL) return 2;
     zn_accept(accept, on_accept, NULL);
     printf("listening at %s:%d ...\n", addr, port);
 

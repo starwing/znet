@@ -15,7 +15,7 @@ int send_count = 0;
 int recv_count = 0;
 int connect_count = 0;
 
-static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_send(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *node = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         zn_putbuffer(&pool, node);
@@ -26,7 +26,7 @@ static void on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     zn_sendfinish(&node->send, count);
 }
 
-static void on_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void on_recv(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     zn_BufferPoolNode *node = (zn_BufferPoolNode *)ud;
     if (err != ZN_OK) {
         zn_putbuffer(&pool, node);
@@ -54,7 +54,7 @@ static void on_packet(void *ud, const char *buff, size_t len) {
             (unsigned)zn_sendsize(&node->send), on_send, node);
 }
 
-static void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
+static void on_accept(void *ud, zn_Accept *accept, int err, zn_Tcp *tcp) {
     zn_BufferPoolNode *node;
     if (err != ZN_OK) exit(2);
     ++connect_count;
@@ -138,9 +138,8 @@ int main(int argc, char **argv) {
     zn_initbuffpool(&pool);
     if (S == NULL) return 2;
 
-    accept = zn_newaccept(S);
+    accept = zn_listen(S, "0.0.0.0", port);
     if (accept == NULL) return 2;
-    zn_listen(accept, "0.0.0.0", port);
     zn_accept(accept, on_accept, NULL);
     printf("listening at: %u\n", port);
 

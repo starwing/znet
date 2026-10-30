@@ -11,10 +11,10 @@ ZN_NS_BEGIN
 #define ZN_IPV4   0x100
 #define ZN_IPV6   0x200
 
-typedef void zn_AddrInfoHandler(void *ud, unsigned err, unsigned count,
+typedef void zn_AddrInfoHandler(void *ud, int err, unsigned count,
                                 zn_PeerInfo *infos);
 
-ZN_API const char *zn_aierror(unsigned err);
+ZN_API const char *zn_aierror(int err);
 
 ZN_API int zn_getaddrinfo(zn_State *S, const char *node, const char *service,
                           int flags, zn_AddrInfoHandler *h, void *ud);
@@ -28,16 +28,13 @@ ZN_NS_END
 #ifndef zn_list_h
 #define zn_list_h
 
+/* clang-format off */
 #define znL_rawset(l, r) (*(void **)&(l) = (void *)(r))
-#define znL_entry(T) \
-    T *next;         \
-    T *prev
-#define znL_head(T)    \
-    struct T##_hlist { \
-        znL_entry(T);  \
-    }
-#define znL_init(h)  (znL_rawset((h)->prev, h), znL_rawset((h)->next, h))
-#define znL_empty(h) ((void *)(h)->next == (void *)(h))
+#define znL_entry(T)     T *next, *prev
+#define znL_head(T)      struct T##_hlist { znL_entry(T); }
+#define znL_init(h)      (znL_rawset((h)->prev, h), znL_rawset((h)->next, h))
+#define znL_empty(h)     ((void *)(h)->next == (void *)(h))
+/* clang-format on */
 
 #define znL_insert(h, n)                                                     \
     (znL_rawset((n)->next, h), (n)->prev = (h)->prev, (h)->prev->next = (n), \
@@ -453,7 +450,7 @@ ZN_API void zn_closeaddrinfo(zn_State *S) {
 
 #endif
 
-ZN_API const char *zn_aierror(unsigned err) { return gai_strerror(err); }
+ZN_API const char *zn_aierror(int err) { return gai_strerror(err); }
 
 static void znA_makepeers(znA_AddrRequest *req, void *info) {
     zn_AddrInfo *p;

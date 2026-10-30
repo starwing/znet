@@ -40,7 +40,7 @@ BASE := "-std=c99 -D_XOPEN_SOURCE=600 " + WARN + " " + INC
 SAN  := "-g -O0 -fsanitize=address,undefined -fno-sanitize-recover=undefined"
 
 # every suite; generated runners are built from these names
-SUITES := "mempool_test timer_test addr_test addrinfo_test state_test resultqueue_test tcp_test dispatch_test udp_test buffer_test"
+SUITES := "mempool_test timer_test addr_test addrinfo_test state_test resultqueue_test tcp_test dispatch_test udp_test lifecycle_test buffer_test"
 
 default: check
 

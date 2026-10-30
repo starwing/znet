@@ -48,16 +48,13 @@ ZN_NS_END
 #ifndef zn_list_h
 #define zn_list_h
 
+/* clang-format off */
 #define znL_rawset(l, r) (*(void **)&(l) = (void *)(r))
-#define znL_entry(T) \
-    T *next;         \
-    T *prev
-#define znL_head(T)    \
-    struct T##_hlist { \
-        znL_entry(T);  \
-    }
-#define znL_init(h)  (znL_rawset((h)->prev, h), znL_rawset((h)->next, h))
-#define znL_empty(h) ((void *)(h)->next == (void *)(h))
+#define znL_entry(T)     T *next, *prev
+#define znL_head(T)      struct T##_hlist { znL_entry(T); }
+#define znL_init(h)      (znL_rawset((h)->prev, h), znL_rawset((h)->next, h))
+#define znL_empty(h)     ((void *)(h)->next == (void *)(h))
+/* clang-format on */
 
 #define znL_insert(h, n)                                                     \
     (znL_rawset((n)->next, h), (n)->prev = (h)->prev, (h)->prev->next = (n), \

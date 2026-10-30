@@ -25,33 +25,34 @@
 #define MYDATA_BUFLEN 1024
 
 typedef struct MyData {
-    char buffer[MYDATA_BUFLEN];
-    int  idx;
-    int  count;
+    char      buffer[MYDATA_BUFLEN];
+    zn_State *S; /* every object is created from a state; keep it for retries */
+    int       idx;
+    int       count;
 } MyData;
 
 /* function to accept a new coming connection. */
-void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp);
+void on_accept(void *ud, zn_Accept *accept, int err, zn_Tcp *tcp);
 
 /* function when a client is connected on a server. */
-void on_connection(void *ud, zn_Tcp *tcp, unsigned err);
+void on_connection(void *ud, zn_Tcp *tcp, int err);
 
 /* function when a tcp in server received something. */
-void on_server_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+void on_server_recv(void *ud, zn_Tcp *tcp, int err, unsigned count);
 
 /* function when a tcp in server sent something. */
-void on_server_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+void on_server_sent(void *ud, zn_Tcp *tcp, int err, unsigned count);
 
 /* function when a tcp in client sent something. */
-void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+void on_client_recv(void *ud, zn_Tcp *tcp, int err, unsigned count);
 
 /* function when a tcp in client sent something. */
-void on_client_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count);
+void on_client_sent(void *ud, zn_Tcp *tcp, int err, unsigned count);
 
 /* function when a udp in server received something. notice that we
  * needn't a function that when a udp sent something, because udp send
  * always returns immediately. */
-void on_udp_recv(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+void on_udp_recv(void *ud, zn_Udp *udp, int err, unsigned count,
                  const char *addr, unsigned port);
 
 /* functions that will called after some milliseconds after.  */
@@ -64,7 +65,6 @@ const int PORT = 12345;
 int main(void) {
     zn_State  *S;         /* the znet event loop handler */
     zn_Timer  *timer;     /* znet timer handler          */
-    zn_Tcp    *tcp;       /* znet tcp client handler     */
     zn_Accept *accept;    /* znet tcp service handler    */
     zn_Udp    *udpclient; /* znet udp client handler     */
     zn_Udp    *udpserver; /* znet udp service handler    */
@@ -90,13 +90,16 @@ int main(void) {
         return 2; /* error out */
     }
 
-    /* create a znet tcp server */
-    accept = zn_newaccept(S);
-
-    /* this server listen to port */
-    if (zn_listen(accept, "127.0.0.1", PORT) == ZN_OK) {
-        printf("[%p] accept listening to %d ...\n", (void *)accept, PORT);
+    /* create a znet tcp server: the factory returns a listening object, or
+     * NULL with the reason in zn_lasterror(). */
+    accept = zn_listen(S, "127.0.0.1", PORT);
+    if (accept == NULL) {
+        fprintf(stderr, "listen on %d: %s\n", PORT,
+                zn_strerror(zn_lasterror(S)));
+        zn_close(S), zn_deinitialize();
+        return 3;
     }
+    printf("[%p] accept listening to %d ...\n", (void *)accept, PORT);
 
     /* this server and when new connection coming, on_accept()
      * function will be called.
@@ -114,26 +117,35 @@ int main(void) {
 
     /* now connect to the server we created */
     data = (MyData *)malloc(sizeof(MyData));
+    data->S = S;
     data->idx = 1;
     data->count = 0;
-    tcp = zn_newtcp(S);
-    zn_connect(tcp, "127.0.0.1", PORT, on_connection, data);
+    if (zn_connect(S, "127.0.0.1", PORT, on_connection, data) == NULL) {
+        fprintf(stderr, "client1: %s\n", zn_strerror(zn_lasterror(S)));
+        free(data);
+    }
 
     /* ..., and another one */
     data = (MyData *)malloc(sizeof(MyData));
+    data->S = S;
     data->idx = 2;
     data->count = 0;
-    tcp = zn_newtcp(S);
-    zn_connect(tcp, "127.0.0.1", PORT, on_connection, data);
+    if (zn_connect(S, "127.0.0.1", PORT, on_connection, data) == NULL) {
+        fprintf(stderr, "client2: %s\n", zn_strerror(zn_lasterror(S)));
+        free(data);
+    }
 
-    udpserver = zn_newudp(S, "127.0.0.1", 8088);
-    udpclient = zn_newudp(S, "127.0.0.1", 0);
+    udpserver = zn_bind(S, "127.0.0.1", 8088);
+    udpclient = zn_bind(S, "127.0.0.1", 0);
+    if (udpserver == NULL || udpclient == NULL)
+        fprintf(stderr, "bind udp: %s\n", zn_strerror(zn_lasterror(S)));
 
     /* now we try to recv packages from udp client. we must prepare a
      * buffer for receive messages, and the buffer should available in
      * the all receiving durations. notice that we send MyData pointer
      * as the context user pointer to read messages from buffer. */
     data = (MyData *)malloc(sizeof(MyData));
+    data->S = NULL;  /* the server side never reconnects */
     data->count = 0; /* we receive this count times */
     zn_recvfrom(udpserver, data->buffer, MYDATA_BUFLEN, on_udp_recv, data);
 
@@ -180,7 +192,7 @@ zn_Time on_timer(void *ud, zn_Timer *timer, zn_Time elapsed) {
  * function will be called. you must call zn_accept() to notify znet
  * you are done with this connection and ready to accept another
  * connection.  */
-void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
+void on_accept(void *ud, zn_Accept *accept, int err, zn_Tcp *tcp) {
     MyData *data;
 
     (void)ud;
@@ -205,6 +217,7 @@ void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
      * first, we receive something from client, so we need a buffer to
      * hold result: */
     data = (MyData *)malloc(sizeof(MyData));
+    data->S = NULL; /* the server side never reconnects */
     /* OK, send recv request to znet, and when receive done, our
      * on_server_recv() function will be called, with our data
      * pointer. */
@@ -220,7 +233,7 @@ void on_accept(void *ud, zn_Accept *accept, unsigned err, zn_Tcp *tcp) {
     zn_accept(accept, on_accept, NULL);
 }
 
-void on_server_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+void on_server_sent(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     /* send work may error out, we first check the result code: */
     if (err != ZN_OK) {
         fprintf(stderr, "[%p] server meed problems when send something: %s\n",
@@ -250,7 +263,7 @@ void on_server_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
  * to process in-coming messages!", if you don't want accept messages
  * from client sometime, just do not call zn_recv(), and messages will
  * stay in your OS's buffer. */
-void on_server_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+void on_server_recv(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     MyData *data = (MyData *)ud; /* our data from zn_recv() */
 
     /* we expect client close our link by itself. so if a err occurs,
@@ -259,11 +272,10 @@ void on_server_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     if (err != ZN_OK) {
         fprintf(stderr, "[%p] error when receiving from client: %s\n",
                 (void *)tcp, zn_strerror(err));
-        /* after error, tcp object will be closed. but you still could
-         * use it to do other things, e.g. to connect to other server.
-         * but we don't wanna do that now, so put it back to znet.
-         * you can also delete it in on_server_sent(), but in here we
-         * could free our data.  */
+        /* after a terminal error the object is broken and already closed;
+         * the only thing left to do with it is zn_deltcp().  we don't want
+         * to reconnect, so put it back to znet.  you can also delete it in
+         * on_server_sent(), but in here we could free our data.  */
         zn_deltcp(tcp);
         free(data); /* don't forget to free our buffer. */
         return;
@@ -285,20 +297,27 @@ void on_server_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 
 /* the client connection callback: when you want to connect other
  * server, and it's done, this function will be called. */
-void on_connection(void *ud, zn_Tcp *tcp, unsigned err) {
+void on_connection(void *ud, zn_Tcp *tcp, int err) {
     MyData *data = (MyData *)ud;
     if (err != ZN_OK) { /* no lucky? let's try again. */
         /* we use ud to find out which time we tried. */
         fprintf(stderr, "[%p] client%d can not connect to server now: %s\n",
                 (void *)tcp, data->idx, zn_strerror(err));
+        /* the failed connection is broken: drop it, then ask the factory for
+         * a fresh object.  a tcp is never reconnected. */
+        zn_deltcp(tcp);
         if (++data->count < 10) {
-            fprintf(stderr, "[%p client%d just try again (%d times)! :-/ \n",
-                    (void *)tcp, data->idx, data->count);
-            zn_connect(tcp, "127.0.0.1", PORT, on_connection, data);
+            fprintf(stderr, "client%d just try again (%d times)! :-/ \n",
+                    data->idx, data->count);
+            if (zn_connect(data->S, "127.0.0.1", PORT, on_connection, data)
+                == NULL) {
+                fprintf(stderr, "client%d can not retry: %s\n", data->idx,
+                        zn_strerror(zn_lasterror(data->S)));
+                free(data);
+            }
         } else {
-            fprintf(stderr, "[%p] client%d just give up to connect :-( \n",
-                    (void *)tcp, data->idx);
-            zn_deltcp(tcp);
+            fprintf(stderr, "client%d just give up to connect :-( \n",
+                    data->idx);
             free(data);
         }
         return;
@@ -324,7 +343,7 @@ void on_connection(void *ud, zn_Tcp *tcp, unsigned err) {
     zn_recv(tcp, data->buffer, MYDATA_BUFLEN, on_client_recv, data);
 }
 
-void on_client_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+void on_client_sent(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     MyData *data = (MyData *)ud;
 
     /* send work may error out, we first check the result code: */
@@ -350,7 +369,7 @@ void on_client_sent(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     zn_send(tcp, send_string("message from client..."), on_client_sent, data);
 }
 
-void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+void on_client_recv(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     MyData *data = (MyData *)ud; /* our data from zn_recv() */
 
     if (err != ZN_OK) {
@@ -364,7 +383,7 @@ void on_client_recv(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
 }
 
 /* we received messages from other udp ports. */
-void on_udp_recv(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+void on_udp_recv(void *ud, zn_Udp *udp, int err, unsigned count,
                  const char *addr, unsigned port) {
     MyData *data = (MyData *)ud;
 

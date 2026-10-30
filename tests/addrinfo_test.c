@@ -34,20 +34,19 @@
 #define MAXINFO 16
 
 static int         ai_done;
-static unsigned    ai_err;
+static int         ai_err;
 static unsigned    ai_count;
 static zn_PeerInfo ai_infos[MAXINFO];
 
 static void ai_reset(void) {
     ai_done = 0;
-    ai_err = 0xFFFFFFFFu;
+    ai_err = -1;
     ai_count = 0;
     memset(ai_infos, 0, sizeof(ai_infos));
 }
 
 /* the handler may see more than MAXINFO entries; keep the first MAXINFO */
-static void ai_handler(void *ud, unsigned err, unsigned count,
-                       zn_PeerInfo *infos) {
+static void ai_handler(void *ud, int err, unsigned count, zn_PeerInfo *infos) {
     unsigned i;
     (void)ud;
     ai_err = err;

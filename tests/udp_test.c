@@ -1,17 +1,19 @@
 /* udp_test.c -- UDP socket semantics.
  *
- * Covers: parameter validation (unparsable address, zero length, NULL
- * callback, one in-flight recvfrom -> ZN_EBUSY), an IPv4 loopback round trip
- * with peer address/port checks, five datagrams without loss, closing while a
- * recvfrom is pending, and the ZN_MAX_UDPSEND datagram limit.
+ * Covers: the zn_bind() factory (parameter errors, bind conflict, failed
+ * binds reclaiming their slots), operation parameter validation (zero length,
+ * NULL callback, one in-flight recvfrom -> ZN_EBUSY), an IPv4 loopback round
+ * trip with peer address/port checks, five datagrams without loss, deleting
+ * while a recvfrom is pending, and the ZN_MAX_UDPSEND datagram limit.
  *
  * Every socket binds "127.0.0.1"/"::1" port 0 and the bound port is read back
  * with zt_udp_port(), so the suite never uses fixed ports.  zn_sendto is
  * synchronous: only the receive path is delivered from the loop, so a test
  * arms recvfrom and sends before calling zt_run().
  *
- * The regression block at the end covers B2 (IPv6 peer address) and L3
- * (idempotent close); each test names the defect it used to reproduce.
+ * The regression block at the end covers B2 (IPv6 peer address), B3 (failed
+ * sendto reported as success), B7 (blocking socket) and L7 (spurious
+ * readiness); each test names the defect it used to reproduce.
  */
 
 #include "ztest.h"
@@ -20,7 +22,7 @@
  * Lua boolean semantics, where `not 0` is false, so `!defined(X)` reads as
  * never taken and would hide the test from the generated runner. */
 #ifndef _WIN32
-# include <fcntl.h> /* open()/fcntl() for the reused-fd regression (L3) */
+# include <fcntl.h> /* fcntl() for the non-blocking-socket regression (B7) */
 #endif              /* _WIN32 */
 
 #define MSG_COUNT 5
@@ -59,7 +61,7 @@ static void reset_recorder(void) {
 /* ---- callbacks ---- */
 
 /* counts completions; used where the payload does not matter */
-static void cb_count(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void cb_count(void *ud, zn_Udp *udp, int err, unsigned count,
                      const char *addr, unsigned port) {
     (void)ud;
     (void)udp;
@@ -70,7 +72,7 @@ static void cb_count(void *ud, zn_Udp *udp, unsigned err, unsigned count,
     g_fired++;
 }
 
-static void cb_server_v4(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void cb_server_v4(void *ud, zn_Udp *udp, int err, unsigned count,
                          const char *addr, unsigned port) {
     (void)ud;
     asserteq(err, ZN_OK);
@@ -85,7 +87,7 @@ static void cb_server_v4(void *ud, zn_Udp *udp, unsigned err, unsigned count,
     zn_deludp(udp);
 }
 
-static void cb_client_v4(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void cb_client_v4(void *ud, zn_Udp *udp, int err, unsigned count,
                          const char *addr, unsigned port) {
     (void)ud;
     asserteq(err, ZN_OK);
@@ -98,7 +100,7 @@ static void cb_client_v4(void *ud, zn_Udp *udp, unsigned err, unsigned count,
 }
 
 /* re-arm after every datagram; the fifth one is the last */
-static void cb_server_multi(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void cb_server_multi(void *ud, zn_Udp *udp, int err, unsigned count,
                             const char *addr, unsigned port) {
     (void)ud;
     (void)addr;
@@ -123,23 +125,26 @@ TEST(udp_params) {
     char      buf[64];
 
     reset_recorder();
-    /* a string that is not an IP literal must not create an object */
-    assertok(zn_newudp(S, "not-an-ip", 0) == NULL);
+    /* zn_del*(NULL) is a no-op, so it needs no precondition */
+    zn_deludp(NULL);
     /* a NULL udp is rejected before the socket is touched */
     asserteq(zn_sendto(NULL, "x", 1, "127.0.0.1", 0), ZN_EPARAM);
 
-    u = zn_newudp(S, "127.0.0.1", 0);
+    u = zn_bind(S, "127.0.0.1", 0);
     assertok(u != NULL);
     assertok(zt_udp_port(u) != 0);
 
-    /* zero length is a parameter error in both directions */
+    /* zero length is a parameter error in both directions; a NULL buffer with
+     * a positive length is the same error, not a crash */
     asserteq(zn_sendto(u, "x", 0, "127.0.0.1", 0), ZN_EPARAM);
+    asserteq(zn_sendto(u, NULL, 1, "127.0.0.1", 0), ZN_EPARAM);
     /* a destination that does not parse is a parameter error, not a send */
     asserteq(zn_sendto(u, "x", 1, "not-an-ip", 0), ZN_EPARAM);
 
     asserteq(zn_recvfrom(NULL, buf, (unsigned)sizeof(buf), cb_count, NULL),
              ZN_EPARAM);
     asserteq(zn_recvfrom(u, buf, 0, cb_count, NULL), ZN_EPARAM);
+    asserteq(zn_recvfrom(u, NULL, 1, cb_count, NULL), ZN_EPARAM);
     asserteq(zn_recvfrom(u, buf, (unsigned)sizeof(buf), NULL, NULL), ZN_EPARAM);
 
     /* one in-flight recvfrom per socket */
@@ -154,6 +159,112 @@ TEST(udp_params) {
     zt_close(S);
 }
 
+/* ---- factory: parameters and zn_lasterror ---- */
+
+/* one successful bind: leaves ZN_OK in last_error, so the failure cases below
+ * cannot pass on a stale ZN_EPARAM from the previous one */
+static void udp_bind_ok(zn_State *S) {
+    zn_Udp *u = zn_bind(S, "127.0.0.1", 0);
+    assertok(u != NULL);
+    asserteq(zn_lasterror(S), ZN_OK);
+    assertok(zt_udp_port(u) != 0);
+    zn_deludp(u);
+}
+
+TEST(udp_bind_params) {
+    zn_State *S = zt_open();
+
+    /* no state can hold the reason, but the NULL state itself is rejected */
+    assertok(zn_bind(NULL, "127.0.0.1", 0) == NULL);
+    asserteq(zn_lasterror(NULL), ZN_EPARAM);
+
+    /* success reports ZN_OK and hands out a bound, OPEN object */
+    udp_bind_ok(S);
+
+    /* an absent address is a parameter error, not a crash in the parser */
+    assertok(zn_bind(S, NULL, 0) == NULL);
+    asserteq(zn_lasterror(S), ZN_EPARAM);
+
+    /* a string that is not an IP literal must not create an object */
+    udp_bind_ok(S);
+    assertok(zn_bind(S, "not-an-ip", 0) == NULL);
+    asserteq(zn_lasterror(S), ZN_EPARAM);
+
+    /* a port is 16-bit: 65536 cannot be encoded */
+    udp_bind_ok(S);
+    assertok(zn_bind(S, "127.0.0.1", 65536u) == NULL);
+    asserteq(zn_lasterror(S), ZN_EPARAM);
+
+    zt_close(S);
+}
+
+/* ---- factory: a bind conflict reports ZN_EBIND, not a dead object ---- */
+
+TEST(udp_bind_conflict) {
+    zn_State *S = zt_open();
+    zn_Udp   *a, *b, *retry;
+    unsigned  port;
+
+    a = zn_bind(S, "127.0.0.1", 0);
+    assertok(a != NULL);
+    port = zt_udp_port(a);
+    assertok(port != 0);
+
+    /* the address:port is already taken: NULL plus the reason, no object */
+    b = zn_bind(S, "127.0.0.1", port);
+    assertok(b == NULL);
+    asserteq(zn_lasterror(S), ZN_EBIND);
+
+    /* the failed bind released its slot: the factory still works */
+    retry = zn_bind(S, "127.0.0.1", 0);
+    assertok(retry != NULL);
+    asserteq(zn_lasterror(S), ZN_OK);
+    assertok(zt_udp_port(retry) != 0);
+
+    zn_deludp(a);
+    zn_deludp(retry);
+    zt_close(S);
+}
+
+/* ---- factory: repeated failures leak neither slots nor retains ---- */
+
+TEST(udp_bind_failures_do_not_leak) {
+    zn_State *S = zt_open();
+    zn_Udp   *busy, *u, *v;
+    unsigned  port;
+    int       i;
+
+    /* every failure path runs several times in a row; a slot left on the
+     * active list would still be linked after the live objects are deleted */
+    for (i = 0; i < 8; ++i) {
+        assertok(zn_bind(S, "not-an-ip", 0) == NULL);
+        assertok(zn_bind(S, "127.0.0.1", 65536u) == NULL);
+    }
+    asserteq(S->waitings, 0);
+    assertok(znL_empty(&S->active_udps));
+
+    busy = zn_bind(S, "127.0.0.1", 0);
+    assertok(busy != NULL);
+    port = zt_udp_port(busy);
+    assertok(port != 0);
+    for (i = 0; i < 8; ++i) {
+        assertok(zn_bind(S, "127.0.0.1", port) == NULL);
+        asserteq(zn_lasterror(S), ZN_EBIND);
+    }
+    asserteq(S->waitings, 0);
+
+    /* the pool still hands out objects after all those failures */
+    u = zn_bind(S, "127.0.0.1", 0);
+    v = zn_bind(S, "127.0.0.1", 0);
+    assertok(u != NULL && v != NULL && u != v);
+
+    zn_deludp(busy);
+    zn_deludp(u);
+    zn_deludp(v);
+    assertok(znL_empty(&S->active_udps));
+    zt_close(S);
+}
+
 /* ---- IPv4 round trip ---- */
 
 TEST(udp_send_recv_v4) {
@@ -161,8 +272,8 @@ TEST(udp_send_recv_v4) {
     zn_Udp   *srv, *cli;
 
     reset_recorder();
-    srv = zn_newudp(S, "127.0.0.1", 0);
-    cli = zn_newudp(S, "127.0.0.1", 0);
+    srv = zn_bind(S, "127.0.0.1", 0);
+    cli = zn_bind(S, "127.0.0.1", 0);
     assertok(srv != NULL && cli != NULL);
     g_server_port = zt_udp_port(srv);
     g_client_port = zt_udp_port(cli);
@@ -194,8 +305,8 @@ TEST(udp_multiple_datagrams) {
     int       i;
 
     reset_recorder();
-    srv = zn_newudp(S, "127.0.0.1", 0);
-    cli = zn_newudp(S, "127.0.0.1", 0);
+    srv = zn_bind(S, "127.0.0.1", 0);
+    cli = zn_bind(S, "127.0.0.1", 0);
     assertok(srv != NULL && cli != NULL);
     srv_port = zt_udp_port(srv);
     assertok(srv_port != 0);
@@ -216,7 +327,7 @@ TEST(udp_multiple_datagrams) {
 
 /* ---- connected UDP: zn_connectudp + zn_sendto(..., NULL, 0) ---- */
 
-static void cb_conn_server(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void cb_conn_server(void *ud, zn_Udp *udp, int err, unsigned count,
                            const char *addr, unsigned port) {
     (void)ud;
     asserteq(err, ZN_OK);
@@ -228,7 +339,7 @@ static void cb_conn_server(void *ud, zn_Udp *udp, unsigned err, unsigned count,
     zn_deludp(udp);
 }
 
-static void cb_conn_client(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void cb_conn_client(void *ud, zn_Udp *udp, int err, unsigned count,
                            const char *addr, unsigned port) {
     (void)ud;
     (void)addr;
@@ -245,8 +356,8 @@ TEST(udp_connect_sendto_null) {
     zn_Udp   *srv, *cli;
 
     reset_recorder();
-    srv = zn_newudp(S, "127.0.0.1", 0);
-    cli = zn_newudp(S, "127.0.0.1", 0);
+    srv = zn_bind(S, "127.0.0.1", 0);
+    cli = zn_bind(S, "127.0.0.1", 0);
     assertok(srv != NULL && cli != NULL);
     g_server_port = zt_udp_port(srv);
     g_client_port = zt_udp_port(cli);
@@ -270,8 +381,8 @@ TEST(udp_connect_sendto_null) {
 
 /* ---- repeat zn_connectudp changes the default peer ---- */
 
-static void cb_repeat_server(void *ud, zn_Udp *udp, unsigned err,
-                             unsigned count, const char *addr, unsigned port) {
+static void cb_repeat_server(void *ud, zn_Udp *udp, int err, unsigned count,
+                             const char *addr, unsigned port) {
     (void)ud;
     (void)addr;
     (void)port;
@@ -288,9 +399,9 @@ TEST(udp_connect_repeat) {
     unsigned  a_port, b_port;
 
     reset_recorder();
-    a = zn_newudp(S, "127.0.0.1", 0);
-    b = zn_newudp(S, "127.0.0.1", 0);
-    cli = zn_newudp(S, "127.0.0.1", 0);
+    a = zn_bind(S, "127.0.0.1", 0);
+    b = zn_bind(S, "127.0.0.1", 0);
+    cli = zn_bind(S, "127.0.0.1", 0);
     assertok(a != NULL && b != NULL && cli != NULL);
     a_port = zt_udp_port(a);
     b_port = zt_udp_port(b);
@@ -322,8 +433,8 @@ TEST(udp_connect_repeat) {
 
 TEST(udp_connect_errors) {
     zn_State *S = zt_open();
-    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
-    zn_Udp   *peer = zn_newudp(S, "127.0.0.1", 0);
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
+    zn_Udp   *peer = zn_bind(S, "127.0.0.1", 0);
     unsigned  port;
 
     assertok(u != NULL && peer != NULL);
@@ -343,10 +454,6 @@ TEST(udp_connect_errors) {
     assertok(zn_connectudp(u, "127.0.0.1", port) == ZN_OK);
     asserteq(zn_sendto(u, "x", 1, NULL, 0), ZN_OK);
 
-    zn_closeudp(u);
-    asserteq(zn_connectudp(u, "127.0.0.1", port), ZN_ESTATE);
-    asserteq(zn_sendto(u, "x", 1, NULL, 0), ZN_ESTATE);
-
     zn_deludp(u);
     zn_deludp(peer);
     zt_close(S);
@@ -354,8 +461,8 @@ TEST(udp_connect_errors) {
 
 /* ---- connect while a recvfrom is armed ---- */
 
-static void cb_pending_client(void *ud, zn_Udp *udp, unsigned err,
-                              unsigned count, const char *addr, unsigned port) {
+static void cb_pending_client(void *ud, zn_Udp *udp, int err, unsigned count,
+                              const char *addr, unsigned port) {
     (void)ud;
     (void)addr;
     asserteq(err, ZN_OK);
@@ -371,8 +478,8 @@ TEST(udp_connect_pending_recv) {
     zn_Udp   *srv, *cli;
 
     reset_recorder();
-    srv = zn_newudp(S, "127.0.0.1", 0);
-    cli = zn_newudp(S, "127.0.0.1", 0);
+    srv = zn_bind(S, "127.0.0.1", 0);
+    cli = zn_bind(S, "127.0.0.1", 0);
     assertok(srv != NULL && cli != NULL);
     g_server_port = zt_udp_port(srv);
     g_client_port = zt_udp_port(cli);
@@ -391,30 +498,42 @@ TEST(udp_connect_pending_recv) {
     zt_close(S);
 }
 
-/* ---- close with a pending recvfrom ---- */
+/* ---- del with a pending recvfrom ---- */
 
-TEST(udp_close_pending_recv) {
+TEST(udp_del_pending_recv) {
     zn_State *S = zt_open();
-    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
+    zn_Udp   *a, *b;
     zt_Loop   L;
 
     reset_recorder();
     assertok(u != NULL);
     assertok(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), cb_count, NULL)
              == ZN_OK);
+    asserteq(S->waitings, 1);
 
-    /* close reports ZN_ERROR only when the syscall fails; the cancellation
-     * of the pending recvfrom is what this test is about, so the return
-     * value is not asserted here */
-    zn_closeudp(u);
+    /* del is the only teardown now: it closes the fd, cancels the armed
+     * recvfrom (releasing its retain) and, with nothing left armed, reclaims
+     * the slot */
     zn_deludp(u);
 
-    /* nothing may fire after close; the tick timer only bounds each poll */
+    /* nothing may fire after del; the tick timer only bounds each poll */
     zt_begin(&L, S, 1000);
     zt_wait(&L, 60);
     zt_end(&L);
 
     asserteq(g_fired, 0);
+    asserteq(S->waitings, 0);
+    assertok(znL_empty(&S->active_udps));
+
+    /* the slot was reclaimed exactly once: a double reclaim would put it on
+     * the free list twice and hand the same slot out to both factories */
+    a = zn_bind(S, "127.0.0.1", 0);
+    b = zn_bind(S, "127.0.0.1", 0);
+    assertok(a != NULL && b != NULL && a != b);
+    zn_deludp(a);
+    zn_deludp(b);
+    assertok(znL_empty(&S->active_udps));
     zt_close(S);
 }
 
@@ -428,8 +547,8 @@ TEST(udp_sendto_max_payload) {
 
     reset_recorder();
     memset(payload, 'x', sizeof(payload));
-    srv = zn_newudp(S, "127.0.0.1", 0);
-    cli = zn_newudp(S, "127.0.0.1", 0);
+    srv = zn_bind(S, "127.0.0.1", 0);
+    cli = zn_bind(S, "127.0.0.1", 0);
     assertok(srv != NULL && cli != NULL);
     srv_port = zt_udp_port(srv);
     assertok(srv_port != 0);
@@ -464,7 +583,7 @@ TEST(udp_sendto_max_payload) {
  * The test now pins a peer address of exactly "::1" and the client's port,
  * on every backend. */
 
-static void cb_server_v6(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void cb_server_v6(void *ud, zn_Udp *udp, int err, unsigned count,
                          const char *addr, unsigned port) {
     (void)ud;
     asserteq(err, ZN_OK);
@@ -477,7 +596,7 @@ static void cb_server_v6(void *ud, zn_Udp *udp, unsigned err, unsigned count,
     zn_deludp(udp);
 }
 
-static void cb_client_v6(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void cb_client_v6(void *ud, zn_Udp *udp, int err, unsigned count,
                          const char *addr, unsigned port) {
     (void)ud;
     asserteq(err, ZN_OK);
@@ -494,15 +613,15 @@ TEST(udp_ipv6_loopback) {
     zn_Udp   *srv, *cli;
 
     reset_recorder();
-    srv = zn_newudp(S, "::1", 0);
+    srv = zn_bind(S, "::1", 0);
     if (srv == NULL) {
-        test_skip("host has no IPv6 loopback: zn_newudp(\"::1\") failed");
+        test_skip("host has no IPv6 loopback: zn_bind(\"::1\") failed");
         zt_close(S);
         return;
     }
-    cli = zn_newudp(S, "::1", 0);
+    cli = zn_bind(S, "::1", 0);
     if (cli == NULL) {
-        test_skip("host has no IPv6 loopback: second zn_newudp(\"::1\")");
+        test_skip("host has no IPv6 loopback: second zn_bind(\"::1\")");
         zn_deludp(srv);
         zt_close(S);
         return;
@@ -525,74 +644,6 @@ TEST(udp_ipv6_loopback) {
     zt_close(S);
 }
 
-/* A second UDP socket cannot bind an address:port that is already taken;
- * zn_newudp() must report EBIND by returning NULL (znB_initudp failure). */
-TEST(udp_bind_conflict) {
-    zn_State *S = zt_open();
-    zn_Udp   *a = zn_newudp(S, "127.0.0.1", 0);
-    zn_Udp   *b;
-    unsigned  port;
-
-    assertok(a != NULL);
-    port = zt_udp_port(a);
-    assertok(port != 0);
-    b = zn_newudp(S, "127.0.0.1", port);
-    assertok(b == NULL);
-    zn_deludp(a);
-    zt_close(S);
-}
-
-/* ---- L3: close invalidates udp->socket and is idempotent ----
- * zn_closeudp() (public layer) refuses to enter the backend once
- * the fd is gone; each backend still performs its own state transition after
- * the OS close.  A second zn_closeudp(), and zn_deludp() right after the
- * first, must not close a descriptor number the process may have reused.
- * The same invalidation is what makes zn_sendto()'s ZN_ESTATE guard work
- * (see udp_sendto_after_close).  The unrelated-fd half is
- * udp_close_reused_fd, which needs open() and is POSIX only. */
-
-TEST(udp_double_close) {
-    zn_State *S = zt_open();
-    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
-
-    assertok(u != NULL);
-    assertok(u->socket != ZN_INVALID_SOCKET);
-
-    /* close may report ZN_ERROR on a real syscall failure, so only the
-     * state change is asserted here */
-    zn_closeudp(u);
-    asserteq(u->socket, ZN_INVALID_SOCKET);
-
-    /* close on an already closed udp is a no-op that reports success */
-    asserteq(zn_closeudp(u), ZN_OK);
-
-    /* nothing is left to close, so zn_deludp must not touch any fd */
-    zn_deludp(u);
-    zt_close(S);
-}
-
-/* ---- L3: a closed udp must be unusable for sending ----
- * zn_sendto() checks `udp->socket == ZN_INVALID_SOCKET` (ZN_ESTATE); close
- * now invalidates the field, so the dead descriptor is never used. */
-
-TEST(udp_sendto_after_close) {
-    zn_State *S = zt_open();
-    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
-    zn_Udp   *peer = zn_newudp(S, "127.0.0.1", 0);
-    unsigned  peer_port;
-
-    assertok(u != NULL && peer != NULL);
-    peer_port = zt_udp_port(peer);
-    assertok(peer_port != 0);
-
-    zn_closeudp(u);
-    asserteq(zn_sendto(u, "hello", 5, "127.0.0.1", peer_port), ZN_ESTATE);
-
-    zn_deludp(u);
-    zn_deludp(peer);
-    zt_close(S);
-}
-
 /* ---- B3: a failed sendto must not come back as ZN_OK ----
  * The socket is bound to IPv4, so sending to an IPv6 address fails inside
  * sendto() (EINVAL on macOS, EAFNOSUPPORT on Linux, WSAEAFNOSUPPORT on
@@ -600,7 +651,7 @@ TEST(udp_sendto_after_close) {
 
 TEST(udp_sendto_error) {
     zn_State *S = zt_open();
-    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
     int       ret;
 
     assertok(u != NULL);
@@ -612,43 +663,6 @@ TEST(udp_sendto_error) {
     zt_close(S);
 }
 
-/* ---- L3 (POSIX): zn_deludp must not close a reused fd ----
- * After zn_closeudp() the descriptor number is free; the process reuses it
- * at once.  zn_deludp() goes through zn_closeudp() again, which sees
- * ZN_INVALID_SOCKET and leaves the new owner alone. */
-
-#ifndef _WIN32
-
-TEST(udp_close_reused_fd) {
-    zn_State *S = zt_open();
-    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
-    int       oldfd, newfd;
-
-    assertok(u != NULL);
-    oldfd = u->socket;
-    assertok(oldfd != ZN_INVALID_SOCKET);
-
-    zn_closeudp(u);
-    /* the lowest free descriptor is the one just closed */
-    newfd = open("/dev/null", O_RDONLY);
-    assertok(newfd >= 0);
-    if (newfd != oldfd) {
-        test_skip("fd %d was not reused (open returned %d)", oldfd, newfd);
-        close(newfd);
-        zn_deludp(u);
-        zt_close(S);
-        return;
-    }
-
-    zn_deludp(u); /* must leave the reused descriptor alone */
-    assertok(fcntl(newfd, F_GETFD) != -1);
-
-    close(newfd);
-    zt_close(S);
-}
-
-#endif /* _WIN32 */
-
 /* ---- B7 (POSIX): a UDP socket must not block the event loop ----
  * Both POSIX backends only poll for readiness; a spurious readiness followed
  * by a blocking recvfrom() would stall every other socket in the state. */
@@ -657,7 +671,7 @@ TEST(udp_close_reused_fd) {
 
 TEST(udp_socket_is_nonblocking) {
     zn_State *S = zt_open();
-    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
     int       flags;
 
     assertok(u != NULL);
@@ -684,7 +698,7 @@ typedef struct sp_ctx {
     int err;
 } sp_ctx;
 
-static void sp_on_recvfrom(void *ud, zn_Udp *udp, unsigned err, unsigned count,
+static void sp_on_recvfrom(void *ud, zn_Udp *udp, int err, unsigned count,
                            const char *addr, unsigned port) {
     sp_ctx *c = (sp_ctx *)ud;
     (void)udp;
@@ -713,7 +727,7 @@ static int sp_udp_socket(unsigned port) {
 
 TEST(udp_recvfrom_spurious_ready) {
     zn_State *S = zt_open();
-    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
     sp_ctx    c;
     zt_Loop   L;
     unsigned  port;
@@ -753,7 +767,7 @@ TEST(udp_recvfrom_spurious_ready) {
  * this pins the shape the accept side now shares). */
 TEST(udp_recvfrom_error_event) {
     zn_State *S = zt_open();
-    zn_Udp   *u = zn_newudp(S, "127.0.0.1", 0);
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
     sp_ctx    c;
     zt_Loop   L;
     unsigned  port;

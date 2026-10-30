@@ -22,9 +22,10 @@
  * For an IOCP build the generator must also be given -D_WIN32 (the current
  * justfile only drives POSIX), because Windows has no result queue either.
  *
- * The dummy sockets below are real fds so the ZN_ERROR path in znR_dispatch()
- * has something to close.  The ZN_OK path never touches the socket and never
- * reads the send buffer, so a shared static buffer is enough.
+ * The sockets below come from a real loopback connect (zn_connect on a
+ * throwaway listener), so the ZN_ERROR path in znR_dispatch() has something to
+ * close.  The ZN_OK path never touches the socket and never reads the send
+ * buffer, so a shared static buffer is enough.
  */
 
 #include "ztest.h"
@@ -52,7 +53,7 @@ static void rq_reset(void) {
     g_last_tcp = NULL;
 }
 
-static void rq_on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
+static void rq_on_send(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     (void)ud;
     g_calls++;
     g_last_tcp = tcp;
@@ -60,22 +61,59 @@ static void rq_on_send(void *ud, zn_Tcp *tcp, unsigned err, unsigned count) {
     g_last_count = count;
 }
 
-/* one tcp owning a real but never used socket, with a send operation ready to
- * complete through the result queue */
-static zn_Tcp *rq_new(zn_State *S, unsigned len) {
-    zn_Tcp *tcp = zn_newtcp(S);
-    int     fd;
-    if (tcp == NULL) return NULL;
-    fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
+typedef struct rq_conn {
+    zn_Tcp *tcp;
+    int     err;
+    int     done;
+} rq_conn;
+
+static void rq_on_connect(void *ud, zn_Tcp *tcp, int err) {
+    rq_conn *c = (rq_conn *)ud;
+    c->tcp = tcp;
+    c->err = err;
+    c->done = 1;
+}
+
+/* One connected tcp with no armed operation and no retain.  The factory arms
+ * the connect itself; once its callback has run the object is CONNECTED, so
+ * the only retain a test sees is the one the queued result takes.  The
+ * listener is a throwaway: it is never armed, and closing it after the
+ * handshake resets the peer, which this suite never notices because it drives
+ * the result queue by hand instead of send()/recv(). */
+static zn_Tcp *rq_new(zn_State *S) {
+    zn_Accept *listener;
+    zn_Tcp    *tcp;
+    zt_Loop    L;
+    rq_conn    c;
+    unsigned   port;
+
+    listener = zn_listen(S, "127.0.0.1", 0);
+    if (listener == NULL) return NULL;
+    port = zt_accept_port(listener);
+    c.tcp = NULL, c.err = ZN_ERROR, c.done = 0;
+    tcp = port != 0 ? zn_connect(S, "127.0.0.1", port, rq_on_connect, &c)
+                    : NULL;
+    if (tcp == NULL) {
+        zn_delaccept(listener);
+        return NULL;
+    }
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.done);
+    zt_end(&L);
+    zn_delaccept(listener);
+    assertok(c.tcp == tcp);
+    if (c.err != ZN_OK) {
         zn_deltcp(tcp);
         return NULL;
     }
-    tcp->socket = fd;
+    return tcp;
+}
+
+/* arm the send the suite completes by hand through znR_add */
+static void rq_arm(zn_Tcp *tcp, unsigned len) {
     tcp->send_handler = rq_on_send;
     tcp->send_buffer.buf = g_payload;
     tcp->send_buffer.len = len;
-    return tcp;
 }
 
 /* queue one completion the way the backend does; the retain is the operation
@@ -93,8 +131,7 @@ static int rq_count_queued(zn_State *S) {
 }
 
 /* queue the next result from inside a handler: one result per iteration */
-static void rq_on_send_chain(void *ud, zn_Tcp *tcp, unsigned err,
-                             unsigned count) {
+static void rq_on_send_chain(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     (void)ud;
     (void)tcp;
     (void)err;
@@ -123,8 +160,9 @@ TEST(rq_one) {
     zn_Tcp   *tcp;
 
     rq_reset();
-    tcp = rq_new(S, 3);
+    tcp = rq_new(S);
     assertok(tcp != NULL);
+    rq_arm(tcp, 3);
     rq_queue(S, tcp, ZN_OK);
     asserteq(S->waitings, 1);
 
@@ -156,13 +194,18 @@ TEST(rq_batch_limit) {
     int       i, r, queued;
 
     rq_reset();
+    /* create every object first: rq_new() pumps the loop, which would drain a
+     * result queued before the batch assertion below */
     for (i = 0; i < RQ_BATCH; ++i) {
-        tcp[i] = rq_new(S, 2);
+        tcp[i] = rq_new(S);
         if (tcp[i] == NULL) {
-            test_skip("socket() failed after %d dummy sockets", i);
-            zt_close(S); /* zn_close drains the queued results */
+            test_skip("loopback connect failed after %d sockets", i);
+            zt_close(S); /* zn_close drains any queued results */
             return;
         }
+    }
+    for (i = 0; i < RQ_BATCH; ++i) {
+        rq_arm(tcp[i], 2);
         rq_queue(S, tcp[i], ZN_OK);
     }
     asserteq(S->waitings, RQ_BATCH);
@@ -188,13 +231,18 @@ TEST(rq_process_all) {
     int       i;
 
     rq_reset();
+    /* create every object first: rq_new() pumps the loop, which would drain a
+     * result queued before the batch assertion below */
     for (i = 0; i < RQ_BATCH; ++i) {
-        tcp[i] = rq_new(S, 2);
+        tcp[i] = rq_new(S);
         if (tcp[i] == NULL) {
-            test_skip("socket() failed after %d dummy sockets", i);
+            test_skip("loopback connect failed after %d sockets", i);
             zt_close(S);
             return;
         }
+    }
+    for (i = 0; i < RQ_BATCH; ++i) {
+        rq_arm(tcp[i], 2);
         rq_queue(S, tcp[i], ZN_OK);
     }
     asserteq(S->waitings, RQ_BATCH);
@@ -215,8 +263,9 @@ TEST(rq_err_result) {
     zn_Tcp   *tcp;
 
     rq_reset();
-    tcp = rq_new(S, 3);
+    tcp = rq_new(S);
     assertok(tcp != NULL);
+    rq_arm(tcp, 3);
     rq_queue(S, tcp, ZN_ERROR);
 
     asserteq(znR_process(S, ZN_MAX_RESULT_LOOPS), 0);
@@ -239,8 +288,9 @@ TEST(rq_close_with_queued) {
     zn_Tcp   *tcp;
 
     rq_reset();
-    tcp = rq_new(S, 3);
+    tcp = rq_new(S);
     assertok(tcp != NULL);
+    rq_arm(tcp, 3);
     rq_queue(S, tcp, ZN_OK);
 
     zn_close(S);
@@ -253,13 +303,18 @@ TEST(rq_close_with_many_queued) {
     int       i;
 
     rq_reset();
+    /* create every object first: rq_new() pumps the loop, which would drain a
+     * result queued before the batch assertion below */
     for (i = 0; i < RQ_BATCH; ++i) {
-        tcp[i] = rq_new(S, 2);
+        tcp[i] = rq_new(S);
         if (tcp[i] == NULL) {
-            test_skip("socket() failed after %d dummy sockets", i);
+            test_skip("loopback connect failed after %d sockets", i);
             zn_close(S);
             return;
         }
+    }
+    for (i = 0; i < RQ_BATCH; ++i) {
+        rq_arm(tcp[i], 2);
         rq_queue(S, tcp[i], ZN_OK);
     }
     asserteq(S->waitings, RQ_BATCH);
@@ -292,14 +347,17 @@ TEST(rq_poll_returns_one_when_backlog) {
     g_chain_n = RQ_BATCH;
     g_chain_i = 0;
     for (i = 0; i < RQ_BATCH; ++i) {
-        tcp[i] = rq_new(S, 1);
+        tcp[i] = rq_new(S);
         if (tcp[i] == NULL) {
-            test_skip("socket() failed after %d dummy sockets", i);
+            test_skip("loopback connect failed after %d sockets", i);
             zt_close(S);
             return;
         }
-        tcp[i]->send_handler = rq_on_send_chain;
         g_chain[i] = tcp[i];
+    }
+    for (i = 0; i < RQ_BATCH; ++i) {
+        rq_arm(tcp[i], 1);
+        tcp[i]->send_handler = rq_on_send_chain;
     }
     rq_queue(S, tcp[0], ZN_OK);
     asserteq(S->waitings, 1);
