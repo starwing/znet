@@ -174,8 +174,10 @@ lua-run script=TEST_LUA:
         Darwin) shlib='-bundle -undefined dynamic_lookup' ;;
         *)      shlib='-shared' ;;
     esac
-    {{CC}} -std=c99 -O2 -fPIC $shlib -pthread $inc -I'{{ROOT}}' \
-        -o "$out/znet.so" '{{ROOT}}/zn_lua.c'
+    # -D_XOPEN_SOURCE=600 as in BASE: under -std=c99 glibc hides addrinfo,
+    # which zn_addrinfo.h uses.  macOS exposes it without the macro.
+    {{CC}} -std=c99 -D_XOPEN_SOURCE=600 -O2 -fPIC $shlib -pthread $inc \
+        -I'{{ROOT}}' -o "$out/znet.so" '{{ROOT}}/zn_lua.c'
     # some Lua builds only honour the versioned variable
     LUA_CPATH="$out/?.so" \
     LUA_CPATH_5_5="$out/?.so" LUA_CPATH_5_4="$out/?.so" \

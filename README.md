@@ -337,9 +337,9 @@ wraps `ZN_RUN_LOOP` and returns when no operation or timer is left, while
 `zn_buffer.h`. Lua 5.3 or newer is required.
 
 ```sh
-# Linux/BSD
-cc -std=c99 -O2 -fPIC -shared -pthread $(pkg-config --cflags lua5.4) -I. \
-   -o znet.so zn_lua.c
+# Linux/BSD (the macro keeps addrinfo visible under -std=c99 on glibc)
+cc -std=c99 -D_XOPEN_SOURCE=600 -O2 -fPIC -shared -pthread \
+   $(pkg-config --cflags lua5.4) -I. -o znet.so zn_lua.c
 # macOS
 cc -std=c99 -O2 -fPIC -bundle -undefined dynamic_lookup -pthread \
    $(pkg-config --cflags lua5.4) -I. -o znet.so zn_lua.c

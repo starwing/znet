@@ -309,9 +309,9 @@ handler 的形式是 `void h(void *ud, int err, unsigned count, zn_PeerInfo *pee
 Lua 5.3 及以上。
 
 ```sh
-# Linux/BSD
-cc -std=c99 -O2 -fPIC -shared -pthread $(pkg-config --cflags lua5.4) -I. \
-   -o znet.so zn_lua.c
+# Linux/BSD（glibc 下 -std=c99 会隐藏 addrinfo，靠这个宏打开）
+cc -std=c99 -D_XOPEN_SOURCE=600 -O2 -fPIC -shared -pthread \
+   $(pkg-config --cflags lua5.4) -I. -o znet.so zn_lua.c
 # macOS
 cc -std=c99 -O2 -fPIC -bundle -undefined dynamic_lookup -pthread \
    $(pkg-config --cflags lua5.4) -I. -o znet.so zn_lua.c
