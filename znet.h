@@ -1057,14 +1057,14 @@ static int znB_connectudp(zn_Udp *udp, zn_SockAddr *addr) {
 
 static int znB_sendto(zn_Udp *udp, const char *buff, unsigned len,
                       zn_SockAddr *addr) {
-    int r;
+    int r, s = udp->socket;
     if (addr == NULL) {
-        r = send(udp->socket, buff, len, ZN_NOSIGNAL);
+        znP_retryintr(r, (int)send(s, buff, len, ZN_NOSIGNAL));
         if (r >= 0) return ZN_OK;
         if (errno == EDESTADDRREQ || errno == ENOTCONN) return ZN_ESTATE;
         return znP_error(errno);
     }
-    r = sendto(udp->socket, buff, len, 0, &addr->addr, znP_size(addr));
+    znP_retryintr(r, (int)sendto(s, buff, len, 0, &addr->addr, znP_size(addr)));
     return r < 0 ? znP_error(errno) : ZN_OK;
 }
 
@@ -1534,7 +1534,7 @@ static int znB_onsend(zn_Tcp *tcp, int err) {
         return znS_onsend(tcp, ZN_ERROR, 0);
     }
     if ((bytes = send(tcp->socket, b.buf, b.len, ZN_NOSIGNAL)) < 0) {
-        syserr = errno; /* no room yet: park like the reactive backends */
+        syserr = errno; /* EAGAIN: no room; EINTR: LT re-reports */
         if (syserr == EINTR || syserr == EAGAIN || syserr == EWOULDBLOCK)
             return ZN_OK;
     }
@@ -1550,7 +1550,7 @@ static int znB_onrecv(zn_Tcp *tcp, int err) {
     if (err)
         return znF_unregread(tcp->S, tcp->socket), znS_onrecv(tcp, ZN_ERROR, 0);
     if ((bytes = recv(tcp->socket, b.buf, b.len, 0)) < 0) {
-        syserr = errno; /* no data yet: park like the reactive backends */
+        syserr = errno; /* EAGAIN: no data; EINTR: LT re-reports */
         if (syserr == EINTR || syserr == EAGAIN || syserr == EWOULDBLOCK)
             return ZN_OK;
     }
@@ -1652,7 +1652,7 @@ static int znB_onrecvfrom(zn_Udp *udp, int err) {
     memset(&raddr, 0, size = sizeof(raddr));
     bytes = recvfrom(udp->socket, b.buf, b.len, 0, &raddr.addr, &size);
     if (bytes < 0) {
-        if ((syserr = errno) == EINTR) return ZN_OK; /* next retries */
+        if ((syserr = errno) == EINTR) return ZN_OK; /* LT re-reports */
         again = (syserr == EAGAIN || syserr == EWOULDBLOCK);
         znF_unregread(udp->S, udp->socket);
         return znS_onudp(udp, again ? ZN_ERROR : znP_error(syserr), NULL, 0);
@@ -2032,8 +2032,7 @@ static int znB_poll(zn_State *S, zn_Time timeout) {
     /* only a blocking wait is skipped: CHECK (timeout 0) still polls */
     if (had_results && timeout != 0) return 0;
     r = epoll_wait(S->epoll, S->events, ZN_MAX_EVENTS, ms);
-    if (r < 0 && errno == EINTR) r = 0; /* interrupted */
-    if (r < 0) return 0;                /* error out */
+    if (r < 0) return 0; /* EINTR or error: nothing was reported */
     S->nevents = (unsigned)r;
     for (i = 0; i < r; ++i) znB_dispatch(S, &S->events[i]);
     S->nevents = 0;
@@ -2134,7 +2133,7 @@ static int znB_poll(zn_State *S, zn_Time timeout) {
     /* only a blocking wait is skipped: CHECK (timeout 0) still polls */
     if (had_results && timeout != 0) return 0;
     r = kevent(S->kqueue, NULL, 0, S->events, ZN_MAX_EVENTS, pms);
-    if (r < 0) return 0; /* error out */
+    if (r < 0) return 0; /* EINTR or error: nothing was reported */
     S->nevents = (unsigned)r;
     for (i = 0; i < r; ++i) znB_dispatch(S, &S->events[i]);
     S->nevents = 0;
