@@ -76,7 +76,7 @@
 ## 4. 文档、验证与 CI
 
 - [ ] **M5**（P3）文档与示例收尾
-  更新 `README.txt` 的约束矩阵；把本机的 `notes/gate.sh`（gitignored）落成仓库里的
+  更新 `README.md` / `README.zh.md` 的约束矩阵；把本机的 `notes/gate.sh`（gitignored）落成仓库里的
   `scripts/check.sh` 或等价入口，写明本机验证范围。
   `test.c` 已删除、`just smoke` 只跑 `example.c`（见 `notes/changes.md` §1.2），不用再做。
   另有格式收尾：`bench/zn_bufferpool.h` 在 HEAD 上就不过 `clang-format --dry-run --Werror`
@@ -144,7 +144,7 @@
 
 - [ ] **D1** `zn_buffer` 的默认 packet handler：默认丢弃（现状）还是默认收包？
   推荐默认收包——现在 `zn_recvfinish` 的默认行为是“静默丢数据”，太容易踩。
-  改动会动默认值 + `README.txt` + 一个回归用例。
+  改动会动默认值 + `README.md` / `README.zh.md` + 一个回归用例。
 
 - [ ] **D3** 签名 <80 的计量口径：整行含返回类型和 `ZN_API`（现状，严格执行），
   还是只约束“函数名 + 参数列表”？后者能让部分函数少改，但 `zn_connect` 仍要重构。
