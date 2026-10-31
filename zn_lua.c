@@ -577,6 +577,7 @@ static int Ludp_new(lua_State *L) {
     obj->L = L;
     obj->onrecvfrom_ref = LUA_NOREF;
     obj->ref = LUA_NOREF;
+    zn_initbuffer(&obj->recv, (zn_BufferCache *)zn_getuserdata(S));
     if (obj->udp == NULL) return lzn_pushresult(L, zn_lasterror(S));
     return 1;
 }
@@ -585,6 +586,7 @@ static int Ludp_delete(lua_State *L) {
     lzn_Udp *obj = (lzn_Udp *)lbind_test(L, 1, &lbT_Udp);
     if (obj && obj->udp != NULL) {
         zn_deludp(obj->udp);
+        zn_resetbuffer(&obj->recv);
         lbind_delete(L, 1);
         lzn_unref(L, &obj->onrecvfrom_ref);
         lzn_unref(L, &obj->ref);
