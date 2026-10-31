@@ -162,8 +162,12 @@ cc -std=c99 -O2 demo.c -pthread -o demo
 printf 'hello\n' | nc 127.0.0.1 12345
 ```
 
-[`example.c`](example.c) is the full demo: two TCP clients, a UDP server and client, a timer,
-and the error paths in between. Run it with `just smoke`.
+[`examples/example.c`](examples/example.c) is the full C demo: two TCP clients, a UDP
+server and client, a timer, and the error paths in between. Run it with `just smoke`.
+[`examples/example.cpp`](examples/example.cpp) is the same demo against the C++ wrapper,
+written with C++11 lambdas (`just example-cpp`);
+[`examples/example.lua`](examples/example.lua) is the Lua version (`just example-lua`).
+`just examples` runs all three.
 
 ## C API
 
@@ -319,9 +323,13 @@ defined in the header next to the structs.
 
 A thin `std::shared_ptr` wrapper in namespace `zsummer::network`, no extra
 logic. Each handler is moved out and consumed by its operation, so install a new
-`std::function` to continue. `TcpAccept::doAccept` stores one `TcpSocket` per
-accept object, so replace `client` between accepts. The C test suite targets
-`znet.h`; the wrapper is not covered by it.
+`std::function` to continue. `TcpAccept::doAccept` creates one `TcpSocketPtr` per
+accepted connection and passes it to the handler; an accept error passes an empty
+pointer, and dropping the pointer closes the socket. `EventLoop::runLoop()`
+wraps `ZN_RUN_LOOP` and returns when no operation or timer is left, while
+`runOnce()` polls once. The C test suite targets `znet.h`;
+[`examples/example.cpp`](examples/example.cpp) covers the wrapper
+(`just example-cpp`).
 
 ## Lua binding
 
@@ -337,7 +345,8 @@ cc -std=c99 -O2 -fPIC -bundle -undefined dynamic_lookup -pthread \
    $(pkg-config --cflags lua5.4) -I. -o znet.so zn_lua.c
 ```
 
-`just test-lua` builds it and runs the loopback smoke test in `tests/test.lua`.
+`just test-lua` builds it and runs the loopback smoke test in `tests/test.lua`;
+`just example-lua` runs the standalone demo in `examples/example.lua`.
 Put `znet.so` where `package.cpath` finds it, then:
 
 ```lua
@@ -398,7 +407,10 @@ on Windows without `just`.
 | --- | --- |
 | `just check` | Full suite on the native backend and on select, with ASan/UBSan. |
 | `just test tcp` | One suite on the native backend. |
-| `just smoke` | Build and run `example.c`. |
+| `just smoke` | Build and run `examples/example.c`. |
+| `just example-cpp` | Build and run `examples/example.cpp` (C++11 wrapper). |
+| `just example-lua` | Build the Lua module and run `examples/example.lua`. |
+| `just examples` | All three example programs. |
 | `just check-c89` / `just check-cpp03` | Strict C89 / C++03 compile checks. |
 | `just test-lua` | Build the Lua module and run `tests/test.lua`. |
 | `just cov` | lcov coverage report. |
@@ -426,7 +438,7 @@ Windows x64 (IOCP, VS2022, `cl /W4 /WX`). [tests/README.md](tests/README.md) doc
 | `zn_task.h` | Optional fixed-size thread pool. |
 | `zn_addrinfo.h` | Optional asynchronous DNS. |
 | `zn_lua.c`, `lbind.h` | Lua binding and the vendored binding helpers. |
-| `example.c` | End-to-end TCP/UDP/timer example. |
+| `examples/` | The TCP/UDP/timer demo in C, C++ (`znet.hpp`) and Lua. |
 | `tests/`, `bench/` | Regression suite and benchmarks. |
 | `misc/` | Logo and helper scripts. |
 

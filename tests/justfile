@@ -13,9 +13,10 @@
 
 set windows-shell := ["cmd.exe", "/C"]
 
-ROOT  := source_directory() / ".."
-SRC   := source_directory()
-BUILD := source_directory() / "build"
+ROOT     := source_directory() / ".."
+SRC      := source_directory()
+BUILD    := source_directory() / "build"
+TEST_LUA := SRC / "test.lua"
 
 CC  := env("CC", "cc")
 CXX := env("CXX", "c++")
@@ -158,12 +159,12 @@ test-select name *args='':
     {{CC}} {{BASE}} {{SAN}} -DZN_USE_SELECT -o "$out/$suite" "{{SRC}}/$suite.c"
     "$out/$suite" {{args}}
 
-# Lua binding smoke test: build znet.so from zn_lua.c, then run tests/test.lua.
-# Needs Lua >= 5.3 and its headers (pkg-config name lua5.5/5.4/5.3/lua).  It is
-# intentionally not part of `check`: the binding is an optional component and
-# the recipe links against the host's Lua ABI.
+# Build znet.so from zn_lua.c on a private build dir, then run `script`.
+# Needs Lua >= 5.3 and its headers (pkg-config name lua5.5/5.4/5.3/lua).  Kept
+# out of `check`: the binding is optional and links against the host's Lua ABI.
 [unix]
-test-lua:
+[private]
+lua-run script=TEST_LUA:
     #!/usr/bin/env bash
     set -euo pipefail
     out='{{BUILD}}/lua'
@@ -179,11 +180,16 @@ test-lua:
     LUA_CPATH="$out/?.so" \
     LUA_CPATH_5_5="$out/?.so" LUA_CPATH_5_4="$out/?.so" \
     LUA_CPATH_5_3="$out/?.so" \
-        {{LUA}} '{{SRC}}/test.lua'
+        {{LUA}} '{{script}}'
 
-# strict Clean C compile check (no run).  Covers the suites, example.c and the
-# optional headers that carry their own implementation.  zn_lua.c is exempt
-# (C4): it must include Lua headers, which use long long, so its build is C99.
+# Lua binding smoke test: see lua-run (tests/test.lua).
+[unix]
+test-lua: lua-run
+
+# strict Clean C compile check (no run).  Covers the suites, examples/example.c
+# and the optional headers that carry their own implementation.  zn_lua.c is
+# exempt (C4): it must include Lua headers, which use long long, so its build
+# is C99.
 [unix]
 check-c89:
     #!/usr/bin/env bash
@@ -199,10 +205,10 @@ check-c89:
             -c -o /dev/null "{{SRC}}/$s.c" || fail=1
     done
     for f in example; do
-        echo "--- c89 $f.c ---"
+        echo "--- c89 examples/$f.c ---"
         {{CC}} -std=c89 -pedantic-errors -Wno-variadic-macros \
             -D_XOPEN_SOURCE=600 {{INC}} \
-            -c -o /dev/null "{{ROOT}}/$f.c" || fail=1
+            -c -o /dev/null "{{ROOT}}/examples/$f.c" || fail=1
     done
     for h in zn_task; do
         echo "--- c89 $h.h ---"
@@ -228,10 +234,10 @@ check-cpp03:
             -x c++ -c -o /dev/null "{{SRC}}/$s.c" || fail=1
     done
     for f in example; do
-        echo "--- c++03 $f.c ---"
+        echo "--- c++03 examples/$f.c ---"
         {{CXX}} -std=c++03 -pedantic-errors -Wno-variadic-macros \
             -D_XOPEN_SOURCE=600 {{INC}} \
-            -x c++ -c -o /dev/null "{{ROOT}}/$f.c" || fail=1
+            -x c++ -c -o /dev/null "{{ROOT}}/examples/$f.c" || fail=1
     done
     for h in zn_task; do
         echo "--- c++03 $h.h ---"

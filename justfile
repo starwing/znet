@@ -14,7 +14,10 @@
 #   just cov               lcov report for znet.h
 #   just clean-cov         remove coverage data only
 #   just test-lua          build the Lua binding + run tests/test.lua
-#   just smoke             build + run example.c
+#   just smoke             build + run examples/example.c
+#   just example-cpp       build + run examples/example.cpp (znet.hpp)
+#   just example-lua       build the Lua binding + run examples/example.lua
+#   just examples          all three example programs
 #   just bench             build the benchmark programs
 #   just bench echo 5      echo benchmark, 5 seconds
 #   just clean             remove every build artifact
@@ -25,6 +28,7 @@ mod tests
 mod bench
 
 CC := env("CC", "cc")
+CXX := env("CXX", "c++")
 CFLAGS := "-std=c99 -D_XOPEN_SOURCE=600 -O2 -g -pedantic -Wall -Wextra -Wno-unused-parameter"
 
 # list the recipes
@@ -46,7 +50,7 @@ check-select: (tests::check-select)
 # alias of check (ASan/UBSan is the default)
 check-asan: (tests::check-asan)
 
-# strict C89 compile check (no run): suites + example.c + zn_task.h
+# strict C89 compile check (no run): suites + examples/example.c + zn_task.h
 check-c89: (tests::check-c89)
 
 # strict C++03 compile check (no run)
@@ -92,9 +96,9 @@ cov-unbranched: (tests::cov-unbranched)
 uncovered: (tests::uncovered)
 
 # ---------------------------------------------------------------------------
-# smoke program
+# examples: the same demo in C, C++ (znet.hpp) and Lua
 
-# build + run example.c
+# build + run examples/example.c (end-to-end smoke)
 [unix]
 smoke: (smoke-run "native" "")
 [unix]
@@ -107,16 +111,46 @@ smoke-run tag flags:
     set -euo pipefail
     out="/tmp/znet-smoke-{{tag}}"
     mkdir -p "$out"
-    {{CC}} {{CFLAGS}} {{flags}} -o "$out/example" example.c -pthread
+    {{CC}} {{CFLAGS}} {{flags}} -I. -o "$out/example" examples/example.c -pthread
     "$out/example"
+
+# build + run examples/example.cpp (C++11 wrapper)
+[unix]
+example-cpp: (example-cpp-run "native" "")
+[unix]
+example-cpp-select: (example-cpp-run "select" "-DZN_USE_SELECT")
+
+[unix]
+[private]
+example-cpp-run tag flags:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="/tmp/znet-example-cpp-{{tag}}"
+    mkdir -p "$out"
+    {{CXX}} -std=c++11 -pedantic -Wall -Wextra -Wno-unused-parameter \
+        {{flags}} -I. -o "$out/example-cpp" examples/example.cpp -pthread
+    "$out/example-cpp"
+
+# build the Lua binding + run examples/example.lua (POSIX only, Lua >= 5.3)
+[unix]
+example-lua:
+    @just --justfile tests/justfile lua-run \
+        '{{source_directory()}}/examples/example.lua'
+
+# all three example programs
+[unix]
+examples: smoke example-cpp example-lua
+[windows]
+examples: example-cpp
 
 # ---------------------------------------------------------------------------
 # cleanup
 
-# remove every build artifact (tests, benchmarks, smoke binaries)
+# remove every build artifact (tests, benchmarks, examples, smoke binaries)
 [unix]
 clean: (tests::clean) (bench::clean)
     rm -rf /tmp/znet-smoke-native /tmp/znet-smoke-select
+    rm -rf /tmp/znet-example-cpp-native /tmp/znet-example-cpp-select
 
 # remove coverage data only (keeps the compiled test binaries)
 [unix]
@@ -140,15 +174,26 @@ test-select suite="tcp" *args="":
 
 [windows]
 smoke:
-    @call "{{source_directory()}}\misc\msvc-env.bat" && cl /nologo /W4 /WX /I. example.c
-    @example.exe
+    @call "{{source_directory()}}\misc\msvc-env.bat" && cd examples && cl /nologo /W4 /WX /I.. example.c
+    @examples\example.exe
 
 [windows]
 smoke-select:
-    @call "{{source_directory()}}\misc\msvc-env.bat" && cl /nologo /W4 /WX /DZN_USE_SELECT /I. example.c
-    @example.exe
+    @call "{{source_directory()}}\misc\msvc-env.bat" && cd examples && cl /nologo /W4 /WX /DZN_USE_SELECT /I.. example.c
+    @examples\example.exe
+
+[windows]
+example-cpp:
+    @call "{{source_directory()}}\misc\msvc-env.bat" && cd examples && cl /nologo /W4 /WX /EHsc /I.. /Fe:example-cpp.exe /Fo:example-cpp.obj example.cpp
+    @examples\example-cpp.exe
 
 [windows]
 clean: (tests::clean) (bench::clean)
-    @if exist "{{source_directory()}}\example.exe" del /q "{{source_directory()}}\example.exe"
-    @if exist "{{source_directory()}}\example.obj" del /q "{{source_directory()}}\example.obj"
+    @if exist "{{source_directory()}}\examples\example.exe" del /q "{{source_directory()}}\examples\example.exe"
+    @if exist "{{source_directory()}}\examples\example.obj" del /q "{{source_directory()}}\examples\example.obj"
+    @if exist "{{source_directory()}}\examples\example.exp" del /q "{{source_directory()}}\examples\example.exp"
+    @if exist "{{source_directory()}}\examples\example.lib" del /q "{{source_directory()}}\examples\example.lib"
+    @if exist "{{source_directory()}}\examples\example-cpp.exe" del /q "{{source_directory()}}\examples\example-cpp.exe"
+    @if exist "{{source_directory()}}\examples\example-cpp.obj" del /q "{{source_directory()}}\examples\example-cpp.obj"
+    @if exist "{{source_directory()}}\examples\example-cpp.exp" del /q "{{source_directory()}}\examples\example-cpp.exp"
+    @if exist "{{source_directory()}}\examples\example-cpp.lib" del /q "{{source_directory()}}\examples\example-cpp.lib"

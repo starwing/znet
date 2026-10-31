@@ -70,6 +70,7 @@ struct EventLoop : public std::enable_shared_from_this<EventLoop> {
     std::unordered_map<TimerID, OnTimerHandler> timers;
 
     bool    initialize();
+    void    runLoop();
     void    runOnce(bool isImeediately = false);
     void    post(OnPostHandler&& h);
     TimerID createTimer(zn_Time delayms, OnTimerHandler&& h);
@@ -83,13 +84,12 @@ struct TcpAccept : public std::enable_shared_from_this<TcpAccept> {
     }
 
     zn_State*       S = nullptr;
-    zn_Accept*      accept;
-    TcpSocketPtr    client;
+    zn_Accept*      accept = nullptr;
     OnAcceptHandler acceptHandler;
 
     bool initialize(EventLoopPtr const& summer);
     bool openAccept(std::string const& ip, unsigned short port);
-    bool doAccept(TcpSocketPtr const& s, OnAcceptHandler&& h);
+    bool doAccept(OnAcceptHandler h); /* by value: re-arm with onAccept */
 };
 
 struct TcpSocket : public std::enable_shared_from_this<TcpSocket> {
@@ -132,6 +132,8 @@ struct UdpSocket : public std::enable_shared_from_this<UdpSocket> {
 };
 
 /* implements */
+
+inline void EventLoop::runLoop() { zn_run(S, ZN_RUN_LOOP); }
 
 inline void EventLoop::runOnce(bool isImeediately /* = false*/) {
     zn_run(S, isImeediately ? ZN_RUN_CHECK : ZN_RUN_ONCE);
@@ -197,16 +199,20 @@ inline bool TcpAccept::initialize(EventLoopPtr const& summer) {
 
 static inline void accept_cb(void* ud, zn_Accept* accept, int err,
                              zn_Tcp* tcp) {
-    auto ta = static_cast<TcpAccept*>(ud);
-    auto h(std::move(ta->acceptHandler));
+    auto         ta = static_cast<TcpAccept*>(ud);
+    auto         h(std::move(ta->acceptHandler));
+    TcpSocketPtr s;
     (void)accept;
-    ta->client->tcp = tcp;
-    h(static_cast<NetErrorCode>(err), std::move(ta->client));
+    if (tcp != nullptr) {
+        /* one wrapper per connection; dropping it closes the socket */
+        s = std::make_shared<TcpSocket>(tcp);
+        s->S = ta->S;
+    }
+    h(static_cast<NetErrorCode>(err), std::move(s));
 }
 
-inline bool TcpAccept::doAccept(TcpSocketPtr const& s, OnAcceptHandler&& h) {
+inline bool TcpAccept::doAccept(OnAcceptHandler h) {
     if (zn_accept(accept, accept_cb, this) == ZN_OK) {
-        client = s;
         acceptHandler = std::move(h);
         return true;
     }
@@ -229,7 +235,7 @@ inline bool TcpSocket::getPeerInfo(std::string&    remoteIP,
     if (tcp == nullptr) return false;
     zn_getpeerinfo(tcp, &info);
     remoteIP = info.addr;
-    remotePort = info.port;
+    remotePort = static_cast<unsigned short>(info.port); /* a port is 16-bit */
     return true;
 }
 
@@ -315,7 +321,8 @@ static inline void recvfrom_cb(void* ud, zn_Udp* udp, int err, unsigned count,
     auto us = static_cast<UdpSocket*>(ud);
     auto h(std::move(us->recvFromHandler));
     (void)udp;
-    h(static_cast<NetErrorCode>(err), ip, port, count);
+    h(static_cast<NetErrorCode>(err), ip, static_cast<unsigned short>(port),
+      count);
 }
 
 inline bool UdpSocket::doRecvFrom(char* buf, unsigned len,

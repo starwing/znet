@@ -16,7 +16,7 @@
 
 - **P1**：C3/B4、U1 —— 硬约束（签名 <80）、工具头不能编译。**2026-10-31 决定暂缓**
   （折行与 deque 先不动），条目保留为未完成。
-- **P2**：U8、U11、Q1、Q2、CI —— 健壮性、资源边界、测试与文档。
+- **P2**：U11、Q1、Q2、CI —— 健壮性、资源边界、测试与文档。
 - **P3**：B3、M5、format-check、覆盖率门槛 —— 清理与收尾，不动语义。
 - **决策**：见 §5。D1 待定；D3/D4 随 C3 暂缓，D5 随 U1 暂缓；D2 已定（见
   `notes/changes.md` §3）。
@@ -62,11 +62,6 @@
   相对 `timespec`，正的 `waitms` 会立即超时。当前无人使用。
   建议：删掉（保留 `notes/utils.md` 的记录）比修便宜；若要留，三处都要补测试。
 
-- [ ] **U8**（P2）`znet.hpp` 的 `TcpAccept` 把 client 存在 accept 对象里
-  连续 accept 会覆写同一个 `TcpSocket`；handler 运行一次即被消费，容易误用。
-  建议：把 client 作为参数传出去（或在 wrapper 层做“每次 accept 一个 shared_ptr”），
-  并补一个 C++ 侧的连续 accept 用例。
-
 - [ ] **U11**（P2）`zn_deltaskpool` 遇到永久阻塞的任务会永久阻塞
   位置：`zn_task.h`。
   强杀已否决（`TerminateThread`/`pthread_cancel` 跳过线程清理，还会留下被持有的锁，
@@ -78,7 +73,7 @@
 - [ ] **M5**（P3）文档与示例收尾
   更新 `README.md` / `README.zh.md` 的约束矩阵；把本机的 `notes/gate.sh`（gitignored）落成仓库里的
   `scripts/check.sh` 或等价入口，写明本机验证范围。
-  `test.c` 已删除、`just smoke` 只跑 `example.c`（见 `notes/changes.md` §1.2），不用再做。
+  `test.c` 已删除、`just smoke` 只跑 `examples/example.c`（见 `notes/changes.md` §1.2），不用再做。
   另有格式收尾：`bench/zn_bufferpool.h` 在 HEAD 上就不过 `clang-format --dry-run --Werror`
   （空行、`# define … user_data; ` 行尾空格、指针写法），格式化提交要单独做、`git diff -w`
   为空。还可以顺手评估删掉 `tests/state_test.c` 里已冗余的 `state_anchor`（它只为 select 的
@@ -151,7 +146,7 @@
   这条决定 C3 的工作量，先定再开工。
   **2026-10-29 方向（暂不裁决）**：先不做口径选择。后续把操作收进 `struct TcpOp`
   之类的操作体（handler + userdata + 方向/长度/状态），签名的参数个数自然减少，口径
-  等操作体落地后再定；在那之前 C3 只做非 API 的部分（`bench/`、`example.c`、内部
+  等操作体落地后再定；在那之前 C3 只做非 API 的部分（`bench/`、`examples/example.c`、内部
   `znB_sendto`/`znP_ntop`/`znA_*`/`lzn_*`），公共 API 的 5 个入口留给操作体重构。
 
 - [ ] **D4** `zn_connect` 的重构方向：参数结构体 / 把回调收进操作体 / 新增
@@ -197,7 +192,7 @@
 - **Q2（P2）**：测试里的白盒调用、`test_skip` 盖住的回归、恒真断言；它决定后面看到的绿灯
   是不是真的。前置：无。
 - **Q1（P2）**：addr/timer 的用例直调内部函数；和 Q2 一起按测试批次做。前置：无。
-- **U8 / U11（P2）**：wrapper 与工具的可用性；U11 只需文档化最小改动。前置：无。
+- **U11（P2）**：工具的可用性；只需文档化最小改动。前置：无。
 - **CI（P2，独立）**：现在全靠三台机器手工跑，可与上面的项并行。前置：无。
 - **B3（P3）**：纯精炼，剩余在工具头，量大且机械；放语义修复之后，免得 diff 淹没 bug。
   前置：无（C3 暂缓，不再挡它）。
@@ -205,5 +200,5 @@
   前置：无（签名项等 C3）。
 - **覆盖率门槛（P3）**：依赖 CI 或 fault-injection 构建。前置：CI。
 
-如果只做三件事：Q2 → U8/U11 → Q1。C3（折行）与 U1/D5（deque）按 2026-10-31 的决定
+如果只做三件事：Q2 → U11 → Q1。C3（折行）与 U1/D5（deque）按 2026-10-31 的决定
 暂缓，等折行/工具头的批次再开；CI 作为并行轨道，别等全部修完才铺。

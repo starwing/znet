@@ -147,8 +147,11 @@ cc -std=c99 -O2 demo.c -pthread -o demo
 printf 'hello\n' | nc 127.0.0.1 12345
 ```
 
-[`example.c`](example.c) 是完整的演示：两个 TCP 客户端、一对 UDP 收发、一个定时器，以及中间的
-错误处理。`just smoke` 会构建并运行它。
+[`examples/example.c`](examples/example.c) 是完整的 C 演示：两个 TCP 客户端、一对 UDP
+收发、一个定时器，以及中间的错误处理。`just smoke` 会构建并运行它。
+[`examples/example.cpp`](examples/example.cpp) 是同一演示的 C++ 包装版本，用 C++11
+lambda 写成（`just example-cpp`）；[`examples/example.lua`](examples/example.lua) 是 Lua
+版本（`just example-lua`）。`just examples` 会依次跑这三个程序。
 
 ## C API
 
@@ -295,8 +298,10 @@ handler 的形式是 `void h(void *ud, int err, unsigned count, zn_PeerInfo *pee
 
 `zsummer::network` 命名空间下的 `std::shared_ptr` 薄包装，不增加逻辑。每个 handler
 在一次操作之后就被 move 出去消费掉，要继续就得重新安装 `std::function`。
-`TcpAccept::doAccept` 每个 accept 对象只存一个 `TcpSocket`，连续 accept 时要在两次
-之间替换 `client`。测试套件针对的是 `znet.h`，不覆盖包装层。
+`TcpAccept::doAccept` 每次 accept 都新建一个 `TcpSocketPtr` 交给 handler；accept 出错时
+传入空指针，丢掉这个指针就会关闭连接。`EventLoop::runLoop()` 包装 `ZN_RUN_LOOP`，在
+没有任何操作和定时器时返回；`runOnce()` 只 poll 一次。测试套件针对的是 `znet.h`，包装层
+由 [`examples/example.cpp`](examples/example.cpp) 覆盖（`just example-cpp`）。
 
 ## Lua 绑定
 
@@ -312,7 +317,8 @@ cc -std=c99 -O2 -fPIC -bundle -undefined dynamic_lookup -pthread \
    $(pkg-config --cflags lua5.4) -I. -o znet.so zn_lua.c
 ```
 
-`just test-lua` 会构建它并跑 `tests/test.lua` 里的 loopback 冒烟测试。把 `znet.so`
+`just test-lua` 会构建它并跑 `tests/test.lua` 里的 loopback 冒烟测试；
+`just example-lua` 跑 `examples/example.lua` 里独立成篇的演示。把 `znet.so`
 放到 `package.cpath` 能找到的位置，然后：
 
 ```lua
@@ -370,7 +376,10 @@ C 的 `zn_engine()`。
 | --- | --- |
 | `just check` | 原生后端 + select 的完整套件，带 ASan/UBSan。 |
 | `just test tcp` | 只跑一个套件（原生后端）。 |
-| `just smoke` | 构建并运行 `example.c`。 |
+| `just smoke` | 构建并运行 `examples/example.c`。 |
+| `just example-cpp` | 构建并运行 `examples/example.cpp`（C++11 包装）。 |
+| `just example-lua` | 构建 Lua 模块并跑 `examples/example.lua`。 |
+| `just examples` | 依次运行三个示例程序。 |
 | `just check-c89` / `just check-cpp03` | 严格 C89 / C++03 编译检查。 |
 | `just test-lua` | 构建 Lua 模块并跑 `tests/test.lua`。 |
 | `just cov` | 生成 lcov 覆盖率报告。 |
@@ -398,7 +407,7 @@ bench\build.bat        构建基准程序
 | `zn_task.h` | 可选的固定大小线程池。 |
 | `zn_addrinfo.h` | 可选的异步 DNS。 |
 | `zn_lua.c`、`lbind.h` | Lua 绑定与随附的绑定辅助代码。 |
-| `example.c` | TCP/UDP/定时器的完整示例。 |
+| `examples/` | TCP/UDP/定时器示例，分别用 C、C++（`znet.hpp`）和 Lua 写。 |
 | `tests/`、`bench/` | 回归测试套件与基准程序。 |
 | `misc/` | Logo 和辅助脚本。 |
 
