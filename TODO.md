@@ -1,6 +1,6 @@
 # TODO — znet 待做清单
 
-> 基线：2026-10-29，工作树（`git status` 是当前状态的唯一依据）。
+> 基线：2026-10-31，工作树（`git status` 是当前状态的唯一依据）。
 >
 > 本文件**只放未完成的事**。已完成 / 已关闭（含“实测否决、不改代码”）的条目、验证矩阵、
 > 回归测试索引都在 [`notes/changes.md`](notes/changes.md)；条目 ID 与之共用命名空间，
@@ -14,22 +14,16 @@
 
 ## 0. 优先级总览
 
-- **P1**：C3/B4、U1 —— 硬约束（签名 <80）、工具头不能编译。
-- **P2**：B14、U15、U8、U11、CI —— 健壮性、资源边界、文档/测试。
+- **P1**：C3/B4、U1 —— 硬约束（签名 <80）、工具头不能编译。**2026-10-31 决定暂缓**
+  （折行与 deque 先不动），条目保留为未完成。
+- **P2**：U8、U11、Q1、Q2、CI —— 健壮性、资源边界、测试与文档。
 - **P3**：B3、M5、format-check、覆盖率门槛 —— 清理与收尾，不动语义。
-- **决策**：见 §5。D3/D4 方向已定（操作结构体重构，不阻塞 C3 的非 API 部分先做），
-  D5 决定 U1，D1/D2 不影响顺序。
+- **决策**：见 §5。D1 待定；D3/D4 随 C3 暂缓，D5 随 U1 暂缓；D2 已定（见
+  `notes/changes.md` §3）。
 
 ---
 
 ## 1. 内存安全与生命周期
-
-- [ ] **U15**（P2）Lua 绑定停止接收后留下空转的注册 fd
-  位置：`zn_lua.c` 的 `lzn_onrecvfrom`。
-  回调返回假值时只 unref，不关闭也不注销 fd；reactive 的注册是 per-listen，剩下的
-  datagram 会让 epoll/kqueue 空转（与 U10 同类，U10 已修）。
-  建议：先定“停止接收”的语义——关闭 socket 会连带毁掉 `sendto`；改成 per-operation
-  注册又会动 reactive 模型。定下来再改，别先写实现。
 
 ## 2. 公共 API 与代码精炼
 
@@ -51,9 +45,13 @@
   验收：脚本按“整行含返回类型和 `ZN_API`”检查，`just format-check` 通过（见 §4）。
 
 - [ ] **B3**（P3）控制流精炼（`notes/refine.md` §5）
-  44 处**带工作的**裸 `return;`、6 处带工作的循环 `break`/`continue`、3 处 `for(;;)`、
-  7 处 bool 形参、5 个 `do {} while (0)` 宏；外加一次性 helper 内联与函数前注释压缩。
-  机械但量大，按文件/后端分片提交；每片跑 `just check`，闭包/记账相关的片加 `just cov`。
+  `znet.h` 的 G5/G6/G9 已清零，G10 只剩 `znB_dispatch` 的 `BOOL`、G11 只剩 §5.3 登记的
+  3 个包装宏（另有 4 条 `do {}` 是真循环，不在门限内）；其余数字以 `notes/refine.md`
+  §5.2 的“现状”列为准（2026-10-31：带工作的裸
+  `return;` 7 处、带工作的循环 `break`/`continue` 5 处、`for(;;)` 3 处，分布在
+  `zn_task.h`/`zn_addrinfo.h`/`zn_buffer.h`/`zn_lua.c`）。外加一次性 helper 内联（G7
+  待统计）。机械但量大，按文件分片提交；每片跑 `just check`，闭包/记账相关的片加
+  `just cov`。
 
 ## 3. 可选工具与绑定
 
@@ -78,7 +76,8 @@
 ## 4. 文档、验证与 CI
 
 - [ ] **M5**（P3）文档与示例收尾
-  更新 `README.txt` 的约束矩阵；补 `scripts/check.sh` 或等价入口，写明本机验证范围。
+  更新 `README.txt` 的约束矩阵；把本机的 `notes/gate.sh`（gitignored）落成仓库里的
+  `scripts/check.sh` 或等价入口，写明本机验证范围。
   `test.c` 已删除、`just smoke` 只跑 `example.c`（见 `notes/changes.md` §1.2），不用再做。
   另有格式收尾：`bench/zn_bufferpool.h` 在 HEAD 上就不过 `clang-format --dry-run --Werror`
   （空行、`# define … user_data; ` 行尾空格、指针写法），格式化提交要单独做、`git diff -w`
@@ -128,9 +127,10 @@
   确实只能靠注入就绪/手工入队构造，所以要么改成公开 API 可观测的行为，要么把它们写进
   Q1 的豁免（现在 Q1 只列了 addr/timer 两处，看上去像漏了）。
   ② 两处核心回归藏在 `test_skip` 后面（runner 把 SKIP 算通过，`just check` 不会红）：
-  `tcp_close_blocked_send` 的"填不满 socket buffer"、`resultqueue_test` 三个批量用例的
-  "120 条 loopback 连接建不起来"。要么改成硬失败并把环境要求写进 `tests/README.md`，
-  要么让用例不依赖环境。
+  `tcp_close_blocked_send` 的"填不满 socket buffer"、`resultqueue_test` 四个批量用例
+  （`rq_batch_limit`/`rq_process_all`/`rq_close_with_many_queued`/
+  `rq_poll_returns_one_when_backlog`）的"120 条 loopback 连接建不起来"。要么改成硬失败
+  并把环境要求写进 `tests/README.md`，要么让用例不依赖环境。
   ③ `asserteq(zt_run(S), 0)` 恒真（`zn_run(ZN_RUN_LOOP)` 只可能返回 0），新加的
   `zt_pair_open` / `close_phase` 里也有；真正起作用的是 watchdog 的终止性。
   另外 `resultqueue_test` 从 dummy socket 改成 120 条真实 loopback 连接，依赖 fd 与
@@ -139,12 +139,12 @@
 
 ## 5. 待定的设计取舍（先拍板，再动手）
 
+> D2（公共 API 的列对齐）已定：交给 `.clang-format` 的 `AlignConsecutiveDeclarations`，
+> 不手工在 `(` 前补空格；`AGENTS.md` 的“约定”一节与 `notes/changes.md` §3 记了结论。
+
 - [ ] **D1** `zn_buffer` 的默认 packet handler：默认丢弃（现状）还是默认收包？
   推荐默认收包——现在 `zn_recvfinish` 的默认行为是“静默丢数据”，太容易踩。
   改动会动默认值 + `README.txt` + 一个回归用例。
-
-- [ ] **D2** 公共 API 的列对齐：formatter 化后是否保留 `zn_connect (` 的空格？
-  二选一，写进 `AGENTS.md`，不要每改一行都手工对齐。
 
 - [ ] **D3** 签名 <80 的计量口径：整行含返回类型和 `ZN_API`（现状，严格执行），
   还是只约束“函数名 + 参数列表”？后者能让部分函数少改，但 `zn_connect` 仍要重构。
@@ -175,6 +175,7 @@
 | --- | --- | --- |
 | timer 四叉堆（M4） | 已实现并实测，`fire` 全面退化超过 5% 门槛 → 回退，保留二叉堆 | `notes/changes.md` §1.16、`notes/m4-4ary-heap.md` §5 |
 | M6：reactive 改 per-arm 注册 | **前提不成立**，代码 2016 年起就是每连接注册一次；加回去 macOS 慢 11%、Linux 慢 32% | `notes/et-vs-lt.md` §3 |
+| 只把 UDP/listener 的注册改成 ET（或靠 re-arm 的 MOD/ADD “踢一脚”） | 不采用“单独 ET”：会丢“数据已在缓冲、之后才 arm”的唤醒。已实现的是 ET + arm 时 syscall + `can_*` latch + 结果入队（§1.38）；“踢一脚”仍然不采用（未文档化的内核行为） | `notes/et-vs-lt.md` §2、`notes/changes.md` §1.38 |
 | ET → 电平触发（LT） | 吞吐基本等价、CPU 仅 -3%，burst 上 ET 反而更省；LT 也省不掉 latch | `notes/et-vs-lt.md` §4 |
 | 32 位平台 timer 回绕 | 文档化限制（49.7 天）；64 位用 `size_t`，不引入 `ZN_USE_64BIT_TIMER` | `notes/changes.md` §1.7 |
 | 删掉 IOCP 每条完成的 `GetOverlappedResult` | 77k/s 下是白白的函数调用，但替代品是未文档化的 `Internal` 字段，不值当 | `notes/et-vs-lt.md` §2 |
@@ -190,20 +191,19 @@
 排序依据：① 是否崩溃/内存安全；② 是否违反硬约束（AGENTS 的 <80 与 Clean C）；
 ③ 是否让后续工作建立在错误信息上（过时文档/测试）；④ 成本与前置依赖。
 
-已完成的批次记在 `notes/changes.md`（最近一次是 §1.26）；这里只剩未做项，顺序如下：
+已完成的批次记在 `notes/changes.md`（最近一次是 §1.38）；这里只剩未做项。按 2026-10-31
+的决定，**折行（C3/B4、D3/D4）与 deque（U1、D5）暂不排期**，下面的顺序只排剩下的：
 
-- **C3（P1）**：硬约束，且挡住 `format-check`；非 API 部分现在就能清，公共 API 那 5 个
-  入口等操作结构体重构。前置：API 部分等 D3/D4。
-- **U1（P1）**：头文件编不过；选“删”几乎是分钟级，留着就得修 3 个缺陷。前置：D5。
-- **U15（P2）**：reactive 空转（U10 同类已修）；先定“停止接收”语义。前置：语义先定。
-- **B14（P2）**：IOCP 完成事件所有权，与已修的 L8 不同族；close 后立刻 reconnect 会拿到
-  `ZN_EBUSY`。前置：每次尝试的身份（D3 的操作体）。
+- **Q2（P2）**：测试里的白盒调用、`test_skip` 盖住的回归、恒真断言；它决定后面看到的绿灯
+  是不是真的。前置：无。
+- **Q1（P2）**：addr/timer 的用例直调内部函数；和 Q2 一起按测试批次做。前置：无。
 - **U8 / U11（P2）**：wrapper 与工具的可用性；U11 只需文档化最小改动。前置：无。
-- **CI（P2，独立）**：现在全靠三台机器手工跑，可与前四项并行。前置：无。
-- **B3（P3）**：纯精炼，量大且机械；放语义修复之后，免得 diff 淹没 bug。前置：C3 的
-  API 决策。
-- **M5 + format-check（P3）**：收尾；检查脚本在 C3 之后才有意义。前置：C3。
+- **CI（P2，独立）**：现在全靠三台机器手工跑，可与上面的项并行。前置：无。
+- **B3（P3）**：纯精炼，剩余在工具头，量大且机械；放语义修复之后，免得 diff 淹没 bug。
+  前置：无（C3 暂缓，不再挡它）。
+- **M5 + format-check（P3）**：收尾；格式化幂等与现有门限现在就能做，签名项等 C3。
+  前置：无（签名项等 C3）。
 - **覆盖率门槛（P3）**：依赖 CI 或 fault-injection 构建。前置：CI。
 
-如果只做三件事：C3 的非 API 部分 → U1 → U15（先定语义）。下一个迭代建议前四项
-（C3、U1、U15、B14），一次只碰一个契约面；CI 作为并行轨道，别等全部修完才铺。
+如果只做三件事：Q2 → U8/U11 → Q1。C3（折行）与 U1/D5（deque）按 2026-10-31 的决定
+暂缓，等折行/工具头的批次再开；CI 作为并行轨道，别等全部修完才铺。

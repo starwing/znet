@@ -262,30 +262,37 @@ int zt_peer_is(const zn_PeerInfo *info, const char *addr, unsigned port) {
 /* ---- manual dispatch (white box) ----
  * The kernel will not report "ready" for a listener or a UDP socket that has
  * nothing to accept, so a spurious readiness report can only be injected by
- * calling the backend entry point.  Only the name/shape of that entry point
- * differs between backends; the spare int keeps one signature for both. */
+ * calling the backend entry point.  The reactive entry points queue the
+ * completion, so the helper also pumps the result queue; select reports
+ * inline and takes ZN_ERROR/ZN_OK the same way.  Driving backend internals from
+ * tests is tracked for removal in TODO.md Q2. */
 
 #if !defined(_WIN32)
 
 void zt_dispatch_accept(zn_Accept *accept, int error_event) {
-#if defined(ZN_USE_SELECT)
-    znB_onaccept(accept, error_event); /* 1: the fd is in exceptfds */
-#elif defined(__linux__)
-    znB_onaccept(accept, error_event ? EPOLLERR : EPOLLIN);
-#else
-    znB_onaccept(accept, EVFILT_READ, error_event ? EV_ERROR : 0);
+    znB_onaccept(accept, error_event ? ZN_ERROR : ZN_OK);
+    /* the reactive backends only queue the completion; deliver it now */
+#if !defined(ZN_USE_SELECT)
+    znR_process(accept->S, ZN_MAX_RESULT_LOOPS);
 #endif
 }
 
 void zt_dispatch_udp(zn_Udp *udp, int error_event) {
-#if defined(ZN_USE_SELECT)
-    znB_onrecvfrom(udp, error_event);
-#elif defined(__linux__)
-    znB_onrecvfrom(udp, error_event ? EPOLLERR : EPOLLIN);
-#else
-    znB_onrecvfrom(udp, EVFILT_READ, error_event ? EV_ERROR : 0);
+    znB_onrecvfrom(udp, error_event ? ZN_ERROR : ZN_OK);
+#if !defined(ZN_USE_SELECT)
+    znR_process(udp->S, ZN_MAX_RESULT_LOOPS);
 #endif
 }
+
+/* the injectable connect completion exists only where it is queued: select
+ * reports inline and no test can hand it an unconnected object */
+#if !defined(ZN_USE_SELECT)
+
+void zt_dispatch_connect(zn_Tcp *tcp, int error_event) {
+    znB_onconnect(tcp, error_event ? ZN_ERROR : ZN_OK);
+}
+
+#endif /* !ZN_USE_SELECT */
 
 #endif /* !_WIN32 */
 

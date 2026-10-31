@@ -1788,6 +1788,50 @@ TEST(tcp_close_both_parked) {
     zt_close(S);
 }
 
+typedef struct connq_ctx {
+    int calls;
+} connq_ctx;
+
+static void connq_on_connect(void *ud, zn_Tcp *tcp, int err) {
+    connq_ctx *c = (connq_ctx *)ud;
+    (void)tcp, (void)err;
+    c->calls++;
+}
+
+/* A connect completion that is already queued owns its retain, so deleting the
+ * tcp may only close the fd; dispatch then reaps the slot without running the
+ * handler.  The completion is injected by hand because EINPROGRESS timing is
+ * not deterministic. */
+TEST(tcp_connect_queued_del) {
+    zn_State  *S = zt_open();
+    zn_Accept *listener = zn_listen(S, "127.0.0.1", 0);
+    zn_Tcp    *client;
+    connq_ctx  c;
+
+    assertok(listener != NULL);
+    memset(&c, 0, sizeof(c));
+    client = zn_connect(S, "127.0.0.1", zt_accept_port(listener),
+                        connq_on_connect, &c);
+    assertok(client != NULL);
+    asserteq(S->waitings, 1);
+
+    zt_dispatch_connect(client, 1); /* error event: queue the completion */
+    asserteq(client->can_write, 1);
+    assertok(client->connect_handler != NULL);
+
+    zn_deltcp(client);
+    asserteq(S->waitings, 1); /* the queued result still owns its retain */
+    assertok(!znL_empty(&S->active_tcps));
+
+    asserteq(znR_process(S, INT_MAX), 0);
+    asserteq(S->waitings, 0);
+    asserteq(c.calls, 0); /* deleted: the completion only reaps */
+    assertok(znL_empty(&S->active_tcps));
+
+    zn_delaccept(listener);
+    zt_close(S);
+}
+
 /* A send parked by EAGAIN must complete once the socket is writable again:
  * znB_retrysend() releases the parked retain, re-issues through zn_send()
  * and the completion is delivered by znR_dispatch().  White box: a socketpair
@@ -1931,6 +1975,7 @@ TEST(tcp_accept_twice) {
 # include <fcntl.h>      /* fcntl(), O_NONBLOCK */
 # include <netinet/in.h> /* struct sockaddr_in */
 # include <arpa/inet.h>  /* htons(), htonl() */
+# include <poll.h>       /* poll() */
 
 typedef struct sp_ctx {
     int     ok;
@@ -2100,7 +2145,304 @@ TEST(tcp_accept_after_aborted_clients) {
     zt_close(S);
 }
 
+/* ---- arm-time accept and the paused (U15) semantics ---- */
+
+/* connect() may return before the connection is queued on the listener, so
+ * the "already pending" premise has to be established, not assumed */
+static void sp_wait_acceptable(zn_Accept *accept) {
+    struct pollfd p;
+    p.fd = accept->socket;
+    p.events = POLLIN;
+    p.revents = 0;
+    assertok(poll(&p, 1, 2000) == 1);
+}
+
+/* one-shot: the timer only bounds a single poll */
+static zn_Time sp_once_cb(void *ud, zn_Timer *timer, zn_Time elapsed) {
+    (void)ud, (void)timer, (void)elapsed;
+    return 0;
+}
+
+/* a connection already in the backlog when zn_accept() is called must be
+ * reported by the next run; the reactive backends consume it at arm time */
+TEST(tcp_accept_arm_with_pending_connection) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_listen(S, "127.0.0.1", 0);
+    sp_ctx     c;
+    unsigned   port;
+    int        fd;
+
+    memset(&c, 0, sizeof(c));
+    assertok(accept != NULL);
+    port = zt_accept_port(accept);
+    fd = sp_connect(port);
+    sp_wait_acceptable(accept); /* queued now, not just connected */
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK);
+    zt_guard_start(1000); /* a poll that sleeps here must fail, not hang */
+    /* reactive consumed it at arm, select dispatches inline: either way the
+     * run serviced the completion and has nothing left to wait for */
+    asserteq(zn_run(S, ZN_RUN_ONCE), 0);
+    zt_guard_stop();
+    asserteq(c.ok, 1);
+    asserteq(c.err, 0);
+    zn_deltcp(c.tcp);
+    close(fd);
+    zn_delaccept(accept);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+#if !defined(ZN_USE_SELECT)
+
+/* U15: with nothing armed, a connection produces one edge-triggered wakeup and
+ * the event is dropped; every later poll must block until the timer. */
+TEST(tcp_accept_paused_wakes_once) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_listen(S, "127.0.0.1", 0);
+    sp_ctx     c;
+    zn_Timer  *timer;
+    zn_Time    t0, el;
+    unsigned   port;
+    int        fd;
+
+    memset(&c, 0, sizeof(c));
+    assertok(accept != NULL);
+    port = zt_accept_port(accept);
+    fd = sp_connect(port);
+    sp_wait_acceptable(accept); /* the edge is pending from here on */
+    timer = zn_newtimer(S, sp_once_cb, NULL);
+    assertok(timer != NULL);
+    asserteq(zn_starttimer(timer, 50), ZN_OK);
+
+    t0 = zn_time();
+    (void)zn_run(S,
+                 ZN_RUN_ONCE); /* the single edge: allowed to return at once */
+    (void)zn_run(S, ZN_RUN_ONCE); /* this one must wait for the timer */
+    el = zn_time() - t0;
+    asserteq(c.ok, 0);
+    asserteq(c.err, 0);
+    assertok(el >= 40); /* a level-triggered spin would return in ~0 ms */
+
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK);
+    asserteq(zn_run(S, ZN_RUN_ONCE), 0); /* arm consumed it: nothing is left */
+    asserteq(c.ok, 1);
+    zn_deltcp(c.tcp);
+    zn_canceltimer(timer), zn_deltimer(timer);
+    close(fd);
+    zn_delaccept(accept);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+/* an empty backlog parks the arm; the next connection still gets through */
+TEST(tcp_accept_arm_eagain_parks) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_listen(S, "127.0.0.1", 0);
+    sp_ctx     c;
+    zt_Loop    L;
+    unsigned   port;
+    int        fd;
+
+    memset(&c, 0, sizeof(c));
+    assertok(accept != NULL);
+    port = zt_accept_port(accept);
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK);
+    asserteq(accept->can_read, 0); /* empty backlog: parked */
+    asserteq(S->waitings, 1);
+
+    fd = sp_connect(port);
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.ok == 1);
+    zt_end(&L);
+    asserteq(c.err, 0);
+    zn_deltcp(c.tcp);
+    close(fd);
+    zn_delaccept(accept);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+/* a queued accept result owns its retain and its payload tcp: deleting the
+ * listener first must not leak either of them */
+TEST(tcp_accept_del_with_queued_result) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_listen(S, "127.0.0.1", 0);
+    sp_ctx     c;
+    unsigned   port;
+    int        fd;
+
+    memset(&c, 0, sizeof(c));
+    assertok(accept != NULL);
+    port = zt_accept_port(accept);
+    fd = sp_connect(port);
+    sp_wait_acceptable(accept);
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK);
+    asserteq(accept->can_read, 1);
+    assertok(accept->accepted != NULL);
+    asserteq(S->waitings, 1);
+
+    zn_delaccept(accept);
+    asserteq(S->waitings, 1); /* the queued result still owns its retain */
+    asserteq(znR_process(S, INT_MAX), 0);
+    asserteq(S->waitings, 0);
+    asserteq(c.ok, 0); /* deleted: the completion only reaps */
+    asserteq(c.err, 0);
+    assertok(znL_empty(&S->active_accepts));
+    assertok(znL_empty(&S->active_tcps)); /* the payload went with it */
+    close(fd);
+    zt_close(S);
+}
+
+/* znS_newtcpfd() failing must cost the connection, not the listener */
+TEST(tcp_accept_tcp_alloc_failure) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_listen(S, "127.0.0.1", 0);
+    sp_ctx     c;
+    zt_Loop    L;
+    unsigned   port;
+    int        fd, fd2;
+
+    memset(&c, 0, sizeof(c));
+    assertok(accept != NULL);
+    port = zt_accept_port(accept);
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK); /* empty: parked */
+    fd = sp_connect(port);
+    sp_wait_acceptable(accept); /* one connection for accept() to take */
+
+    /* force znS_newtcpfd() to fail: a CLOSING state refuses new objects, and
+     * the mempool grows by malloc, so exhaustion cannot be produced here */
+    S->status = ZN_STATUS_CLOSING;
+    zt_dispatch_accept(accept, 0); /* dispatch + znR_process pump */
+    S->status = ZN_STATUS_READY;
+
+    asserteq(c.err, 1); /* the connection is gone, the listener is not */
+    asserteq(c.ok, 0);
+    asserteq(S->waitings, 0);
+    assertok(znS_valid(accept));
+
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK); /* still usable */
+    fd2 = sp_connect(port);
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.ok == 1);
+    zt_end(&L);
+    asserteq(c.ok, 1);
+
+    zn_deltcp(c.tcp);
+    close(fd), close(fd2);
+    zn_delaccept(accept);
+    assertok(znL_empty(&S->active_tcps));
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+#else /* select */
+
+/* select only watches armed fds: a paused listener never wakes the loop */
+TEST(tcp_accept_paused_does_not_wake) {
+    zn_State  *S = zt_open();
+    zn_Accept *accept = zn_listen(S, "127.0.0.1", 0);
+    sp_ctx     c;
+    zn_Timer  *timer;
+    zn_Time    t0, el;
+    unsigned   port;
+    int        fd;
+
+    memset(&c, 0, sizeof(c));
+    assertok(accept != NULL);
+    port = zt_accept_port(accept);
+    fd = sp_connect(port);
+    timer = zn_newtimer(S, sp_once_cb, NULL);
+    assertok(timer != NULL);
+    asserteq(zn_starttimer(timer, 50), ZN_OK);
+
+    t0 = zn_time();
+    (void)zn_run(S, ZN_RUN_ONCE); /* must wait for the timer */
+    el = zn_time() - t0;
+    asserteq(c.ok, 0);
+    assertok(el >= 40);
+
+    asserteq(zn_accept(accept, sp_on_accept, &c), ZN_OK);
+    asserteq(zn_run(S, ZN_RUN_ONCE), 0); /* select dispatches inline */
+    asserteq(c.ok, 1);
+    zn_deltcp(c.tcp);
+    zn_canceltimer(timer), zn_deltimer(timer);
+    close(fd);
+    zn_delaccept(accept);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+#endif /* !ZN_USE_SELECT */
+
 #endif /* !_WIN32 */
+
+/* ---- D1: servicing a queued result must not skip the poll -------------
+ * A reactive arm runs the syscall at once, so a completion can already be
+ * queued when zn_run() is entered.  Draining it must not turn ZN_RUN_CHECK
+ * ("poll, do not block") into "do not poll", and it must not put
+ * ZN_RUN_ONCE to sleep.
+ *
+ * The ready fd is the post wakeup, not a socket: its interest is level
+ * triggered, so the pending read is visible to the very next poll.  An
+ * edge-triggered socket read published by another fd can still be in flight
+ * when the poll starts, which would make this test timing dependent.
+ * Both tests drive the library through its public API; zt_pair_open() only
+ * adds the ephemeral-port lookup every loopback test needs. */
+
+#if !defined(ZN_USE_SELECT) && !defined(_WIN32)
+
+typedef struct chk_ctx {
+    int send_cbs;
+    int post_cbs;
+} chk_ctx;
+
+static void chk_on_send(void *ud, zn_Tcp *tcp, int err, unsigned len) {
+    chk_ctx *c = (chk_ctx *)ud;
+    (void)tcp, (void)len;
+    c->send_cbs++;
+    asserteq(err, ZN_OK);
+}
+
+static void chk_on_post(void *ud, zn_State *S) {
+    chk_ctx *c = (chk_ctx *)ud;
+    (void)S;
+    c->post_cbs++;
+}
+
+TEST(tcp_check_polls_after_queued_result) {
+    zt_pair p;
+    chk_ctx c;
+
+    memset(&c, 0, sizeof(c));
+    zt_pair_open(&p);
+    asserteq(zn_send(p.server, "x", 1, chk_on_send, &c), ZN_OK);
+    asserteq(zn_post(p.S, chk_on_post, &c), ZN_OK);
+    (void)zn_run(p.S, ZN_RUN_CHECK);
+    asserteq(c.send_cbs, 1); /* the completion queued before the poll */
+    asserteq(c.post_cbs, 1); /* the same CHECK still polled */
+    zt_pair_close(&p);
+}
+
+/* nothing can wake this poll but the queued completion: if ONCE slept after
+ * servicing it, the watchdog would abort the test */
+TEST(tcp_once_after_queued_result_does_not_block) {
+    zt_pair p;
+    chk_ctx c;
+    int     r;
+
+    memset(&c, 0, sizeof(c));
+    zt_pair_open(&p);
+    (void)zn_run(p.S, ZN_RUN_CHECK); /* drain the fresh sockets' edges */
+    asserteq(zn_send(p.server, "x", 1, chk_on_send, &c), ZN_OK);
+    zt_guard_start(1000);
+    r = zn_run(p.S, ZN_RUN_ONCE);
+    zt_guard_stop();
+    asserteq(r, 0); /* serviced: it must not have slept, and nothing is left */
+    asserteq(c.send_cbs, 1);
+    zt_pair_close(&p);
+}
+
+#endif /* !ZN_USE_SELECT && !_WIN32 */
 
 /* ---- B9: the select TCP directions must park, not drop -----------------
  * znB_onsend/znB_onrecv consumed the operation before the syscall, so a

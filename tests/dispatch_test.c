@@ -372,9 +372,63 @@ TEST(dispatch_select_disarm_drops_snapshot) {
  * observed with poll() on the raw client fds, which does not consume the
  * backend's event.
  *
- * The victim is deleted while its connect completion is still in the batch;
- * the factory then hands its slot to a fresh object, so the stale entry names
- * the same zn_SocketInfo pointer as the new registration. */
+ * select delivers connect callbacks inline, so the victim still has no queued
+ * result when the handler deletes it: its slot is free, the factory hands the
+ * same slot to a fresh object, and the stale entry names the same
+ * zn_SocketInfo pointer as the new registration.  The reactive backends defer
+ * completions, so the victim's queued result owns its slot and no reuse can
+ * happen; there this test pins the other half of the contract (the victim's
+ * handler must not run and the new connect must still report the dead port).
+ * The invalidation itself is pinned by dispatch_l8_batch_entry_invalidated. */
+
+/* the reactive backends are the ones that own a poll batch */
+#if !defined(ZN_USE_SELECT)
+
+/* The invalidation itself, with no user callback in the way: a batch record
+ * that names a slot must be dropped when that slot is closed, even if a factory
+ * hands the same slot straight back.  Built by hand because on the reactive
+ * backends only a post handler runs inside a batch, and its position inside
+ * that batch is chosen by the kernel. */
+TEST(dispatch_l8_batch_entry_invalidated) {
+    zn_State   *S = zt_open();
+    zn_SockAddr raddr;
+    zn_Tcp     *victim, *reuse;
+    int         sv[2], sv2[2];
+
+    assertok(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    assertok(socketpair(AF_UNIX, SOCK_STREAM, 0, sv2) == 0);
+    assertok(znP_parseaddr(&raddr, "127.0.0.1", 1));
+    victim = znS_newtcpfd(S, sv[0], &raddr);
+    assertok(victim != NULL);
+    /* the record a poll would just have returned for this slot */
+#if defined(__linux__)
+    S->events[0].events = EPOLLIN;
+    S->events[0].data.ptr = &victim->info;
+#else
+    S->events[0].filter = EVFILT_READ;
+    S->events[0].flags = 0;
+    S->events[0].udata = &victim->info;
+#endif
+    S->nevents = 1;
+
+    zn_deltcp(victim); /* frees the slot while the record still names it */
+    reuse = znS_newtcpfd(S, sv2[0], &raddr);
+    assertok(reuse == victim); /* the pool hands the same slot back */
+#if defined(__linux__)
+    assertok(S->events[0].data.ptr == NULL); /* dropped, not retargeted */
+    asserteq(znB_dispatch(S, &S->events[0]), ZN_OK);
+#else
+    assertok(S->events[0].udata == NULL); /* dropped, not retargeted */
+    asserteq(znB_dispatch(S, &S->events[0]), ZN_OK);
+#endif
+    S->nevents = 0;
+    assertok(reuse->socket == sv2[0]); /* the reused object is untouched */
+    zn_deltcp(reuse);
+    close(sv[1]), close(sv2[1]);
+    zt_close(S);
+}
+
+#endif /* !ZN_USE_SELECT */
 
 static unsigned dt_l8_deadport(void) {
     struct sockaddr_in sa;
@@ -444,9 +498,14 @@ static void dt_l8_on_connect(void *ud, zn_Tcp *tcp, int err) {
     zn_deltcp(c->c2);
     c->n = zn_connect(c->S, "127.0.0.1", c->dead, dt_l8_on_new, c);
     assertok(c->n != NULL);
-    /* the pool must hand back the victim's slot for the stale entry to
-     * matter; otherwise this test would pass without the fix */
+#if defined(ZN_USE_SELECT)
+    /* inline delivery: the pool must hand back the victim's slot, otherwise
+     * the stale entry would not matter */
     assertok(c->n == c->c2);
+#else
+    /* deferred delivery: the queued result still owns the victim's slot */
+    assertok(c->n != c->c2);
+#endif
 }
 
 static void dt_l8_case(void) {

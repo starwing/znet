@@ -1,9 +1,10 @@
 /* resultqueue_test.c -- white-box tests for the reactive result queue.
  *
  * Only the epoll/kqueue backends use znR_*; select and IOCP deliver their
- * completions directly.  A result is a zn_Result embedded in a zn_Tcp
- * (send_result / recv_result); znR_dispatch() runs the user handler and
- * releases the retain taken by zn_send()/zn_recv().  Objects may be deleted
+ * completions directly.  A result is a zn_Result embedded in its owner
+ * (zn_Tcp send/recv/connect, zn_Accept, zn_Udp); znR_dispatch() switches on
+ * the kind set at creation, runs the user handler and releases the retain
+ * taken by the arming call.  Objects may be deleted
  * from those handlers, so a delete is deferred while a result is queued.
  *
  * The interesting property is the batching contract (notes/backends.md:49-52):
@@ -72,6 +73,17 @@ static void rq_on_connect(void *ud, zn_Tcp *tcp, int err) {
     c->tcp = tcp;
     c->err = err;
     c->done = 1;
+}
+
+/* accept side of rq_once_after_process_does_not_block */
+static int     g_accept_err;
+static int     g_accept_done;
+static zn_Tcp *g_accept_tcp;
+
+static void rq_on_accept(void *ud, zn_Accept *accept, int err, zn_Tcp *tcp) {
+    (void)ud, (void)accept;
+    g_accept_err = err, g_accept_done = 1;
+    if (err == ZN_OK) g_accept_tcp = tcp;
 }
 
 /* One connected tcp with no armed operation and no retain.  The factory arms
@@ -152,6 +164,27 @@ TEST(rq_empty) {
     asserteq(znR_process(S, ZN_MAX_RESULT_LOOPS), 0);
     asserteq(znR_process(S, INT_MAX), 0);
     asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+/* the kind and owner are set once at creation; a result is no longer
+ * identified by its address */
+TEST(rq_result_kind_init) {
+    zn_State *S = zt_open();
+    zn_Tcp   *tcp;
+
+    rq_reset();
+    tcp = rq_new(S);
+    assertok(tcp != NULL);
+    assertok(sizeof(zn_Result) % sizeof(void *) == 0);
+    asserteq(tcp->send_result.kind, ZN_TSEND);
+    asserteq(tcp->recv_result.kind, ZN_TRECV);
+    asserteq(tcp->connect_result.kind, ZN_TCONNECT);
+    assertok(tcp->send_result.owner.tcp == tcp);
+    assertok(tcp->recv_result.owner.tcp == tcp);
+    assertok(tcp->connect_result.owner.tcp == tcp);
+
+    zn_deltcp(tcp);
     zt_close(S);
 }
 
@@ -321,6 +354,59 @@ TEST(rq_close_with_many_queued) {
 
     zn_close(S); /* drains all 120, none of them calls back */
     asserteq(g_calls, 0);
+}
+
+/* ---- a serviced result must not put ZN_RUN_ONCE to sleep ---- */
+
+/* znB_poll() drains the result queue at the top and, if it serviced anything,
+ * skips epoll_wait/kevent and returns 0 (serviced, nothing left to block on).
+ * With no timer here a blocking poll would never wake, so the watchdog is the
+ * assertion that the no-sleep is in place; the 0 asserts the return contract.
+ * A real connected pair is used on purpose: a closed peer leaves a readable-EOF
+ * edge that would wake the poll for the wrong reason, and the ZN_RUN_CHECK
+ * drains the sockets' initial writable edges, which would mask the bug the same
+ * way. */
+TEST(rq_once_after_process_does_not_block) {
+    zn_State  *S = zt_open();
+    zn_Accept *listener = zn_listen(S, "127.0.0.1", 0);
+    zn_Tcp    *client;
+    rq_conn    c;
+    zt_Loop    L;
+    int        r;
+
+    assertok(listener != NULL);
+    g_accept_err = ZN_ERROR, g_accept_done = 0, g_accept_tcp = NULL;
+    asserteq(zn_accept(listener, rq_on_accept, NULL), ZN_OK);
+    memset(&c, 0, sizeof(c));
+    c.err = ZN_ERROR;
+    client = zn_connect(S, "127.0.0.1", zt_accept_port(listener), rq_on_connect,
+                        &c);
+    assertok(client != NULL);
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.done && g_accept_done);
+    zt_end(&L);
+    asserteq(c.err, ZN_OK);
+    asserteq(g_accept_err, ZN_OK);
+    assertok(g_accept_tcp != NULL);
+
+    (void)zn_run(S, ZN_RUN_CHECK); /* drain the fresh sockets' writable edges */
+    rq_reset();
+    rq_arm(client, 2);
+    rq_queue(S, client, ZN_OK);
+    asserteq(S->waitings, 1);
+
+    zt_guard_start(1000);
+    r = zn_run(S, ZN_RUN_ONCE);
+    zt_guard_stop();
+
+    asserteq(r, 0); /* serviced: it must not have slept, and nothing is left */
+    asserteq(g_calls, 1);
+    asserteq(S->waitings, 0);
+
+    zn_deltcp(g_accept_tcp);
+    zn_deltcp(client);
+    zn_delaccept(listener);
+    zt_close(S);
 }
 
 /* ---- the commit-4380d8b regression ---- */

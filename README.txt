@@ -98,6 +98,10 @@ connect(), with no callback and no "one connect per object" rule.  After it,
 zn_sendto(udp, buf, len, NULL, 0) sends to the connected peer, while
 zn_sendto(udp, buf, len, addr, port) is the unconnected form and is not
 supported on a connected socket.  zn_recvfrom() receives in both cases.
+On the epoll and kqueue backends zn_recvfrom() may consume a waiting datagram
+as soon as it is called; the callback is still delivered only from zn_run()/
+ZN_RUN_*.  The select backend only registers the read interest and leaves the
+datagram for the next poll.
 
 zn_sendto(), including the NULL/0 connected form, rejects datagrams larger
 than ZN_MAX_UDPSEND (default 1200 bytes, which stays under the IPv6 minimum

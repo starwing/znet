@@ -23,6 +23,7 @@
  * never taken and would hide the test from the generated runner. */
 #ifndef _WIN32
 # include <fcntl.h> /* fcntl() for the non-blocking-socket regression (B7) */
+# include <poll.h>  /* poll(): wait until a datagram is visibly queued */
 #endif              /* _WIN32 */
 
 #define MSG_COUNT 5
@@ -799,6 +800,246 @@ TEST(udp_recvfrom_error_event) {
     asserteq(S->waitings, 0);
     zt_close(S);
 }
+
+/* ---- arm-time recvfrom and the paused (U15) semantics ---- */
+
+/* a datagram may not be visible to the receiver the instant sendto() returns */
+static void sp_wait_readable(zn_Udp *udp) {
+    struct pollfd p;
+    p.fd = udp->socket;
+    p.events = POLLIN;
+    p.revents = 0;
+    assertok(poll(&p, 1, 2000) == 1);
+}
+
+/* one-shot: the timer only bounds a single poll */
+static zn_Time sp_once_cb(void *ud, zn_Timer *timer, zn_Time elapsed) {
+    (void)ud, (void)timer, (void)elapsed;
+    return 0;
+}
+
+/* a datagram already queued when zn_recvfrom() is called must be reported by
+ * the next run; the reactive backends consume it at arm time */
+TEST(udp_arm_with_pending_data) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
+    sp_ctx    c;
+    unsigned  port;
+    int       s2;
+
+    assertok(u != NULL);
+    memset(&c, 0, sizeof(c));
+    port = zt_udp_port(u);
+    s2 = sp_udp_socket(port);
+    sp_wait_readable(u); /* one datagram is queued before the arm */
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), sp_on_recvfrom,
+                         &c),
+             ZN_OK);
+    zt_guard_start(1000); /* a poll that sleeps here must fail, not hang */
+    /* reactive consumed it at arm, select reads it in the poll: either way the
+     * run serviced the completion and has nothing left to wait for */
+    asserteq(zn_run(S, ZN_RUN_ONCE), 0);
+    zt_guard_stop();
+    asserteq(c.ok, 1);
+    asserteq(c.err, 0);
+    close(s2);
+    zn_deludp(u);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+#if !defined(ZN_USE_SELECT)
+
+/* U15: an idle UDP socket must not spin once its single edge is consumed */
+TEST(udp_recvfrom_paused_wakes_once) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
+    sp_ctx    c;
+    zn_Timer *timer;
+    zn_Time   t0, el;
+    unsigned  port;
+    int       s2;
+
+    assertok(u != NULL);
+    memset(&c, 0, sizeof(c));
+    port = zt_udp_port(u);
+    s2 = sp_udp_socket(port);
+    sp_wait_readable(u); /* pending, nothing armed */
+    timer = zn_newtimer(S, sp_once_cb, NULL);
+    assertok(timer != NULL);
+    asserteq(zn_starttimer(timer, 50), ZN_OK);
+
+    t0 = zn_time();
+    (void)zn_run(S,
+                 ZN_RUN_ONCE); /* the single edge: allowed to return at once */
+    (void)zn_run(S, ZN_RUN_ONCE); /* this one must wait for the timer */
+    el = zn_time() - t0;
+    asserteq(c.ok, 0);
+    asserteq(c.err, 0);
+    assertok(el >= 40); /* a level-triggered spin would return in ~0 ms */
+
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), sp_on_recvfrom,
+                         &c),
+             ZN_OK);
+    asserteq(zn_run(S, ZN_RUN_ONCE), 0); /* consumed at arm: nothing is left */
+    asserteq(c.ok, 1);
+    zn_canceltimer(timer), zn_deltimer(timer);
+    close(s2);
+    zn_deludp(u);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+#endif /* !ZN_USE_SELECT */
+
+/* re-arm inside the callback: two queued datagrams, one run, no recursion */
+static void udp_on_rearm(void *ud, zn_Udp *udp, int err, unsigned count,
+                         const char *addr, unsigned port) {
+    sp_ctx *c = (sp_ctx *)ud;
+    (void)count, (void)addr, (void)port;
+    if (err != ZN_OK) {
+        c->err++;
+        return;
+    }
+    c->ok++;
+    if (c->ok < 2)
+        asserteq(zn_recvfrom(udp, g_sbuf, (unsigned)sizeof(g_sbuf),
+                             udp_on_rearm, c),
+                 ZN_OK);
+    else
+        zn_deludp(udp);
+}
+
+TEST(udp_rearm_in_callback_no_recursion) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
+    sp_ctx    c;
+    zt_Loop   L;
+    unsigned  port;
+    int       s2, s3;
+
+    assertok(u != NULL);
+    memset(&c, 0, sizeof(c));
+    port = zt_udp_port(u);
+    s2 = sp_udp_socket(port);
+    s3 = sp_udp_socket(port);
+    sp_wait_readable(u); /* the first datagram is visibly queued */
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), udp_on_rearm, &c),
+             ZN_OK);
+
+    /* the second datagram may still be in flight, so the pump is bounded by
+     * the helper's tick timer instead of one poll */
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.ok == 2);
+    zt_end(&L);
+    asserteq(c.err, 0);
+    asserteq(S->waitings, 0);
+    assertok(znL_empty(&S->active_udps));
+    close(s2), close(s3);
+    zt_close(S);
+}
+
+#if !defined(ZN_USE_SELECT)
+
+/* an empty socket parks the arm; the next datagram still gets through */
+TEST(udp_arm_eagain_parks) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
+    sp_ctx    c;
+    zt_Loop   L;
+    unsigned  port;
+    int       s2;
+
+    assertok(u != NULL);
+    memset(&c, 0, sizeof(c));
+    port = zt_udp_port(u);
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), sp_on_recvfrom,
+                         &c),
+             ZN_OK);
+    asserteq(u->can_read, 0); /* nothing queued: parked */
+    asserteq(S->waitings, 1);
+
+    s2 = sp_udp_socket(port);
+    zt_begin(&L, S, 2000);
+    ZT_WAIT(L, c.ok == 1);
+    zt_end(&L);
+    asserteq(c.err, 0);
+    close(s2);
+    zn_deludp(u);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+/* a queued recvfrom result keeps its retain when the socket is deleted */
+TEST(udp_del_with_queued_result) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
+    sp_ctx    c;
+    unsigned  port;
+    int       s2;
+
+    assertok(u != NULL);
+    memset(&c, 0, sizeof(c));
+    port = zt_udp_port(u);
+    s2 = sp_udp_socket(port);
+    sp_wait_readable(u);
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), sp_on_recvfrom,
+                         &c),
+             ZN_OK);
+    asserteq(u->can_read, 1);
+    asserteq(S->waitings, 1);
+
+    zn_deludp(u);
+    asserteq(S->waitings, 1); /* the queued result still owns its retain */
+    asserteq(znR_process(S, INT_MAX), 0);
+    asserteq(S->waitings, 0);
+    asserteq(c.ok, 0); /* deleted: the completion only reaps */
+    asserteq(c.err, 0);
+    assertok(znL_empty(&S->active_udps));
+    close(s2);
+    zt_close(S);
+}
+
+#else /* select */
+
+/* select only watches armed fds: a paused UDP socket never wakes the loop */
+TEST(udp_recvfrom_paused_does_not_wake) {
+    zn_State *S = zt_open();
+    zn_Udp   *u = zn_bind(S, "127.0.0.1", 0);
+    sp_ctx    c;
+    zn_Timer *timer;
+    zn_Time   t0, el;
+    unsigned  port;
+    int       s2;
+
+    assertok(u != NULL);
+    memset(&c, 0, sizeof(c));
+    port = zt_udp_port(u);
+    s2 = sp_udp_socket(port);
+    sp_wait_readable(u);
+    timer = zn_newtimer(S, sp_once_cb, NULL);
+    assertok(timer != NULL);
+    asserteq(zn_starttimer(timer, 50), ZN_OK);
+
+    t0 = zn_time();
+    (void)zn_run(S, ZN_RUN_ONCE); /* must wait for the timer */
+    el = zn_time() - t0;
+    asserteq(c.ok, 0);
+    assertok(el >= 40);
+
+    asserteq(zn_recvfrom(u, g_sbuf, (unsigned)sizeof(g_sbuf), sp_on_recvfrom,
+                         &c),
+             ZN_OK);
+    asserteq(zn_run(S, ZN_RUN_ONCE), 0); /* select dispatches inline */
+    asserteq(c.ok, 1);
+    zn_canceltimer(timer), zn_deltimer(timer);
+    close(s2);
+    zn_deludp(u);
+    asserteq(S->waitings, 0);
+    zt_close(S);
+}
+
+#endif /* !ZN_USE_SELECT */
 
 #endif /* _WIN32 */
 

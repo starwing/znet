@@ -99,10 +99,11 @@ send 错误分支用 `tcp_select_except_send_error` 证明可达。同一天的 
 | --- | --- |
 | 分配/扩容失败 | `zn_starttimer`（堆扩容 `realloc`）、`znS_newtcpfd`（state 正在关闭 / 槽位取空 / `znB_adoptfd` 失败，即 `zn_listen` 之后 accept 到的连接无家可归）、reactive 的 `znF_regall`/`znF_regread` 失败 |
 | fd 耗尽 / `FD_SETSIZE` | select 的 `znB_connect`、`znB_onaccept`、`znB_init`（`socketpair` 编号越界） |
-| `accept`/`recvfrom`/`send` 的系统错误 | 各后端的 `zn_onaccept`（EMFILE 等）、`zn_onrecvfrom`（非 EAGAIN）、`zn_onrecv`/`zn_onsend` 的 `znU_error` 分支；`EINTR`/`ECONNABORTED` 的“保持 armed”分支（构造不出确定性的信号/半开连接） |
+| `accept`/`recvfrom`/`send` 的系统错误 | reactive 的 `znB_tryaccept`/`znB_tryrecvfrom`（EMFILE、非 EAGAIN；首次 EAGAIN 那条 L6 分支由 `*_spurious_ready` 覆盖）、各后端的 `zn_onaccept`/`zn_onrecvfrom`、`zn_onrecv`/`zn_onsend` 的 `znU_error` 分支；`EINTR`/`ECONNABORTED` 的重试分支（构造不出确定性的信号/半开连接） |
+| `connect()` 立即成功 | reactive `znB_connect` 的“无事件可等”分支：nonblocking `connect()` 对 loopback 在 macOS 和 Linux 上都返回 `EINPROGRESS`，要覆盖需要平台差异或故障注入。**不是死代码**（别的平台/内核状态下可达） |
 | bind/listen/close 失败 | `znP_listen`（`listen` 失败）、`znP_closetcp`/`znP_closeaccept` 的 `close` 失败 |
 | 事件循环本身出错 | select `znP_poll` 的 `select(2)` 错误、kqueue `znP_poll` 的 `kevent(2)` 错误、epoll `znP_poll` 的 `epoll_wait(2)` 错误 |
-| 状态查询失败 | select `zn_onconnect` 的 `getsockopt(SO_ERROR)` 失败（置 `so_error = 0`） |
+| 状态查询失败 | select/reactive `znB_onconnect` 的 `getsockopt(SO_ERROR)` 失败；`znB_dispatch` 在 connect 期间收到非写事件时跳过的那两个分支 |
 | 平台时钟 | Linux `zn_time` 的 `clock_gettime(CLOCK_MONOTONIC)` 失败 |
 
 其中 `state_newstate_init_failure` 已经用 `RLIMIT_NOFILE` 确定性地覆盖了
