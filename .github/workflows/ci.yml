@@ -101,8 +101,14 @@ jobs:
           luaVersion: ${{ env.LUA_VERSION }}
 
       # lcov >= 2.0: tests/justfile passes `--rc branch_coverage=1` and
-      # lcov 2.x style `--ignore-errors`.  Ubuntu ships 2.0 (24.04 and 26.04)
-      # and Homebrew ships 2.x; both were verified with `just cov` first.
+      # lcov 2.x style `--ignore-errors`.  Ubuntu ships 2.0 and Homebrew ships
+      # 2.x; both were verified with `just cov` first.
+      #
+      # Caveat: ubuntu-24.04's lcov 2.0-4ubuntu2 prints bogus per-file rates in
+      # the `lcov --list` tables of `just cov` (rate column mixes function and
+      # line counts, so znet.h shows ~12%).  Its *summary* lines and the
+      # tracefile are correct -- the uploaded lcov.info is the number to trust;
+      # lcov 2.6 on macOS and Ubuntu 26.04 print the tables correctly.
       - name: Install lcov
         run: |
           set -euo pipefail
