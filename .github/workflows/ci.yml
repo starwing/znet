@@ -37,6 +37,11 @@ permissions:
 
 env:
   LUA_VERSION: "5.5"
+  # The macOS runner image can have openssl@3 linked while an older openssl@4
+  # is installed; the coveralls action installs its reporter with `brew
+  # install`, which then tries to upgrade openssl@4 and dies on the bin/openssl
+  # symlink.  Keep whatever the image already has.
+  HOMEBREW_NO_INSTALL_UPGRADE: 1
 
 jobs:
   check:
