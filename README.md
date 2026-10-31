@@ -1,5 +1,3 @@
-**English** | [中文](README.zh.md)
-
 <p align="center">
   <img src="misc/znet-logo.svg" width="112" height="112" alt="znet logo">
 </p>
@@ -15,6 +13,14 @@ The core handles TCP, UDP, timers and cross-thread hand-off without hiding any
 buffer from the caller. Optional headers add buffering, a thread pool and
 asynchronous DNS. You allocate the memory, tell znet where it is, and get a
 callback when the operation finishes.
+
+**English** | [中文](README.zh.md)
+
+<div align="center">
+
+[![Build](https://github.com/starwing/znet/actions/workflows/ci.yml/badge.svg)](https://github.com/starwing/znet/actions/workflows/ci.yml) [![Coverage Status](https://coveralls.io/repos/github/starwing/znet/badge.svg?branch=master)](https://coveralls.io/github/starwing/znet?branch=master)
+
+</div>
 
 ## Highlights
 

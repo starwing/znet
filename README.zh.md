@@ -1,5 +1,3 @@
-[English](README.md) | **中文**
-
 <p align="center">
   <img src="misc/znet-logo.svg" width="112" height="112" alt="znet logo">
 </p>
@@ -12,6 +10,14 @@ IOCP（Windows）、epoll（Linux）、kqueue（BSD 与 macOS）和 select（兜
 
 它处理 TCP、UDP、定时器和跨线程投递，可选头文件再提供缓冲、线程池和异步 DNS。
 它不替调用方藏缓冲区：内存由你分配，把地址告诉 znet，操作完成时收到回调。
+
+[English](README.md) | **中文**
+
+<div align="center">
+
+[![Build](https://github.com/starwing/znet/actions/workflows/ci.yml/badge.svg)](https://github.com/starwing/znet/actions/workflows/ci.yml) [![Coverage Status](https://coveralls.io/repos/github/starwing/znet/badge.svg?branch=master)](https://coveralls.io/github/starwing/znet?branch=master)
+
+</div>
 
 ## 实现亮点
 
