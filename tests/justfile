@@ -316,10 +316,10 @@ cov-report:
     lcov --list znet.info --rc branch_coverage=1 \
         --ignore-errors inconsistent,corrupt || true
 
-# lines with zero coverage in znet.h
+# lines with zero coverage in znet.h (znet.info also carries zn_buffer.h)
 [unix]
 cov-lines:
-    @awk '/^DA:/ && /,0$/ {gsub(/DA:|,0/,""); print $0}' \
+    @awk '/^SF:/{z=($0 ~ /\/znet\.h$/)} z && /^DA:/ && /,0$/ {gsub(/DA:|,0/,""); print}' \
         '{{BUILD}}/znet.info' | sort -n | while read -r ln; do \
         src=$(sed -n "${ln}p" '{{ROOT}}/znet.h' 2>/dev/null); \
         case "$src" in *assert*) ;; *) echo "L$ln: $src";; esac; \
@@ -344,10 +344,10 @@ uncovered:
     done
     {{LUA}} '{{ROOT}}/misc/uncovered.lua' "$info"
 
-# branches taken zero times in znet.h
+# branches taken zero times in znet.h (znet.info also carries zn_buffer.h)
 [unix]
 cov-unbranched:
-    @awk -F'[:,]' '/^BRDA:/ && $5==0 {print $2}' \
+    @awk -F'[:,]' '/^SF:/{z=($0 ~ /\/znet\.h$/)} z && /^BRDA:/ && $5==0 {print $2}' \
         '{{BUILD}}/znet.info' | sort -n -u | while read -r ln; do \
         src=$(sed -n "${ln}p" '{{ROOT}}/znet.h' 2>/dev/null); \
         case "$src" in *assert*) ;; *) printf "L%-5d %s\n" "$ln" "$src";; esac; \
