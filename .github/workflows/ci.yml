@@ -50,7 +50,7 @@ jobs:
       # the headers in .lua/include.
       LUA_INC: -I${{ github.workspace }}/.lua/include
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: extractions/setup-just@v4
 
       # gh-actions-lua builds Lua and caches .lua/ itself, keyed by version,
@@ -83,13 +83,13 @@ jobs:
             flag: macos
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: extractions/setup-just@v4
 
       # brew install lcov pulls perl dependencies; cache the bottles.
       - name: Cache Homebrew downloads
         if: runner.os == 'macOS'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/Library/Caches/Homebrew
           key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/ci.yml') }}
@@ -101,8 +101,8 @@ jobs:
           luaVersion: ${{ env.LUA_VERSION }}
 
       # lcov >= 2.0: tests/justfile passes `--rc branch_coverage=1` and
-      # lcov 2.x style `--ignore-errors`.  Ubuntu 24.04 ships 2.0 and Homebrew
-      # ships 2.x; both were verified with `just cov` before relying on them.
+      # lcov 2.x style `--ignore-errors`.  Ubuntu ships 2.0 (24.04 and 26.04)
+      # and Homebrew ships 2.x; both were verified with `just cov` first.
       - name: Install lcov
         run: |
           set -euo pipefail
