@@ -1,0 +1,150 @@
+# znet CI -- the same gate as `bash notes/gate.sh`, on GitHub's runners, plus
+# coverage.  The layout follows piecetab: checks are a per-OS matrix, coverage
+# is its own job, and Coveralls merges one flag per platform in parallel mode
+# (coverage-finish closes the build).
+#
+#   check (ubuntu-latest)    just check : epoll + select, ASan/UBSan/LSan
+#   check (macos-latest)     just check : kqueue + select, ASan/UBSan
+#   check (windows-latest)   just check : IOCP, cl /nologo /W4 /WX
+#   coverage (linux, macos)  just cov   : lcov tracefile -> Coveralls
+#
+# Every suite needs a Lua interpreter on every platform: misc/gen_entries.lua
+# turns the TEST(...) functions into the runner.  The Lua binding itself
+# (just test-lua) is POSIX-only -- README documents zn_lua.c for Linux/BSD/
+# macOS, and there is no test-lua recipe on Windows.
+#
+# Windows has no coverage job: MSVC has no gcov instrumentation.  The IOCP
+# lines only Windows reaches are executed by the Windows check job; they are
+# just not counted by Coveralls.
+
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+# a newer push supersedes the run it replaces
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  LUA_VERSION: "5.5"
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # tests/justfile's lua-run takes compiler flags here (it defaults to
+      # `pkg-config --cflags lua5.5 lua5.4 lua5.3 lua`); gh-actions-lua puts
+      # the headers in .lua/include.
+      LUA_INC: -I${{ github.workspace }}/.lua/include
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v4
+
+      # gh-actions-lua builds Lua and caches .lua/ itself, keyed by version,
+      # platform and architecture, so a runner only compiles it once.
+      # msvc-dev-cmd is required for the Windows build and is a no-op elsewhere.
+      - uses: step-security/msvc-dev-cmd@v1
+      - uses: leafo/gh-actions-lua@v13
+        with:
+          luaVersion: ${{ env.LUA_VERSION }}
+
+      # justfile dispatches per platform: POSIX runs the native backend plus
+      # select with ASan/UBSan (LSan too on Linux), Windows runs IOCP with
+      # cl /W4 /WX and no select pass (znet.h is IOCP-only on _WIN32).
+      - name: just check
+        run: just check
+
+      - name: just test-lua (Lua binding)
+        if: runner.os != 'Windows'
+        run: just test-lua
+
+  coverage:
+    name: coverage (${{ matrix.flag }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            flag: linux
+          - os: macos-latest
+            flag: macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v4
+
+      # brew install lcov pulls perl dependencies; cache the bottles.
+      - name: Cache Homebrew downloads
+        if: runner.os == 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/ci.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
+
+      - uses: leafo/gh-actions-lua@v13
+        with:
+          luaVersion: ${{ env.LUA_VERSION }}
+
+      # lcov >= 2.0: tests/justfile passes `--rc branch_coverage=1` and
+      # lcov 2.x style `--ignore-errors`.  Ubuntu 24.04 ships 2.0 and Homebrew
+      # ships 2.x; both were verified with `just cov` before relying on them.
+      - name: Install lcov
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            brew install lcov
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y lcov
+          fi
+          lcov --version
+
+      # builds every suite twice (native backend and select) with --coverage and
+      # merges them into tests/build/znet.info for znet.h and zn_buffer.h
+      - name: just cov
+        run: just cov
+
+      # lcov records absolute paths; Coveralls keys source files on paths
+      # relative to the repository root
+      - name: Make coverage paths relative
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -E "s|^SF:${GITHUB_WORKSPACE}/|SF:|" tests/build/znet.info > lcov.info
+          grep '^SF:' lcov.info
+
+      - name: Coveralls
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path-to-lcov: ./lcov.info
+          flag-name: ${{ matrix.flag }}
+          parallel: true
+
+  # parallel mode does not report until every flag has been uploaded
+  coverage-finish:
+    name: coverage (finish)
+    needs: coverage
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Coveralls parallel finish
+        uses: coverallsapp/github-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          parallel-finished: true
