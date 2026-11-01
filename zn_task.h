@@ -242,6 +242,7 @@ ZN_API int zn_addtask(zn_TaskPool *ws, zn_TaskHandler *h, void *ud) {
 ZN_API void zn_pausetasks(zn_TaskPool *ws, int pause) {
     EnterCriticalSection(&ws->lock);
     ws->status = pause ? ZN_WS_PAUSE : ZN_WS_NORMAL;
+    if (!pause) SetEvent(ws->event); /* resume must wake a parked worker */
     LeaveCriticalSection(&ws->lock);
 }
 
@@ -275,15 +276,14 @@ static void *znW_worker(void *ud) {
         pthread_mutex_lock(&ws->lock);
         for (;;) {
             status = ws->status;
-            znQ_dequeue(&ws->tasks, task);
+            /* dequeuing while paused would strand the task: it is not run */
+            if (status != ZN_WS_PAUSE) znQ_dequeue(&ws->tasks, task);
             if (status == ZN_WS_EXIT || task != NULL) break;
             ++ws->idle_threads;
             pthread_cond_wait(&ws->event, &ws->lock);
             --ws->idle_threads;
         }
         pthread_mutex_unlock(&ws->lock);
-
-        if (status == ZN_WS_PAUSE) continue;
 
         while (task != NULL) {
             if (task->h) task->h(task->ud, ws);
@@ -371,6 +371,8 @@ ZN_API int zn_addtask(zn_TaskPool *ws, zn_TaskHandler *h, void *ud) {
 ZN_API void zn_pausetasks(zn_TaskPool *ws, int pause) {
     pthread_mutex_lock(&ws->lock);
     ws->status = pause ? ZN_WS_PAUSE : ZN_WS_NORMAL;
+    /* resume must wake a parked worker: one drain empties the queue */
+    if (!pause) pthread_cond_signal(&ws->event);
     pthread_mutex_unlock(&ws->lock);
 }
 
