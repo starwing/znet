@@ -284,8 +284,10 @@ handler 的形式是 `void h(void *ud, int err, unsigned count, zn_PeerInfo *pee
 | `zn_sendprepare(b, buf, len)` | 排入一段数据。返回 1 表示当前没有在途发送、应立即发；0 表示排在后面；-1 表示内存不足。 |
 | `zn_sendfinish(b, count)` | 记录一次完成并推进队列。还有数据要发时返回非零。 |
 
-`zn_initrecvbuffer` 不安装包处理函数：接收之前先调用 `zn_recvonpacket`，否则完整的帧
-会被丢弃。`zn_recvfinish` 返回 -1 时分帧状态未定义，复用前先重置缓冲区。
+`zn_initrecvbuffer` 不安装包处理函数，这是刻意的默认值：完整的帧会被消费并丢弃，库不替
+调用方排队 —— 接收缓冲区是分帧工具，不是收包队列。要数据就在接收前调用 `zn_recvonpacket`；
+不想要就保持默认（`zn_recvonpacket(b, NULL, NULL)` 把"丢弃"装回去）。
+`zn_recvfinish` 返回 -1 时分帧状态未定义，复用前先重置缓冲区。
 
 访问宏（`zn_buffer`、`zn_bufflen`、`zn_addsize`、`zn_recvbuff`、`zn_recvsize`、
 `zn_sendbuff`、`zn_sendsize`、`zn_curbuffer`、`zn_needsend`）与结构体定义放在一起。

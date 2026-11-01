@@ -307,9 +307,12 @@ returning. Passing `S = NULL` stops the worker thread.
 | `zn_sendprepare(b, buf, len)` | Queue a payload. Returns 1 when nothing is in flight and the caller should send now, 0 when queued behind it, -1 on out-of-memory. |
 | `zn_sendfinish(b, count)` | Account for a completed send and move queued data forward. Returns non-zero while bytes remain to send. |
 
-`zn_initrecvbuffer` installs no packet handler: call `zn_recvonpacket` before
-receiving, or complete frames are discarded. When `zn_recvfinish` returns -1,
-the framing state is undefined; reset the buffer before reusing it.
+`zn_initrecvbuffer` installs no packet handler, and that is the documented
+default: complete frames are consumed and dropped, never queued. The receive
+buffer is a framing helper, not a packet store -- install `zn_recvonpacket`
+before receiving if you want the payloads, and `zn_recvonpacket(b, NULL, NULL)`
+puts the drop back when you do not. When `zn_recvfinish` returns -1, the framing
+state is undefined; reset the buffer before reusing it.
 
 The accessor macros (`zn_buffer`, `zn_bufflen`, `zn_addsize`, `zn_recvbuff`,
 `zn_recvsize`, `zn_sendbuff`, `zn_sendsize`, `zn_curbuffer`, `zn_needsend`) are

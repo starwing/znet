@@ -392,9 +392,9 @@ TEST(recv_default_handlers) {
     rec_reset(&rec);
     zn_initrecvbuffer(&rb, NULL);
     assertok(rb.header_handler != NULL);
-    /* TODO D1: init leaves packet_handler NULL (frames are
-     * dropped) until the default-delivery policy is decided.  The user-data
-     * pointer must be cleared even so: it used to be uninitialised. */
+    /* the default is "no handler": frames are consumed and dropped, which is
+     * the documented behaviour (TODO D1 closed 2026-11-01), not a gap.  The
+     * user-data pointer must be cleared even so: it used to be uninitialised. */
     assertok(rb.packet_ud == NULL);
     zn_recvonpacket(&rb, rec_packet, &rec);
     assertok(rb.packet_ud == &rec);
