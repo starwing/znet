@@ -240,13 +240,16 @@ static WCHAR *znA_getwstring(const char *s) {
 }
 
 static int znA_processreq(znA_AddrRequest *req) {
-    zn_AddrInfo hints, *info;
+    zn_AddrInfo hints, *info = NULL;
     WCHAR      *node = NULL, *service = NULL;
+    int         failed = 0;
     if (req == NULL) return 0;
     znA_makehints(req, &hints);
-    if (req->node) node = znA_getwstring(req->node);
-    if (req->service) service = znA_getwstring(req->service);
-    req->ret = GetAddrInfoW(node, service, &hints, &info);
+    /* an unconverted node would resolve the local host instead */
+    if (req->node) failed = (node = znA_getwstring(req->node)) == NULL;
+    if (req->service && !failed)
+        failed = (service = znA_getwstring(req->service)) == NULL;
+    req->ret = failed ? EAI_MEMORY : GetAddrInfoW(node, service, &hints, &info);
     free(node), free(service);
     if (req->ret == 0 && info) {
         znA_makepeers(req, info);
@@ -256,22 +259,17 @@ static int znA_processreq(znA_AddrRequest *req) {
 }
 
 static unsigned __stdcall znA_worker(void *param) {
-    unsigned ret = 0;
+    znA_AddrRequest *req;
     (void)param;
-    for (;;) {
-        znA_AddrRequest *req;
-        if (WaitForSingleObject(znA_event, INFINITE) != WAIT_OBJECT_0) {
-            ret = 1;
-            break;
-        }
-        if (znA_stop) break; /* the event is the only wakeup source */
+    while (!znA_stop
+           && WaitForSingleObject(znA_event, INFINITE) == WAIT_OBJECT_0) {
         do {
             EnterCriticalSection(&znA_lock);
             req = znA_fetchreq();
             LeaveCriticalSection(&znA_lock);
         } while (znA_processreq(req));
     }
-    return ret;
+    return 0;
 }
 
 static int znA_init(void) {
@@ -311,38 +309,32 @@ ZN_API int zn_getaddrinfo(zn_State *S, const char *node, const char *service,
 }
 
 ZN_API void zn_closeaddrinfo(zn_State *S) {
-    LONG ret;
+    LONG ret, teardown;
     while ((ret = InterlockedCompareExchange(&znA_started, -1, 1)) < 0)
         Sleep(1);
-    if (ret == 0) { /* never started, or already stopped */
-        InterlockedExchange(&znA_started, 0);
-        return;
+    teardown = (ret != 0 && S == NULL); /* S != NULL keeps the worker */
+    if (ret != 0) {
+        EnterCriticalSection(&znA_lock);
+        znA_clearreq(S);
+        if (teardown) { /* wake the worker: it must exit before teardown */
+            znA_stop = 1;
+            SetEvent(znA_event);
+        }
+        LeaveCriticalSection(&znA_lock);
     }
-    EnterCriticalSection(&znA_lock);
-    znA_clearreq(S);
-    if (S == NULL) { /* wake the worker: it must exit before teardown */
-        znA_stop = 1;
-        SetEvent(znA_event);
+    if (teardown) {
+        WaitForSingleObject(znA_thread, INFINITE);
+        /* the worker may have parked its last result after clearreq */
+        EnterCriticalSection(&znA_lock);
+        znA_dropfailed(NULL);
+        LeaveCriticalSection(&znA_lock);
+        CloseHandle(znA_thread), CloseHandle(znA_event);
+        CloseHandle(znA_done), DeleteCriticalSection(&znA_lock);
+        znA_thread = NULL, znA_event = NULL;
+        znA_done = NULL, znA_stop = 0;
+        ret = 0;
     }
-    LeaveCriticalSection(&znA_lock);
-    if (S != NULL) { /* only this state's requests: keep the worker */
-        InterlockedExchange(&znA_started, 1);
-        return;
-    }
-    WaitForSingleObject(znA_thread, INFINITE);
-    /* the worker may have parked its last result after clearreq */
-    EnterCriticalSection(&znA_lock);
-    znA_dropfailed(NULL);
-    LeaveCriticalSection(&znA_lock);
-    CloseHandle(znA_thread);
-    CloseHandle(znA_event);
-    CloseHandle(znA_done);
-    DeleteCriticalSection(&znA_lock);
-    znA_thread = NULL;
-    znA_event = NULL;
-    znA_done = NULL;
-    znA_stop = 0;
-    InterlockedExchange(&znA_started, 0);
+    InterlockedExchange(&znA_started, ret);
 }
 
 #else
@@ -371,26 +363,17 @@ static void znA_waitidle(zn_State *S) {
 }
 
 static void *znA_worker(void *param) {
+    zn_AddrInfo      hints, *info;
+    znA_AddrRequest *req;
     (void)param;
-    for (;;) {
-        zn_AddrInfo      hints, *info;
-        znA_AddrRequest *req;
-        pthread_mutex_lock(&znA_lock);
-        req = znA_fetchreq(); /* posts the request just processed */
+    pthread_mutex_lock(&znA_lock);
+    req = znA_fetchreq(); /* a fetch also posts the request taken before */
+    while (!znA_stop) {
         while (!znA_stop && req == NULL) {
             pthread_cond_wait(&znA_event, &znA_lock);
             req = znA_fetchreq();
         }
-        if (znA_stop) {
-            if (req != NULL) { /* never processed: report it like clearreq */
-                req->ret = ZN_ERROR;
-                znA_post(req);
-                znA_current = NULL;
-                znA_wake();
-            }
-            pthread_mutex_unlock(&znA_lock);
-            break;
-        }
+        if (znA_stop) break;
         pthread_mutex_unlock(&znA_lock);
         znA_makehints(req, &hints);
         req->ret = getaddrinfo(req->node, req->service, &hints, &info);
@@ -398,7 +381,16 @@ static void *znA_worker(void *param) {
             znA_makepeers(req, info);
             freeaddrinfo(info);
         }
+        pthread_mutex_lock(&znA_lock);
+        req = znA_fetchreq();
     }
+    if (req != NULL) { /* never processed: report it like clearreq */
+        req->ret = ZN_ERROR;
+        znA_post(req);
+        znA_current = NULL;
+        znA_wake();
+    }
+    pthread_mutex_unlock(&znA_lock);
     return NULL;
 }
 
@@ -426,21 +418,18 @@ ZN_API int zn_getaddrinfo(zn_State *S, const char *node, const char *service,
 }
 
 ZN_API void zn_closeaddrinfo(zn_State *S) {
+    int started, teardown;
     pthread_mutex_lock(&znA_lock);
-    if (!znA_started) {
-        pthread_mutex_unlock(&znA_lock);
-        return;
+    started = znA_started;
+    teardown = (S == NULL && started); /* S != NULL keeps the worker */
+    if (started) znA_clearreq(S);
+    if (teardown) { /* cancel would leave the lock owned: wait it out */
+        znA_started = 0;
+        znA_stop = 1;
+        pthread_cond_signal(&znA_event);
     }
-    znA_clearreq(S);
-    if (S != NULL) { /* only this state's requests: keep the worker */
-        pthread_mutex_unlock(&znA_lock);
-        return;
-    }
-    /* cancel is not an option: the worker would exit holding the lock */
-    znA_started = 0;
-    znA_stop = 1;
-    pthread_cond_signal(&znA_event);
     pthread_mutex_unlock(&znA_lock);
+    if (!teardown) return;
     pthread_join(znA_thread, NULL);
     /* the worker may have parked its last result after clearreq */
     pthread_mutex_lock(&znA_lock);

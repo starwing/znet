@@ -394,14 +394,6 @@ static int znT_resize(zn_TimerState *ts, size_t size) {
     return (ts->nodes = nodes, ts->size = (unsigned)realsize), 1;
 }
 
-static zn_Timer *znT_new(zn_TimerState *ts, zn_TimerHandler *h, void *ud) {
-    zn_Timer *timer = (zn_Timer *)znM_get(&ts->timers);
-    if (timer == NULL) return NULL;
-    timer->u.ud = ud, timer->handler = h;
-    timer->ts = ts, timer->index = ZN_TIMER_NOINDEX;
-    return timer;
-}
-
 ZN_API void zn_deltimer(zn_Timer *timer) {
     zn_canceltimer(timer);
     timer->handler = NULL, znM_put(&timer->ts->timers, timer);
@@ -2255,8 +2247,12 @@ ZN_API int zn_run(zn_State *S, int mode) {
 }
 
 ZN_API zn_Timer *zn_newtimer(zn_State *S, zn_TimerHandler *h, void *ud) {
+    zn_Timer *timer;
     if (S->status > ZN_STATUS_READY) return NULL;
-    return znT_new(&S->ts, h, ud);
+    if ((timer = (zn_Timer *)znM_get(&S->ts.timers)) == NULL) return NULL;
+    timer->u.ud = ud, timer->handler = h;
+    timer->ts = &S->ts, timer->index = ZN_TIMER_NOINDEX;
+    return timer;
 }
 
 static zn_Tcp *znS_newtcpfd(zn_State *S, zn_Socket fd, zn_SockAddr *raddr) {

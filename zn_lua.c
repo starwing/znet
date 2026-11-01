@@ -247,13 +247,10 @@ static void lzn_onpacket(void *ud, const char *buff, size_t len) {
 
 static void lzn_onsend(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     lzn_Tcp *obj = (lzn_Tcp *)ud;
-    if (err == ZN_OK) {
-        if (!zn_sendfinish(&obj->send, count)) goto check_close;
+    if (err == ZN_OK && zn_sendfinish(&obj->send, count))
         err = zn_send(tcp, zn_sendbuff(&obj->send), zn_sendsize(&obj->send),
                       lzn_onsend, obj);
-    }
     if (err != ZN_OK) lzn_tcperror(obj->L, obj, err);
-check_close:
     if (obj->closing && zn_sendsize(&obj->send) == 0) {
         zn_deltcp(tcp);
         lzn_freetcp(obj->L, obj);
@@ -262,14 +259,10 @@ check_close:
 
 static void lzn_onrecv(void *ud, zn_Tcp *tcp, int err, unsigned count) {
     lzn_Tcp *obj = (lzn_Tcp *)ud;
-    if (err == ZN_OK) {
-        if (zn_recvfinish(&obj->recv, count) < 0) {
-            lzn_tcperror(obj->L, obj, ZN_ERROR);
-            return;
-        }
+    if (err == ZN_OK && zn_recvfinish(&obj->recv, count) < 0) err = ZN_ERROR;
+    if (err == ZN_OK)
         err = zn_recv(tcp, zn_recvbuff(&obj->recv), zn_recvsize(&obj->recv),
                       lzn_onrecv, obj);
-    }
     if (err != ZN_OK) lzn_tcperror(obj->L, obj, err);
 }
 

@@ -177,26 +177,20 @@ ZN_API zn_TaskPool *zn_newtaskpool(int nthread) {
     if (nthread <= 0 || nthread > ZN_MAX_THREAD_COUNT)
         nthread = ZN_MAX_THREAD_COUNT;
     ws->event = CreateEvent(NULL, FALSE, FALSE, NULL);
-    if (ws->event != NULL) {
-        InitializeCriticalSection(&ws->lock);
-        ws->status = ZN_WS_NORMAL;
-        ws->nthread = nthread;
-        znQ_init(&ws->tasks);
-        znQ_init(&ws->freed_tasks);
-        for (i = 0; i < nthread; ++i) {
-            ws->threads[i] = (HANDLE)_beginthreadex(NULL, 0, &znW_worker,
-                                                    (LPVOID)ws, 0, NULL);
-            if (ws->threads[i] == NULL) {
-                ws->nthread = i;
-                break;
-            }
-        }
-        if (ws->nthread != 0) return ws;
+    if (ws->event == NULL) return free(ws), (zn_TaskPool *)0;
+    InitializeCriticalSection(&ws->lock);
+    ws->status = ZN_WS_NORMAL;
+    znQ_init(&ws->tasks), znQ_init(&ws->freed_tasks);
+    /* the pool starts with as many workers as it could create */
+    for (i = 0; i < nthread; ++i) {
+        ws->threads[i] = (HANDLE)_beginthreadex(NULL, 0, &znW_worker,
+                                                (LPVOID)ws, 0, NULL);
+        if (ws->threads[i] == NULL) break;
     }
-    if (ws->event != NULL) { /* the lock is initialized with the event */
-        CloseHandle(ws->event);
-        DeleteCriticalSection(&ws->lock);
-    }
+    ws->nthread = i;
+    if (i != 0) return ws;
+    CloseHandle(ws->event); /* no worker started: nothing else can see it */
+    DeleteCriticalSection(&ws->lock);
     free(ws);
     return NULL;
 }
@@ -211,9 +205,8 @@ ZN_API void zn_deltaskpool(zn_TaskPool *ws) {
 
     ret = WaitForMultipleObjects(ws->nthread, ws->threads, TRUE, INFINITE);
     assert(ret == WAIT_OBJECT_0);
-    if (ret != WAIT_OBJECT_0) { /* TerminateThread skips _endthreadex: leak */
-        return;
-    }
+    /* killing it would skip _endthreadex: leak the pool instead */
+    if (ret != WAIT_OBJECT_0) return;
     for (i = 0; i < ws->nthread; ++i) CloseHandle(ws->threads[i]);
     CloseHandle(ws->event);
     DeleteCriticalSection(&ws->lock);
@@ -307,32 +300,26 @@ static void *znW_worker(void *ud) {
 }
 
 ZN_API zn_TaskPool *zn_newtaskpool(int nthread) {
-    int          i = 0;
+    int          i;
     zn_TaskPool *ws = (zn_TaskPool *)malloc(sizeof(zn_TaskPool));
     if (ws == NULL) return NULL;
     if (nthread <= 0 || nthread > ZN_MAX_THREAD_COUNT)
         nthread = ZN_MAX_THREAD_COUNT;
     memset(ws, 0, sizeof(*ws));
-    if (pthread_cond_init(&ws->event, NULL) != 0) goto err;
-    if (pthread_mutex_init(&ws->lock, NULL) != 0) goto err;
+    if (pthread_cond_init(&ws->event, NULL) != 0)
+        return free(ws), (zn_TaskPool *)0;
+    if (pthread_mutex_init(&ws->lock, NULL) != 0)
+        return pthread_cond_destroy(&ws->event), free(ws), (zn_TaskPool *)0;
     ws->status = ZN_WS_NORMAL;
-    ws->nthread = nthread;
-    znQ_init(&ws->tasks);
-    znQ_init(&ws->freed_tasks);
+    znQ_init(&ws->tasks), znQ_init(&ws->freed_tasks);
+    /* the pool starts with as many workers as it could create */
     for (i = 0; i < nthread; ++i) {
-        if (pthread_create(&ws->threads[i], NULL, &znW_worker, (void *)ws)
-            != 0) {
-            if (i == 0) goto err;
-            ws->nthread = i;
+        if (pthread_create(&ws->threads[i], NULL, &znW_worker, (void *)ws))
             break;
-        }
     }
-    return ws;
-err:
-    pthread_cond_destroy(&ws->event);
-    pthread_mutex_destroy(&ws->lock);
-    free(ws);
-    return NULL;
+    if (i != 0) return (ws->nthread = i), ws;
+    return pthread_mutex_destroy(&ws->lock), pthread_cond_destroy(&ws->event),
+           free(ws), (zn_TaskPool *)0;
 }
 
 ZN_API void zn_deltaskpool(zn_TaskPool *ws) {
@@ -345,9 +332,8 @@ ZN_API void zn_deltaskpool(zn_TaskPool *ws) {
     for (i = 0; i < ws->nthread; ++i) {
         int rc = pthread_join(ws->threads[i], NULL);
         assert(rc == 0);
-        if (rc != 0) { /* killing it could leave ws->lock owned: leak instead */
-            return;
-        }
+        /* killing it could leave ws->lock owned: leak the pool instead */
+        if (rc != 0) return;
     }
 
     pthread_cond_destroy(&ws->event);
