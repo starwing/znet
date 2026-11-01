@@ -191,18 +191,13 @@ int main(int argc, char **argv) {
         }
         n = (unsigned)v;
     }
-    zn_initialize();
     S = zn_newstate();
-    if (S == NULL) {
-        zn_deinitialize();
-        return 1;
-    }
+    if (S == NULL) return 1;
     if (n != 0)
         ok = bench_run_size(S, n);
     else
         ok = bench_run_size(S, 1000u) && bench_run_size(S, 10000u)
           && bench_run_size(S, 100000u);
     zn_close(S);
-    zn_deinitialize();
     return ok ? 0 : 1;
 }

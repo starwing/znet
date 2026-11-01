@@ -144,9 +144,6 @@ static void cleanup(void) {
     printf("exiting ... ");
     zn_close(S);
     printf("OK\n");
-    printf("deinitialize ... ");
-    zn_deinitialize();
-    printf("OK\n");
 }
 
 #ifdef _WIN32
@@ -197,7 +194,6 @@ int main(int argc, const char **argv) {
         if (p != 0) port = p;
     }
 
-    zn_initialize();
     if ((S = zn_newstate()) == NULL) return 2;
 
     if (is_client) {

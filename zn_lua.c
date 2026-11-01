@@ -757,12 +757,6 @@ static int Lstate_run(lua_State *L) {
     return_result(L, ret);
 }
 
-static int lzn_deinitialize(lua_State *L) {
-    (void)L;
-    zn_deinitialize();
-    return 0;
-}
-
 LUALIB_API int luaopen_znet(lua_State *L) {
     luaL_Reg libs[] = {{"timer", Ltimer_new},
                        {"accept", Laccept_new},
@@ -780,16 +774,8 @@ LUALIB_API int luaopen_znet(lua_State *L) {
     open_accept(L);
     open_tcp(L);
     open_udp(L);
-    if (lbind_newmetatable(L, libs, &lbT_State)) {
+    if (lbind_newmetatable(L, libs, &lbT_State))
         lbind_setaccessors(L, 0, LBIND_INDEX | LBIND_NEWINDEX);
-
-        /* initialize and register deinitialize */
-        zn_initialize();
-        lua_newtable(L);
-        lua_pushcfunction(L, lzn_deinitialize);
-        lua_setfield(L, -2, "__gc");
-        lua_setmetatable(L, -2);
-    }
     lua_pushstring(L, zn_engine());
     lua_setfield(L, -2, "engine");
     return 1;

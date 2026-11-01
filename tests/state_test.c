@@ -660,19 +660,6 @@ TEST(post_returns_ok_epoll) {
 
 #endif /* __linux__ && !ZN_USE_SELECT */
 
-/* zn_initialize/zn_deinitialize are no-ops on POSIX but real on Windows;
- * exercise both so the entry points stay covered in every configuration. */
-TEST(state_initialize_deinitialize) {
-    zn_State *S;
-
-    zn_deinitialize();
-    zn_initialize();
-    S = zt_open();
-    zt_close(S);
-    zn_deinitialize();
-    zn_initialize();
-}
-
 /* zn_newstate() must free the partially built state when the backend cannot
  * open its wakeup socketpair.  RLIMIT_NOFILE=0 makes socketpair()/eventfd()
  * fail deterministically; the limit is process-local and restored before any

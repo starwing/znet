@@ -2,8 +2,8 @@
  *
  * Covers znP_parseaddr (IPv4/IPv6 literals and rejected input),
  * znP_setinfo round-trips, znP_ntop and znP_error.  These are
- * pure string/struct conversions: no zn_State, no socket and no
- * zn_initialize() is needed (InetPtonA/InetNtopA work without WSAStartup).
+ * pure string/struct conversions: no zn_State and no socket are needed
+ * (InetPtonA/InetNtopA work without WSAStartup).
  *
  * znP_parseaddr picks the family from a ':' in the string, so an IPv4
  * literal with a port glued on ("1.2.3.4:80") is parsed as IPv6 and fails.

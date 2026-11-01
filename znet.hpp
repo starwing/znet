@@ -334,20 +334,6 @@ inline bool UdpSocket::doRecvFrom(char* buf, unsigned len,
     return false;
 }
 
-#ifndef ZNPP_NO_ENV
-class ZSummerEnvironment {
-   public:
-    ZSummerEnvironment() { zn_initialize(); }
-    ~ZSummerEnvironment() { zn_deinitialize(); }
-};
-
-extern ZSummerEnvironment g_appEnvironment;
-
-# ifdef ZNPP_DEFINE_ENV
-ZSummerEnvironment g_appEnvironment;
-# endif
-#endif
-
 ZNPP_NS_END
 
 #endif /* ZNET_HPP_INCLUDED */

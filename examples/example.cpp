@@ -15,7 +15,6 @@
  *
  *   c++ -std=c++11 -I. -pthread examples/example.cpp -o example-cpp
  */
-#define ZNPP_DEFINE_ENV /* define ZSummerEnvironment for this program */
 #define ZNPP_STATIC_API /* ZN_IMPLEMENTATION + static znet in this file */
 #include "../znet.hpp"
 

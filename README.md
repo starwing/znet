@@ -95,9 +95,9 @@ translation unit:
 #include "znet.h"
 ```
 
-Every other file includes the header without the define. On Windows call
-`zn_initialize()` before creating a state; on POSIX it is a no-op, but pairing
-it with `zn_deinitialize()` keeps the code portable.
+Every other file includes the header without the define. The first
+`zn_newstate()` initializes the socket layer on Windows; there is nothing to
+call before it and nothing to tear down afterwards.
 
 A complete echo server:
 
@@ -145,17 +145,14 @@ static void on_accept(void *ud, zn_Accept *a, int err, zn_Tcp *tcp) {
 int main(void) {
     zn_State *S;
     zn_Accept *a;
-    zn_initialize();
     S = zn_newstate();
     a = S ? zn_listen(S, "127.0.0.1", 12345) : NULL;
     if (a == NULL || zn_accept(a, on_accept, NULL) != ZN_OK) {
         if (S != NULL) zn_close(S);
-        zn_deinitialize();
         return 1;
     }
     zn_run(S, ZN_RUN_LOOP);
     zn_close(S);
-    zn_deinitialize();
     return 0;
 }
 ```
@@ -186,11 +183,9 @@ name resolution.
 
 | Function | Usage |
 | --- | --- |
-| `void zn_initialize(void)` | Initialize the socket layer (Winsock on Windows; no-op elsewhere). Call once before any state. |
-| `void zn_deinitialize(void)` | Release it after all states are closed. |
 | `const char *zn_strerror(int err)` | Text for a `ZN_*` code. |
 | `const char *zn_engine(void)` | Active backend: `"IOCP"`, `"epoll"`, `"kqueue"` or `"select"`. |
-| `zn_State *zn_newstate(void)` | Create the event loop and its object pools. `NULL` on out-of-memory or a backend failure. |
+| `zn_State *zn_newstate(void)` | Create the event loop and its object pools; the first call also initializes the socket layer. `NULL` on out-of-memory or a backend failure. |
 | `void zn_close(zn_State *S)` | Delete every live object and free `S`. It may be called from a callback; teardown then completes after the current poll. The pointer is dead afterwards. |
 | `int zn_lasterror(zn_State *S)` | Why the last `zn_listen`, `zn_connect` or `zn_bind` returned `NULL`. Overwritten by the next such call, so read it immediately. |
 | `void *zn_getuserdata(zn_State *S)` | Read the caller pointer stored on the state. |

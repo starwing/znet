@@ -81,8 +81,8 @@ just bench timer        # 1k/10k/100k 的 arm/cancel/fire/clock
 #include "znet.h"
 ```
 
-其他文件直接包含头文件，不要再定义这个宏。Windows 上先调用 `zn_initialize()`；
-POSIX 上它是空操作，但成对写上 `zn_deinitialize()` 可以让代码保持可移植。
+其他文件直接包含头文件，不要再定义这个宏。第一次 `zn_newstate()` 会在 Windows 上
+初始化 socket 层；它之前没有需要调用的东西，之后也没有需要拆的东西。
 
 一个完整的 echo 服务器：
 
@@ -130,17 +130,14 @@ static void on_accept(void *ud, zn_Accept *a, int err, zn_Tcp *tcp) {
 int main(void) {
     zn_State *S;
     zn_Accept *a;
-    zn_initialize();
     S = zn_newstate();
     a = S ? zn_listen(S, "127.0.0.1", 12345) : NULL;
     if (a == NULL || zn_accept(a, on_accept, NULL) != ZN_OK) {
         if (S != NULL) zn_close(S);
-        zn_deinitialize();
         return 1;
     }
     zn_run(S, ZN_RUN_LOOP);
     zn_close(S);
-    zn_deinitialize();
     return 0;
 }
 ```
@@ -169,11 +166,9 @@ lambda 写成（`just example-cpp`）；[`examples/example.lua`](examples/exampl
 
 | 函数 | 用法 |
 | --- | --- |
-| `void zn_initialize(void)` | 初始化 socket 层（Windows 上是 Winsock，其他平台为空）。在创建任何 state 之前调用一次。 |
-| `void zn_deinitialize(void)` | 所有 state 关闭之后释放它。 |
 | `const char *zn_strerror(int err)` | 取 `ZN_*` 错误码的文字说明。 |
 | `const char *zn_engine(void)` | 当前后端：`"IOCP"`、`"epoll"`、`"kqueue"` 或 `"select"`。 |
-| `zn_State *zn_newstate(void)` | 创建事件循环和对象池。内存不足或后端初始化失败时返回 `NULL`。 |
+| `zn_State *zn_newstate(void)` | 创建事件循环和对象池；第一次调用还会初始化 socket 层。内存不足或后端初始化失败时返回 `NULL`。 |
 | `void zn_close(zn_State *S)` | 删除所有存活对象并释放 `S`。可以在回调里调用，此时清理会在本轮 poll 结束后完成。调用之后指针失效。 |
 | `int zn_lasterror(zn_State *S)` | 上一次 `zn_listen`、`zn_connect` 或 `zn_bind` 返回 `NULL` 的原因。下一次这类调用会覆盖它，要立刻读取。 |
 | `void *zn_getuserdata(zn_State *S)` | 读取挂在 state 上的调用方指针。 |

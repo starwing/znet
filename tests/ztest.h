@@ -135,7 +135,6 @@ void zt_guard_stop(void) { alarm(0); }
 
 zn_State *zt_open(void) {
     zn_State *S;
-    zn_initialize();
     S = zn_newstate();
     if (S == NULL) zt_fail("zn_newstate() returned NULL");
     return S;

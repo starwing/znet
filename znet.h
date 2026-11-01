@@ -108,9 +108,6 @@ typedef void zn_RecvFromHandler(void *ud, zn_Udp *udp, int err, unsigned count,
 
 /* znet state routines */
 
-ZN_API void zn_initialize(void);
-ZN_API void zn_deinitialize(void);
-
 ZN_API const char *zn_strerror(int err);
 ZN_API const char *zn_engine(void);
 
@@ -624,8 +621,6 @@ ZN_API zn_Time zn_time(void) {
     return r;
 }
 
-ZN_API void zn_initialize(void) {}
-ZN_API void zn_deinitialize(void) {}
 static void znB_initaccept(zn_Accept *a) { (void)a; }
 
 #endif /* ZN_USE_PLATFORM_POSIX */
@@ -1065,41 +1060,24 @@ static int znB_sendto(zn_Udp *udp, const char *buff, unsigned len,
 
 #ifdef ZN_USE_BACKEND_IOCP
 
-static BOOL znP_started = FALSE;
+static INIT_ONCE znP_wsaonce = INIT_ONCE_STATIC_INIT;
+static BOOL      znP_wsaok = FALSE;
 
-typedef BOOL(WINAPI *LPGETQUEUEDCOMPLETIONSTATUSEX)(
-        _In_ HANDLE              CompletionPort,
-        _Out_ LPOVERLAPPED_ENTRY lpCompletionPortEntries, _In_ ULONG ulCount,
-        _Out_ PULONG ulNumEntriesRemoved, _In_ DWORD dwMilliseconds,
-        _In_ BOOL fAlertable);
+static BOOL CALLBACK znP_wsainit(PINIT_ONCE once, PVOID p, PVOID *ctx) {
+    WSADATA d;
+    (void)once, (void)p, (void)ctx;
+    znP_wsaok = WSAStartup(MAKEWORD(2, 2), &d) == 0;
+    return TRUE; /* a failed init is latched, not retried per state */
+}
 
-static LPGETQUEUEDCOMPLETIONSTATUSEX pGetQueuedCompletionStatusEx;
+static int znP_wsastart(void) {
+    return InitOnceExecuteOnce(&znP_wsaonce, znP_wsainit, NULL, NULL)
+        && znP_wsaok;
+}
 
 ZN_API const char *zn_engine(void) { return "IOCP"; }
 
-ZN_API void zn_initialize(void) {
-    if (!znP_started) {
-        HMODULE kernel32;
-        WORD    version = MAKEWORD(2, 2);
-        WSADATA d;
-        if (WSAStartup(version, &d) != 0)
-            assert(!"can not initialize Windows sockets!"), abort();
-        if ((kernel32 = GetModuleHandleA("KERNEL32.DLL"))) {
-            union {
-                LPGETQUEUEDCOMPLETIONSTATUSEX f; /* the callable view */
-                FARPROC                       v; /* GetProcAddress result */
-            } u;
-            u.v = GetProcAddress(kernel32, "GetQueuedCompletionStatusEx");
-            pGetQueuedCompletionStatusEx = u.f;
-        }
-        znP_started = TRUE;
-    }
-}
-
 /* clang-format off */
-ZN_API void zn_deinitialize(void)
-{ if (znP_started) WSACleanup(), znP_started = FALSE; }
-
 static void znB_initaccept(zn_Accept *a)
 { a->accept_request.type = ZN_TACCEPT, a->client = INVALID_SOCKET; }
 
@@ -1337,6 +1315,7 @@ ZN_API int zn_post(zn_State *S, zn_PostHandler *h, void *ud) {
 }
 
 static int znB_init(zn_State *S) {
+    if (!znP_wsastart()) return 0;
     S->iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, NULL, 0, 1);
     return InitializeCriticalSection(&S->lock), S->iocp != NULL;
 }
@@ -1370,20 +1349,10 @@ static void znB_post(zn_State *S, zn_Post *post) {
 }
 
 static ULONG znB_read(zn_State *S, DWORD ms) {
-    OVERLAPPED_ENTRY entry;
-    ULONG            i, count;
-    BOOL             bRet;
-    if (!pGetQueuedCompletionStatusEx) {
-        bRet = GetQueuedCompletionStatus(
-                S->iocp, &entry.dwNumberOfBytesTransferred,
-                &entry.lpCompletionKey, &entry.lpOverlapped, ms);
-        if (!bRet && !entry.lpOverlapped) return 0; /* time out */
-        if (entry.lpCompletionKey == 0)
-            return znB_post(S, (zn_Post *)entry.lpOverlapped), 1;
-        return znB_dispatch(bRet, &entry), 1;
-    }
-    bRet = pGetQueuedCompletionStatusEx(S->iocp, S->entries, ZN_MAX_EVENTS,
-                                        &count, ms, FALSE);
+    ULONG i, count;
+    BOOL  bRet;
+    bRet = GetQueuedCompletionStatusEx(S->iocp, S->entries, ZN_MAX_EVENTS,
+                                       &count, ms, FALSE);
     if (!bRet) return 0; /* time out */
     for (i = 0; i < count; ++i) {
         DWORD transfer;

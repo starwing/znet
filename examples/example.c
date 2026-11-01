@@ -73,17 +73,9 @@ int main(void) {
     /* we can print out which engine znet uses: */
     printf("znet example: use %s engine.\n", zn_engine());
 
-    /* first, we initialize znet global environment. we needn't do
-     * this on *nix or Mac, because on Windows we should initialize
-     * and free the WinSocks2 global service, the
-     * zn_initialize()/zn_deinitialize() function is prepared for this
-     * situation. */
-    zn_initialize();
-
-    /* after network environment is ready, we can create a new event
-     * loop handler now. the zn_State object is the center object that
-     * hold any resource znet uses, when everything overs, you should
-     * call zn_close() to clean up all resources znet used. */
+    /* create a new event loop handler. the zn_State object is the
+     * center object that holds any resource znet uses; call zn_close()
+     * when everything is over to clean up. */
     S = zn_newstate();
     if (S == NULL) {
         fprintf(stderr, "create znet handler failured\n");
@@ -96,7 +88,7 @@ int main(void) {
     if (accept == NULL) {
         fprintf(stderr, "listen on %d: %s\n", PORT,
                 zn_strerror(zn_lasterror(S)));
-        zn_close(S), zn_deinitialize();
+        zn_close(S);
         return 3;
     }
     printf("[%p] accept listening to %d ...\n", (void *)accept, PORT);
@@ -170,8 +162,6 @@ int main(void) {
      * will return, we can cleanup resources in zn_State object now */
     zn_close(S);
 
-    /* and shutdown global environment */
-    zn_deinitialize();
     return 0;
 }
 

@@ -87,9 +87,6 @@ static void cleanup(void) {
     printf("exiting ... ");
     zn_close(S);
     printf("OK\n");
-    printf("deinitialize ... ");
-    zn_deinitialize();
-    printf("OK\n");
 }
 
 #ifdef _WIN32
@@ -133,7 +130,6 @@ int main(int argc, char **argv) {
         if (p != 0) port = p;
     }
 
-    zn_initialize();
     S = zn_newstate();
     zn_initbuffpool(&pool);
     if (S == NULL) return 2;
