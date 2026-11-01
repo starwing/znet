@@ -275,6 +275,39 @@ TEST(buffcache_fallback_alloc) {
     asserteq(log.bad_free, 0);
 }
 
+/* the cache may only hold blocks of exactly one bucket size: a fallback block
+ * (OOM on the 16 KiB bucket -> plan 4/8 KiB) parked in the smallest bucket
+ * would be handed out as 16 KiB and overflowed. */
+TEST(buffcache_keeps_only_bucket_blocks) {
+    alloc_log       log;
+    zn_BufferCache *bc;
+    zn_Buffer       small, big;
+    char           *p;
+
+    memset(&log, 0, sizeof(log));
+    bc = zn_newbuffcache(alloc_log_f, &log);
+    assertok(bc != NULL);
+
+    zn_initbuffer(&small, bc);
+    log.fail_count = 1; /* the 16 KiB bucket allocation fails */
+    assertok(zn_prepbuffsize(&small, 4096) != NULL);
+    asserteq(small.size, 4096);
+    zn_resetbuffer(&small);
+    /* the block is 4 KiB, so it must be handed back, not parked in the 16 KiB
+     * bucket -- a pointer comparison would be idle: the allocator may reuse
+     * that address for the bigger block either way */
+    asserteq(bc->buffs[0], NULL);
+
+    /* and the next 16 KiB request gets a real 16 KiB block */
+    zn_initbuffer(&big, bc);
+    p = zn_prepbuffsize(&big, 16000);
+    assertok(p != NULL);
+    memset(p, 0, 16000); /* ASan trap if a 4 KiB block came back */
+
+    zn_resetbuffer(&big);
+    zn_delbuffcache(bc);
+}
+
 TEST(buffer_append_oom) {
     alloc_log       log;
     zn_BufferCache *bc;
@@ -394,7 +427,8 @@ TEST(recv_default_handlers) {
     assertok(rb.header_handler != NULL);
     /* the default is "no handler": frames are consumed and dropped, which is
      * the documented behaviour (TODO D1 closed 2026-11-01), not a gap.  The
-     * user-data pointer must be cleared even so: it used to be uninitialised. */
+     * user-data pointer must be cleared even so: it used to be uninitialised.
+     */
     assertok(rb.packet_ud == NULL);
     zn_recvonpacket(&rb, rec_packet, &rec);
     assertok(rb.packet_ud == &rec);

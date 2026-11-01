@@ -232,10 +232,11 @@ ZN_API int zn_prepbuffcache(zn_BufferCache *bc, size_t sz, size_t count) {
 
 static void znZ_putcache(zn_Buffer *b) {
     zn_BufferCache *bc = b->bc;
-    size_t          pos;
+    size_t          pos, sz;
     if (b->buff == b->init_buff) return;
-    if (znZ_lowerbound(b->size, &pos) == 0)
-        /* above the last bucket: not cacheable, same allocator */
+    /* only a block of exactly one bucket size can go back in */
+    sz = znZ_lowerbound(b->size, &pos);
+    if (sz != b->size)
         bc->allocf(bc->ud, b->buff, 0, b->size);
     else
         *(void **)b->buff = bc->buffs[pos], bc->buffs[pos] = b->buff;
