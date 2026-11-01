@@ -14,7 +14,7 @@
 
 ## 0. 优先级总览
 
-- **P1**：C3/B4、U1 —— 硬约束（签名 <80）、工具头不能编译。**2026-10-31 决定暂缓**
+- **P1**：C3/B4、U1 —— 硬约束（签名不折行）、工具头不能编译。**2026-10-31 决定暂缓**
   （折行与 deque 先不动），条目保留为未完成。
 - **P2**：U11、Q1、Q2、CI —— 健壮性、资源边界、测试与文档。
 - **P3**：M5、format-check、覆盖率门槛 —— 清理与收尾，不动语义。（B3 已完成，见
@@ -28,20 +28,20 @@
 
 ## 2. 公共 API 与代码精炼
 
-- [ ] **C3 / B4**（P1）函数签名 <80 且不折行
-  现状（2026-10-31，`int err` 之后，`znet.h` 折行 16 处）：`zn_connect` 的工厂形实测
+- [ ] **C3 / B4**（P1）函数签名不折行（整行 ≤80，定义行 ≤78）
+  现状（2026-11-01，B3 之后，`znet.h` 折行 15 处 + `zn_addrinfo.h` 6 处）：`zn_connect` 的工厂形实测
   **105 列**（地址/端口/回调/ud 四个参数 + 返回类型），仍在折行；`zn_send`/`zn_recv`/
   `zn_sendto`/`zn_recvfrom` 的声明与定义（85–100 列）、2 个回调 typedef
   （`zn_AcceptHandler` 81、`zn_RecvFromHandler` 113）、`zn_addrinfo.h` 的 6 处、
   `zn_lua.c` 的 4 处、`bench/*.c` 的 7 处照旧。`zn_SendHandler`/`zn_RecvHandler` 已随
   `int err` 回到单行（76）；`zn_RecvFromHandler` 即使把参数全改成单字母也只能压到
-  ~98 列，靠改名到不了 <80。
+  ~98 列，靠改名到不了 78。
   公共 API：`zn_connect`/`zn_send`/`zn_recv`/`zn_sendto`/`zn_recvfrom`（声明 + 定义各
   一次）、`zn_getaddrinfo`（3 处）；内部：`znB_sendto` ×2、`znS_onudp`（85 列，v2 新增，
   与 `zn_RecvFromHandler` 同源，等回调收窄后一起解决）、`znA_makereq`/`znA_ntop`、
   4 个 `lzn_*` 回调。
   `zn_connect` 必须改 API，不能只折行；方向见 D4，**前置是操作结构体重构**（D3）：
-  handler/udp/handler 收进操作体之前，这些签名压不到 <80。做完后
+  handler/udp/handler 收进操作体之前，这些签名压不到 78。做完后
   `notes/changes.md` §2 记的折行遗留才归零。
   验收：脚本按“整行含返回类型和 `ZN_API`”检查，`just format-check` 通过（见 §4）。
 
@@ -77,7 +77,7 @@
   顺序，但越早越好：现在全靠本机 + `orb` + wx-miku 手工跑，换机器/工具集就会漏。
 
 - [ ] **签名/门限检查脚本**（P3）接入 `just format-check`
-  把“函数签名单行 <80”“`clang-format` 幂等”“没有 `// clang-format off` 滥用”做成脚本；
+  把“函数签名单行（≤80，定义 ≤78）”“`clang-format` 幂等”“没有 `// clang-format off` 滥用”做成脚本；
   格式化提交另加 `.git-blame-ignore-revs`。C3 收尾后这个脚本才是回归门。
 
 - [ ] **覆盖率门槛决策**（P3）
@@ -129,7 +129,7 @@
 > D2（公共 API 的列对齐）已定：交给 `.clang-format` 的 `AlignConsecutiveDeclarations`，
 > 不手工在 `(` 前补空格；`AGENTS.md` 的“约定”一节与 `notes/changes.md` §3 记了结论。
 
-- [ ] **D3** 签名 <80 的计量口径：整行含返回类型和 `ZN_API`（现状，严格执行），
+- [ ] **D3** 签名列宽的计量口径：整行含返回类型和 `ZN_API`、定义行含 ` {`（现状，严格执行），
   还是只约束“函数名 + 参数列表”？后者能让部分函数少改，但 `zn_connect` 仍要重构。
   这条决定 C3 的工作量，先定再开工。
   **2026-10-29 方向（暂不裁决）**：先不做口径选择。后续把操作收进 `struct TcpOp`
@@ -171,7 +171,7 @@
 
 ## 7. 优先级评估与执行顺序
 
-排序依据：① 是否崩溃/内存安全；② 是否违反硬约束（AGENTS 的 <80 与 Clean C）；
+排序依据：① 是否崩溃/内存安全；② 是否违反硬约束（AGENTS 的签名不折行与 Clean C）；
 ③ 是否让后续工作建立在错误信息上（过时文档/测试）；④ 成本与前置依赖。
 
 已完成的批次记在 `notes/changes.md`（最近一次是 §1.38）；这里只剩未做项。按 2026-10-31
